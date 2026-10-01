@@ -1225,6 +1225,16 @@ the line, and Delete follows once the page has told of the mark."
   (interactive)
   (canvas-browser--tell "Input.insertText" (list :text (current-kill 0))))
 
+(defun canvas-browser-copy-url ()
+  "Copy the address of this page to the kill ring.
+The key is `y\=', which copies the address of a link after `f\=' as well.
+`w\=', the key of eww, is a key of every canvas buffer."
+  (interactive)
+  (unless canvas-browser--url
+    (user-error "canvas-browser: this page has no address yet"))
+  (kill-new canvas-browser--url)
+  (message "canvas-browser: copied %s" canvas-browser--url))
+
 (defun canvas-browser--wheel (x y delta)
   "Turn the wheel DELTA pixels at the page pixel X Y, down for a positive one.
 Chromium sends the turn to whatever lies under that pixel, so a part of
@@ -2505,7 +2515,8 @@ and the settings.  The widths line the columns of the two rows up."
    ("s" "find" canvas-browser-find)
    ("t" "text" canvas-browser-text)
    ("L" "lines" canvas-browser-search-text)
-   ("e" "eww" canvas-browser-open-in-eww)]
+   ("e" "eww" canvas-browser-open-in-eww)
+   ("y" "copy URL" canvas-browser-copy-url)]
   ["Modes"
    ("d" canvas-browser-toggle-dark :transient t
     :description (lambda () (canvas-keys-setting "dark" 'canvas-browser-dark)))
@@ -2532,6 +2543,7 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "M-n" #'canvas-browser-forward
   "o" #'canvas-browser-open-url
   "O" #'canvas-browser
+  "y" #'canvas-browser-copy-url
   "B" #'canvas-browser-bookmark
   "J" #'canvas-browser-open-bookmark
   "v" #'canvas-browser-caret-mode

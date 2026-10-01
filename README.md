@@ -159,6 +159,7 @@ Normal state keeps the keys of Emacs:
 |---|---|
 | `o` | opens a URL in this buffer, or searches for the words you type |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
+| `y` | copies the address of this page, as `f y` copies the address of a link |
 | `O` | the same in a page buffer of its own, as the `O` of Vimium and qutebrowser opens a tab |
 | `g` | reads the page again |
 | `M-p`, `M-n` | go back and forward in the history |

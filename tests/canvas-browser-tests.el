@@ -158,6 +158,33 @@ that moment now."
                       #'canvas-browser-open-url)))
       (keymap-set canvas-browser-mode-map "o" command))))
 
+(ert-deftest canvas-browser-y-copies-the-address-of-the-page ()
+  ;; GIVEN a page buffer that shows https://example.org
+  ;; WHEN y is pressed
+  ;; THEN the address is the newest kill
+  (canvas-browser-test--in-page
+    (let ((kill-ring nil))
+      (should (eq (key-binding (kbd "y")) #'canvas-browser-copy-url))
+      (canvas-browser-test--press "y")
+      (should (equal (car kill-ring) "https://example.org")))))
+
+(ert-deftest canvas-browser-the-menu-copies-the-address-of-the-page ()
+  ;; GIVEN the menu of a page buffer
+  ;; WHEN its entry on y is read
+  ;; THEN it runs the command that copies the address of the page
+  (should (eq (plist-get (canvas-browser-test--menu-entry "y") :command)
+              'canvas-browser-copy-url)))
+
+(ert-deftest canvas-browser-a-page-without-an-address-copies-none ()
+  ;; GIVEN a page buffer with no address yet
+  ;; WHEN y is pressed
+  ;; THEN it is an error, AND the kill ring is as it was
+  (with-temp-buffer
+    (canvas-browser-mode)
+    (let ((kill-ring nil))
+      (should-error (canvas-browser-copy-url) :type 'user-error)
+      (should-not kill-ring))))
+
 (ert-deftest canvas-browser-insert-state-sends-every-key-to-the-page ()
   ;; GIVEN a page buffer that entered insert state
   ;; WHEN a letter and a return are typed, and then ESC
