@@ -5,6 +5,8 @@ lays out the page, and Emacs speaks its DevTools protocol itself: no
 helper process stands between them. Each page is a buffer of its own, so
 your buffer keys are the tabs.
 
+![A page with its hint labels, in an Emacs frame](screenshots/hints.png)
+
 ## Why
 
 My Emacs runs on a remote machine, and I reach it over X. A link that I
