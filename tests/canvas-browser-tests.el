@@ -3492,6 +3492,79 @@ With OFF-THE-PAGE, the position is in the window and not on the page."
     (canvas-browser-insert-mode)
     (should (eq (key-binding [drag-mouse-1]) 'canvas-browser-drag))))
 
+(defmacro canvas-browser-test--dragging (typing marked &rest body)
+  "Run BODY in a page where a drag leaves MARKED as the text that is marked.
+TYPING says whether the focus of the page takes typing after the drag."
+  (declare (indent 2))
+  `(cl-letf (((symbol-function 'canvas-browser-cdp-send)
+              (lambda (method params &optional answer _session)
+                (push (cons method params) canvas-browser-test--commands)
+                (when answer
+                  (funcall
+                   answer
+                   (when (equal method "Runtime.evaluate")
+                     (let ((script (plist-get params :expression)))
+                       (list :result
+                             (list :value
+                                   (cond ((equal script "getSelection().toString()") ,marked)
+                                         ((string-search "__canvasBrowserCaret" script)
+                                          (list :box '(10 20 2 16) :text ,marked
+                                                :region '(10 20 80 16)))
+                                         (t (list :typing ,typing :box '(5 5 100 20)))))))))))))
+     ,@body))
+
+(defun canvas-browser-test--drag ()
+  "Drag the mouse over this page, from the pixel 40 by 90 to 200 by 95."
+  (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
+                             (canvas-browser-test--at 200 95))))
+
+(ert-deftest canvas-browser-a-drag-over-text-gives-the-keys-to-the-caret ()
+  ;; GIVEN a page buffer in normal state
+  ;; WHEN a drag marks text of the page, outside any field
+  ;; THEN the caret has the keys, with the mark set: the text is its
+  ;;      region, which M-w copies and C-g drops, AND nothing is copied
+  ;;      yet, as after a drag in a buffer
+  (canvas-browser-test--in-page
+    (let ((kill-ring nil) (mouse-drag-copy-region nil))
+      (canvas-browser-test--dragging nil "marked words"
+        (canvas-browser-test--drag))
+      (should canvas-browser--caret)
+      (should canvas-browser--caret-mark)
+      (should (eq (current-local-map) canvas-browser-caret-map))
+      (should (equal canvas-browser--caret-box '(:x 10 :y 20 :w 2 :h 16)))
+      (should-not kill-ring))))
+
+(ert-deftest canvas-browser-a-drag-in-a-field-leaves-the-caret-alone ()
+  ;; GIVEN a page buffer in normal state
+  ;; WHEN a drag marks text in a field
+  ;; THEN the keys go to the page, AND the caret does not take them: a
+  ;;      field copies its own mark
+  (canvas-browser-test--in-page
+    (canvas-browser-test--dragging t "marked words"
+      (canvas-browser-test--drag))
+    (should canvas-browser--insert)
+    (should-not canvas-browser--caret)))
+
+(ert-deftest canvas-browser-a-drag-that-marks-nothing-leaves-the-keys-with-emacs ()
+  ;; GIVEN a page buffer in normal state
+  ;; WHEN a drag marks no text, as one over a picture
+  ;; THEN the caret does not take the keys
+  (canvas-browser-test--in-page
+    (canvas-browser-test--dragging nil ""
+      (canvas-browser-test--drag))
+    (should-not canvas-browser--caret)))
+
+(ert-deftest canvas-browser-a-drag-copies-for-one-who-asked-emacs-for-that ()
+  ;; GIVEN `mouse-drag-copy-region\=' set, as by one who wants a drag in a
+  ;;       buffer to copy
+  ;; WHEN a drag marks text of the page
+  ;; THEN the text is the newest kill
+  (canvas-browser-test--in-page
+    (let ((kill-ring nil) (mouse-drag-copy-region t))
+      (canvas-browser-test--dragging nil "marked words"
+        (canvas-browser-test--drag))
+      (should (equal (car kill-ring) "marked words")))))
+
 ;;;; The caret of the page
 
 (ert-deftest canvas-browser-v-starts-the-caret ()

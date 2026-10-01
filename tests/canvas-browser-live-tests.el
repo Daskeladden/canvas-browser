@@ -918,3 +918,44 @@ its own."
                     (lambda (value) (setq answer value)))
                    (canvas-browser-live-test--settle)
                    (equal answer '(2 t))))))))
+
+(ert-deftest canvas-browser-live-a-drag-over-text-is-copied-with-m-w ()
+  ;; GIVEN the fixture page, with nothing focused
+  ;; WHEN the mouse is dragged over its first paragraph, from its start
+  ;;      to its end
+  ;; THEN the caret has the keys with the mark set, AND nothing is
+  ;;      copied yet
+  ;; WHEN M-w is pressed
+  ;; THEN the newest kill is the text of the paragraph
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((buffer nil) (kill-ring nil) (mouse-drag-copy-region nil)
+        (canvas-browser-profile-directory
+         (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+           (make-temp-file "canvas-browser-live-" t))))
+    (unwind-protect
+        (progn
+          (setq buffer (canvas-browser
+                        (concat "file://" (expand-file-name "tests/fixtures/page.html"))))
+          (with-current-buffer buffer
+            (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+            (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+            (canvas-browser-live-test--lay-out 1024 768)
+            (let ((box 'waiting))
+              (canvas-browser--evaluate
+               "(r => [r.x, r.y, r.width, r.height])(document.querySelector('p').getBoundingClientRect())"
+               (lambda (value) (setq box value)))
+              (should (canvas-browser-live-test--wait 10 (lambda () (consp box))))
+              (pcase-let ((`(,x ,y ,w ,h) box))
+                (canvas-browser--drag (round (+ x 1)) (round (+ y (/ h 2.0)))
+                                      (round (+ x w -2)) (round (+ y (/ h 2.0))))))
+            (should (canvas-browser-live-test--wait 5 (lambda () canvas-browser--caret-mark)))
+            (should canvas-browser--caret)
+            (should-not kill-ring)
+            (canvas-browser-live-test--press "M-w")
+            (should (canvas-browser-live-test--wait
+                     5 (lambda ()
+                         (equal (car kill-ring)
+                                "Some words that the text test looks for: parser, canvas, browser."))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (canvas-browser-cdp-stop)
+      (delete-directory canvas-browser-profile-directory t))))

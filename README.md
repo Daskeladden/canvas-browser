@@ -336,6 +336,12 @@ The buffer that `t` fills is an ordinary buffer, so isearch,
 
 ## The caret of the page
 
+A drag of the mouse over the text of a page marks it and copies
+nothing, as a drag in a buffer does. The caret then has the keys, with
+the text as its region: `M-w` copies it, and `C-g` drops the mark. If
+you set `mouse-drag-copy-region`, the drag copies here as well. In a
+field the keys stay with the field, and its own `M-w` copies the mark.
+
 `v` gives the page a caret, a point that the motions of Emacs move
 through its text: `C-f` and `C-b` a character, `M-f` and `M-b` a word,
 `C-n` and `C-p` a line, `C-a` and `C-e` to the ends of the line, `M-<`

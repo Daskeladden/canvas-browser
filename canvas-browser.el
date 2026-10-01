@@ -1364,7 +1364,8 @@ click: asked sooner, it names what had the focus before it."
   "Drag the mouse over the page from the pixel X1 Y1 to X2 Y2.
 The page gets a press, a move with the left button held, and a release,
 so it marks what lies between as it does in any browser.  The focus is
-followed as after a click: a drag in a field types there."
+followed as after a click: a drag in a field types there.  Text marked
+outside a field goes to the caret of the page."
   (let ((left (list :button "left" :clickCount 1)))
     (canvas-browser--tell "Input.dispatchMouseEvent"
                           (append (list :type "mousePressed" :x x1 :y y1) left))
@@ -1372,7 +1373,15 @@ followed as after a click: a drag in a field types there."
                           (list :type "mouseMoved" :x x2 :y y2 :button "left" :buttons 1))
     (canvas-browser--tell "Input.dispatchMouseEvent"
                           (append (list :type "mouseReleased" :x x2 :y y2) left)
-                          (canvas-browser--follow-focus-later))))
+                          (canvas-browser--here #'canvas-browser--after-drag))))
+
+(defun canvas-browser--after-drag (&rest _)
+  "Follow the focus as after a click, and give marked text to the caret.
+The page is asked for the text once it has said what has the focus, so
+the caret knows whether the drag was in a field."
+  (canvas-browser--follow-focus)
+  (canvas-browser--evaluate-here "getSelection().toString()"
+                                 #'canvas-browser--caret-take-region))
 
 (defun canvas-browser--follow-focus-later ()
   "A function that follows the focus of this page when chromium answers.
@@ -2881,6 +2890,20 @@ and `C-g\\=' drops the mark, and then leaves, as `ESC\\=' does."
   (canvas-browser--keep-modal-state)
   (force-mode-line-update)
   (message "canvas-browser: the caret moves with the keys of Emacs; C-SPC marks, M-w copies"))
+
+(defun canvas-browser--caret-take-region (text)
+  "Give the keys to the caret, with TEXT as its region.
+TEXT is what a drag of the mouse marked on the page.  Nothing is copied,
+as nothing is after a drag in a buffer: `M-w\=' copies the region and
+`C-g\=' drops it.  One who set `mouse-drag-copy-region\=' gets the copy
+here as well.  In a field the keys are the page's, and the field copies
+its own mark."
+  (when (and (stringp text) (not (string-empty-p text)) (not canvas-browser--insert))
+    (unless canvas-browser--caret (canvas-browser--caret-enter))
+    (setq canvas-browser--caret-mark t)
+    (canvas-browser--caret-call
+     (concat (canvas-browser--with-colours "colours") ".report()"))
+    (when mouse-drag-copy-region (kill-new text))))
 
 (defun canvas-browser-caret-move ()
   "Move the caret as the key that called this command moves point.
