@@ -2136,15 +2136,93 @@ the second those drawn into the moving parts alone."
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
                  (lambda (method params &optional answer _session)
                    (push (cons method params) canvas-browser-test--commands)
-                   (when (plist-get params :awaitPromise) (setq told answer)))))
+                   (cond ((plist-get params :awaitPromise) (setq told answer))
+                         ((equal method "Runtime.evaluate")
+                          (funcall answer '(:result (:value "the rest"))))))))
         (setq canvas-browser-test--commands nil)
         (canvas-browser-test--press "C-k")
         (should (string-search "selectionchange"
-                               (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                               (plist-get (cdr (car (last canvas-browser-test--commands)))
                                           :expression)))
         (should (equal (canvas-browser-test--keys-down) '(("End" 8))))
         (funcall told '(:result (:value "changed")))
         (should (equal (canvas-browser-test--keys-down) '(("End" 8) ("Delete" 0))))))))
+
+(defmacro canvas-browser-test--with-field (marked lengths &rest body)
+  "Run BODY in a page whose field has MARKED as its marked text.
+LENGTHS is a list of numbers: each question about the length of the text
+of the field takes the next of them.  The page tells of a change of its
+selection at once."
+  (declare (indent 2))
+  `(let ((lengths ,lengths))
+     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                (lambda (method params &optional answer _session)
+                  (push (cons method params) canvas-browser-test--commands)
+                  (when answer
+                    (funcall answer
+                             (when (equal method "Runtime.evaluate")
+                               (list :result
+                                     (list :value
+                                           (if (equal (plist-get params :expression)
+                                                      canvas-browser--field-length-js)
+                                               (pop lengths)
+                                             ,marked)))))))))
+       ,@body)))
+
+(ert-deftest canvas-browser-c-k-puts-the-rest-of-the-line-in-the-kill-ring ()
+  ;; GIVEN a field whose line holds " world" after the cursor
+  ;; WHEN C-k is pressed
+  ;; THEN " world" is the newest kill, as after C-k in a buffer, AND
+  ;;      Delete goes to the page
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (let ((kill-ring nil) (this-command nil))
+      (canvas-browser-test--with-field " world" nil
+        (setq canvas-browser-test--commands nil)
+        (canvas-browser-test--press "C-k"))
+      (should (equal (car kill-ring) " world"))
+      (should (member '("Delete" 0) (canvas-browser-test--keys-down))))))
+
+(ert-deftest canvas-browser-c-k-twice-makes-one-kill ()
+  ;; GIVEN a C-k that killed "one"
+  ;; WHEN C-k is pressed again right after it, and kills " two"
+  ;; THEN the kill ring holds one kill, "one two", as two C-k in a row
+  ;;      make one kill in a buffer
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (let ((kill-ring nil) (this-command nil))
+      (canvas-browser-test--with-field "one" nil
+        (canvas-browser-test--press "C-k"))
+      (should (eq this-command 'kill-region))
+      (let ((last-command this-command))
+        (canvas-browser-test--with-field " two" nil
+          (canvas-browser-test--press "C-k")))
+      (should (equal kill-ring '("one two"))))))
+
+(ert-deftest canvas-browser-c-k-at-the-end-of-a-line-kills-the-line-break ()
+  ;; GIVEN a field with nothing after the cursor on its line, and a line
+  ;;       after that one
+  ;; WHEN C-k is pressed, AND Delete makes the text of the field shorter
+  ;; THEN the newest kill is a newline: the line break went, as C-k at
+  ;;      the end of a line kills it in a buffer
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (let ((kill-ring nil) (this-command nil))
+      (canvas-browser-test--with-field "" (list 20 19)
+        (canvas-browser-test--press "C-k"))
+      (should (equal (car kill-ring) "\n")))))
+
+(ert-deftest canvas-browser-c-k-at-the-end-of-a-field-kills-nothing ()
+  ;; GIVEN a field with nothing after the cursor at all
+  ;; WHEN C-k is pressed, AND Delete leaves the text of the field as long
+  ;;      as it was
+  ;; THEN the kill ring is as it was
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (let ((kill-ring nil) (this-command nil))
+      (canvas-browser-test--with-field "" (list 20 20)
+        (canvas-browser-test--press "C-k"))
+      (should-not kill-ring))))
 
 (ert-deftest canvas-browser-yank-types-the-newest-kill ()
   ;; GIVEN a page buffer in insert state, and a kill in Emacs

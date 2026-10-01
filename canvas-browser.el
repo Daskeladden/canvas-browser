@@ -1110,6 +1110,14 @@ The page tells its listeners of a change in the order they were added,
 so an editor that listens is told before this promise is kept.  When
 nothing changes within a tenth of a second, the promise is kept as well.")
 
+(defun canvas-browser--here (function)
+  "A function that calls FUNCTION with its arguments in this buffer.
+It does nothing once the buffer is gone."
+  (let ((buffer (current-buffer)))
+    (lambda (&rest arguments)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (apply function arguments))))))
+
 (defun canvas-browser--after-selection-change (then)
   "Call THEN in this buffer once the page has told of a selection change.
 Call this before the key that changes the selection is sent.  An editor
@@ -1117,23 +1125,70 @@ that keeps a selection of its own, as the one of Reddit does, learns of
 a new selection a moment after the key that made it.  A second key sent
 right after the first reaches it before that, and acts on the old
 selection."
-  (let ((buffer (current-buffer)))
-    (canvas-browser-cdp-send
-     "Runtime.evaluate"
-     (list :expression canvas-browser--selection-change-js :awaitPromise t :returnByValue t)
-     (lambda (_result)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer (funcall then))))
-     canvas-browser--session)))
+  (canvas-browser-cdp-send
+   "Runtime.evaluate"
+   (list :expression canvas-browser--selection-change-js :awaitPromise t :returnByValue t)
+   (canvas-browser--here (lambda (_result) (funcall then)))
+   canvas-browser--session))
+
+(defconst canvas-browser--field-length-js
+  "(function () {
+     let e = document.activeElement;
+     while (e && e.shadowRoot && e.shadowRoot.activeElement) e = e.shadowRoot.activeElement;
+     if (!e) return 0;
+     return (typeof e.value === 'string' ? e.value : e.innerText || '').length;
+   })()"
+  "The JavaScript that gives the length of the text of the field with the focus.")
+
+(defun canvas-browser--kill-text (text append)
+  "Put TEXT in the kill ring, at the end of the newest kill if APPEND."
+  (if append (kill-append text nil) (kill-new text)))
+
+(defun canvas-browser--field-length (then)
+  "Call THEN in this buffer with the length of the text of the field."
+  (canvas-browser--evaluate canvas-browser--field-length-js (canvas-browser--here then)))
+
+(defun canvas-browser--kill-line-break (append)
+  "Delete forward in the field, and kill a newline if a line break went.
+The field tells that by its text, which is shorter after the key.  At
+the end of the field nothing goes, and nothing is killed.  APPEND is as
+in `canvas-browser--kill-text\='."
+  (canvas-browser--field-length
+   (lambda (before)
+     (canvas-browser--key
+      "Delete" nil
+      (canvas-browser--here
+       (lambda (_result)
+         (canvas-browser--field-length
+          (lambda (after)
+            (when (< after before)
+              (canvas-browser--kill-text "\n" append))))))))))
+
+(defun canvas-browser--kill-marked (append)
+  "Kill what is marked in the field, or the line break if nothing is.
+APPEND is as in `canvas-browser--kill-text\='."
+  (canvas-browser--evaluate
+   (format canvas-browser--field-region-js "false")
+   (canvas-browser--here
+    (lambda (text)
+      (if (and (stringp text) (not (string-empty-p text)))
+          (progn (canvas-browser--kill-text text append)
+                 (canvas-browser--key "Delete"))
+        (canvas-browser--kill-line-break append))))))
 
 (defun canvas-browser-kill-line ()
-  "Delete from the cursor to the end of the line of the field.
-At the end of a line, the line break goes, as with `C-k\=' in a buffer.
-Shift and End mark the rest of the line, and Delete follows once the
-page has told of the mark."
+  "Kill from the cursor to the end of the line of the field.
+At the end of a line, the line break goes, as with `C-k\=' in a buffer,
+and two of them in a row make one kill.  Shift and End mark the rest of
+the line, and Delete follows once the page has told of the mark."
   (interactive)
-  (canvas-browser--after-selection-change (lambda () (canvas-browser--key "Delete")))
-  (canvas-browser--key "End" '(shift)))
+  (let ((append (eq last-command 'kill-region)))
+    ;; The name by which Emacs knows a kill, so that the next kill adds
+    ;; to this one, whichever command makes it.
+    (setq this-command 'kill-region)
+    (canvas-browser--after-selection-change
+     (lambda () (canvas-browser--kill-marked append)))
+    (canvas-browser--key "End" '(shift))))
 
 (defun canvas-browser-yank ()
   "Type the newest kill of Emacs into the field."

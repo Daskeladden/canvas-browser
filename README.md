@@ -288,7 +288,7 @@ and the insert mode of Surfingkeys have them do:
 | `M-<`, `M->` | the start and the end of the field |
 | `DEL`, `C-d` | delete the character before and after the cursor |
 | `M-DEL`, `M-d` | delete the word before and after the cursor |
-| `C-k` | delete to the end of the line, and at its end the line break |
+| `C-k` | kill to the end of the line, and at its end the line break |
 | `C-y` | type the newest kill of Emacs |
 | `TAB`, `S-TAB` | the next and the previous field |
 | `C-SPC` | set the mark: the motions after it mark a region of the field |
