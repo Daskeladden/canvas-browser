@@ -5,6 +5,35 @@ lays out the page, and Emacs speaks its DevTools protocol itself: no
 helper process stands between them. Each page is a buffer of its own, so
 your buffer keys are the tabs.
 
+## Why
+
+My Emacs runs on a remote machine, and I reach it over X. A link that I
+open there must open there too: in a buffer, with the keys of Emacs, and
+logged in to the sites I use. And I like to do as much as I can in
+Emacs.
+
+That includes the web applications of work, such as Outlook, Teams and
+Confluence. They need JavaScript and a login, which eww cannot give
+them, and here they are buffers.
+
+## Other browsers in Emacs
+
+eww draws the HTML as text in the buffer and runs no JavaScript. Use eww
+where it is enough: `e` opens the same address there.
+
+xwidget-webkit puts a WebKitGTK widget in the window. It needs an Emacs
+that was built with xwidgets, which only the GTK build and the macOS
+build can be.
+
+EAF runs a Python process that draws the page with QtWebEngine in a Qt
+window, and keeps that window over the Emacs window. The page is a
+window of another program.
+
+canvas-browser works in any build of Emacs 32 that has modules, and no
+process stands between Emacs and chromium. The page is an image in the
+buffer, which Emacs paints. So Emacs draws the hint labels on it, cuts a
+part of it to copy a picture, and shows a page inside another buffer.
+
 ## What it needs
 
 - Emacs 32 with canvas images and the cairo module of
@@ -25,6 +54,30 @@ A snap also has a `/tmp` of its own and reads no hidden directory of your
 home, so a local page it cannot read, such as one another package wrote
 to `/tmp`, is copied to `~/snap/chromium/common/canvas-browser-files`
 before it opens. Only that file is copied.
+
+## Install
+
+No archive carries canvas-browser. Clone it and the two canvas packages
+it needs, and build the module of canvas-diagram. The README of
+canvas-diagram says what that build needs.
+
+```sh
+git clone https://github.com/Daskeladden/canvas-keys.git
+git clone https://github.com/Daskeladden/canvas-diagram.git
+git clone https://github.com/Daskeladden/canvas-browser.git
+make -C canvas-diagram        # builds canvas-cairo.so
+```
+
+Install `websocket` from an archive, with `M-x package-install`. Then
+put the three directories on the load path, here with the clones in
+`~/src`:
+
+```elisp
+(dolist (name '("canvas-keys" "canvas-diagram" "canvas-browser"))
+  (add-to-list 'load-path (expand-file-name name "~/src")))
+(autoload 'canvas-browser "canvas-browser" "Open a URL in a page buffer." t)
+(autoload 'canvas-browser-browse-url "canvas-browser")
+```
 
 ## Use
 
