@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser hidden text fixture</title>
+    <style>
+      body { margin: 0; font: 16px sans-serif; }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
+                 clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+      #narrow { width: 60px; overflow: hidden; white-space: nowrap; }
+      #popup-parent { overflow: hidden; width: 20px; height: 20px; }
+      #popup { position: absolute; left: 300px; top: 200px; }
+    </style>
+  </head>
+  <body>
+    <p>A shown word.</p>
+    <!-- Text for screen readers only, as Reddit hides "Collapse Navigation". -->
+    <div><span class="sr-only">A secret for screen readers</span></div>
+    <!-- Text that a box too narrow for it cuts off. -->
+    <div id="narrow">Shown then secret</div>
+    <p style="visibility: hidden">A secret nobody sees</p>
+    <p style="opacity: 0">A secret made clear</p>
+    <!-- Text that a clip path takes away, whatever the size of its box. -->
+    <p style="clip-path: inset(50%)">A secret clipped away</p>
+    <!-- A popup that leaves the box of its parent, which does not position it. -->
+    <div id="popup-parent"><div id="popup">A shown popup</div></div>
+    <!-- A card whose link lies over its title, clear, as a post of Reddit's does. -->
+    <div id="card" style="position: relative; width: 300px">
+      <h3 id="title">A shown title</h3>
+      <a href="#card" style="position: absolute; inset: 0"></a>
+    </div>
+    <!-- Text under a banner that paints over it. -->
+    <p style="position: absolute; top: 400px; left: 20px">A secret under a banner</p>
+    <div style="position: absolute; top: 390px; left: 0; width: 600px; height: 50px;
+                background: #fff; z-index: 2"></div>
+  </body>
+</html>

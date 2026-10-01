@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser noise fixture</title>
+    <style>
+      body { margin: 0; font: 16px sans-serif; }
+      p { margin: 10px; }
+      button, [role=button], [role=tab] { display: inline-block; padding: 6px 12px; }
+      svg { width: 16px; height: 16px; }
+    </style>
+  </head>
+  <body>
+    <!-- Things a click does something with. -->
+    <p><button id="button">Sort <svg role="presentation" id="icon"><circle cx="8" cy="8" r="6"/></svg></button></p>
+    <p><div id="made" role="button">A button made of a div</div></p>
+    <p><span id="tab" role="tab">A tab</span></p>
+    <p><iframe id="signin" style="width: 300px; height: 40px; border: 0"
+               srcdoc="<button style='width: 100%; height: 36px'>Sign in</button>"></iframe></p>
+    <!-- Things that only look, or only count. -->
+    <ul><li id="heading" role="presentation">RECENT</li></ul>
+    <p><svg id="picture" role="img"><rect width="16" height="16"/></svg></p>
+    <p><iframe id="tracker" style="width: 2px; height: 2px; border: 0"></iframe></p>
+    <p><iframe id="advert" style="width: 600px; height: 300px; border: 0"
+               srcdoc="<p>An advertisement</p>"></iframe></p>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head><title>canvas-browser typing fixture</title></head>
+  <body>
+    <p><input id="plain" type="text" style="width: 300px; height: 30px" /></p>
+    <p><shadow-field id="shadowed"></shadow-field></p>
+    <p><button id="button" style="width: 300px; height: 30px">A button</button></p>
+    <!-- A field after a button, as Reddit's password comes after the
+         button that shows it: the tab of a form skips the button. -->
+    <p><input id="after" type="text" style="width: 300px; height: 30px" /></p>
+    <script>
+      // A field inside the shadow root of a web component, as the login
+      // form of Reddit has it: the document's active element is the
+      // component, and the field is the active element of its root.
+      customElements.define('shadow-field', class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({mode: 'open'}).innerHTML =
+            '<input id="inner" type="text" style="width: 300px; height: 30px">';
+        }
+      });
+    </script>
+  </body>
+</html>

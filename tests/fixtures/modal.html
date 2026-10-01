@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser modal fixture</title>
+    <style>
+      body { margin: 0; font: 16px sans-serif; }
+      #behind { position: absolute; left: 20px; top: 20px; }
+      #veil { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); z-index: 10; }
+      #dialog { position: fixed; left: 100px; top: 100px; width: 400px; padding: 20px;
+                background: #333; z-index: 11; }
+      #dialog p { margin: 10px 0; }
+      .field { position: relative; }
+      .field label { position: absolute; left: 0; top: 0; width: 300px; height: 30px;
+                     padding: 6px 8px; box-sizing: border-box; color: #aaa; }
+      .field input, #dialog shadow-field { display: block; }
+      #below { display: block; margin-top: 3000px; }
+    </style>
+  </head>
+  <body>
+    <!-- Under the veil: seen, and not to be clicked. -->
+    <a id="behind" href="#behind">A link the dialog covers</a>
+    <div id="veil"></div>
+    <div id="dialog">
+      <p><shadow-field id="shadowed"></shadow-field></p>
+      <!-- A label laid over its field, as a floating label is. -->
+      <p class="field"><label for="labelled">Password</label>
+        <input id="labelled" type="password" style="width: 300px; height: 30px" /></p>
+      <!-- Two things that can be clicked, one inside the other. -->
+      <p><a id="nested" href="#nested"><span role="button">Nested</span></a></p>
+      <p><button id="button">Log in</button></p>
+      <!-- A link in a web component whose text is the page's own, put in
+           through a slot, as Reddit's "Continue with Phone Number" is. -->
+      <p><slot-link id="slotted"><span>Continue with Phone Number</span></slot-link></p>
+      <!-- A button that is a frame of its own, as Google's sign-in is. -->
+      <p><iframe id="framed" style="width: 300px; height: 40px; border: 0"
+                 srcdoc="<button style='width: 100%; height: 36px'>Continue with Google</button>">
+      </iframe></p>
+    </div>
+    <!-- Far below the window: nothing to see, nothing to click. -->
+    <a id="below" href="#below">A link below the window</a>
+    <script>
+      customElements.define('slot-link', class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({mode: 'open'}).innerHTML =
+            '<a href="#slotted" style="display: block; padding: 8px; width: 280px"><slot></slot></a>';
+        }
+      });
+      customElements.define('shadow-field', class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({mode: 'open'}).innerHTML =
+            '<input id="inner" type="text" style="width: 300px; height: 30px">';
+        }
+      });
+    </script>
+  </body>
+</html>

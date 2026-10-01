@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser copy fixture</title>
+    <style>
+      body { margin: 0; font: 16px sans-serif; }
+      #story { width: 400px; height: 100px; margin: 0; }
+      /* A block of one colour, far down the page: a picture of it, taken
+         once the page is scrolled to it, shows only that colour. */
+      #red { position: absolute; left: 200px; top: 1200px; width: 120px; height: 80px;
+             margin: 0; background: #ff0000; }
+      #tall { height: 3000px; }
+    </style>
+  </head>
+  <body>
+    <p><a id="link" href="https://example.org/target">A link</a></p>
+    <article id="story"><p>The story text.</p></article>
+    <figure id="red"></figure>
+    <div id="tall"></div>
+  </body>
+</html>

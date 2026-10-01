@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser cards fixture</title>
+    <style>
+      body { margin: 0; font: 16px sans-serif; }
+      /* A post as Reddit builds one: a title, a link over the whole post
+         that covers the title, and a picture above that link, which a
+         script opens when it is clicked. */
+      #post { position: relative; width: 500px; margin: 20px; cursor: pointer; }
+      #title { display: block; padding: 8px; }
+      #overlay { position: absolute; inset: 0; }
+      #media { position: relative; z-index: 1; height: 300px; margin: 8px;
+               background: #4080c0; }
+      /* A card a script makes clickable, with a link of its own inside. */
+      #card { width: 500px; height: 200px; margin: 20px; cursor: pointer;
+              background: #c08040; }
+      #inner { display: inline-block; margin: 10px; }
+    </style>
+  </head>
+  <body>
+    <div id="post">
+      <a id="title" href="#post">Norway Picture</a>
+      <a id="overlay" href="#post" aria-label="The post"></a>
+      <div id="media"></div>
+    </div>
+    <div id="card"><a id="inner" href="#inner">A link in the card</a></div>
+    <script>
+      document.getElementById('media').addEventListener('click', () => {});
+      document.getElementById('card').addEventListener('click', () => {});
+    </script>
+  </body>
+</html>
