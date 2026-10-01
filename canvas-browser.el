@@ -899,11 +899,12 @@ it again."
 (defconst canvas-browser--keys
   '(("Enter" 13 "\r") ("Tab" 9) ("Backspace" 8) ("Delete" 46) ("Escape" 27)
     ("ArrowLeft" 37) ("ArrowUp" 38) ("ArrowRight" 39) ("ArrowDown" 40)
-    ("Home" 36) ("End" 35) ("PageUp" 33) ("PageDown" 34))
+    ("Home" 36) ("End" 35) ("PageUp" 33) ("PageDown" 34)
+    ("a" 65 nil "KeyA"))
   "The keys chromium is sent: the name, the number Windows gives the key,
-and the text it types, if any.  Chromium edits a field by that number:
-a key sent by its name alone reaches the page as an event that deletes
-and moves nothing.")
+the text it types, if any, and its code where that is not its name.
+Chromium edits a field by that number: a key sent by its name alone
+reaches the page as an event that deletes and moves nothing.")
 
 (defconst canvas-browser--modifier-keys '((control . 2) (shift . 8))
   "The bits of the modifiers DevTools knows, by their name in Emacs.")
@@ -918,11 +919,14 @@ and moves nothing.")
     ("C-a" "Home") ("C-e" "End") ("C-f" "ArrowRight") ("C-b" "ArrowLeft")
     ("C-n" "ArrowDown") ("C-p" "ArrowUp")
     ("M-f" "ArrowRight" control) ("M-b" "ArrowLeft" control)
+    ("M-<" "Home" control) ("M->" "End" control)
+    ("C-<home>" "Home" control) ("C-<end>" "End" control)
     ("C-d" "Delete") ("M-d" "Delete" control) ("M-DEL" "Backspace" control))
   "The keys of insert state that go to the page as a key rather than text.
 Each is the key in Emacs, the name of the key it is in a browser, and
 the modifier held with it: a browser moves and deletes a word with
-Control where Emacs does it with Meta.")
+Control where Emacs does it with Meta, and goes to the ends of a field
+with Control and Home or End.")
 
 (defun canvas-browser--modifiers (names)
   "The DevTools bits of the modifiers NAMES."
@@ -935,10 +939,10 @@ Control where Emacs does it with Meta.")
 MODIFIERS, a list such as (shift), are held with it.  A key with a text
 goes down as a key that types; any other as a raw key.  ANSWER, when
 given, is called once chromium has handled the key's release."
-  (pcase-let* ((`(,_ ,number ,text)
+  (pcase-let* ((`(,_ ,number ,text ,code)
                 (or (assoc key canvas-browser--keys)
                     (error "canvas-browser: no key named %S" key)))
-               (event (list :key key :code key
+               (event (list :key key :code (or code key)
                             :windowsVirtualKeyCode number :nativeVirtualKeyCode number
                             :modifiers (canvas-browser--modifiers modifiers))))
     (canvas-browser--tell "Input.dispatchKeyEvent"
@@ -1011,6 +1015,14 @@ Pressed again, it drops the mark."
       (canvas-browser--field-drop-mark)
     (setq canvas-browser--field-mark t)
     (message "Mark set")))
+
+(defun canvas-browser-field-mark-whole ()
+  "Mark all of the field, as `C-x h\=' marks all of a buffer.
+Control and A go to the page, which is how a browser marks all of a
+field, so an editor that a page built itself takes it as well."
+  (interactive)
+  (canvas-browser--key "a" '(control))
+  (setq canvas-browser--field-mark t))
 
 (defun canvas-browser--field-drop-mark ()
   "Drop the mark of the field, and the region it marks."
@@ -1226,6 +1238,20 @@ click: asked sooner, it names what had the focus before it."
                               :button "left" :clickCount 1)
                         (canvas-browser--follow-focus-later)))
 
+(defun canvas-browser--drag (x1 y1 x2 y2)
+  "Drag the mouse over the page from the pixel X1 Y1 to X2 Y2.
+The page gets a press, a move with the left button held, and a release,
+so it marks what lies between as it does in any browser.  The focus is
+followed as after a click: a drag in a field types there."
+  (let ((left (list :button "left" :clickCount 1)))
+    (canvas-browser--tell "Input.dispatchMouseEvent"
+                          (append (list :type "mousePressed" :x x1 :y y1) left))
+    (canvas-browser--tell "Input.dispatchMouseEvent"
+                          (list :type "mouseMoved" :x x2 :y y2 :button "left" :buttons 1))
+    (canvas-browser--tell "Input.dispatchMouseEvent"
+                          (append (list :type "mouseReleased" :x x2 :y y2) left)
+                          (canvas-browser--follow-focus-later))))
+
 (defun canvas-browser--follow-focus-later ()
   "A function that follows the focus of this page when chromium answers.
 Asked before chromium has handled a click or a tab, the page names what
@@ -1334,6 +1360,22 @@ flown to from a place out of sight."
   (interactive "e")
   (let ((at (posn-object-x-y (event-start event))))
     (canvas-browser--click (car at) (cdr at))))
+
+(defun canvas-browser--page-pixel (position)
+  "The pixel of the page that POSITION, a mouse position, is on, as (X . Y).
+Nil when the position is on something else in the window."
+  (and (posn-image position) (posn-object-x-y position)))
+
+(defun canvas-browser-drag (event)
+  "Drag the mouse over the page as EVENT, a drag on the canvas, did.
+The page marks the text between the two ends.  In a field, `M-w\=' then
+copies it."
+  (interactive "e")
+  (let ((from (canvas-browser--page-pixel (event-start event)))
+        (to (canvas-browser--page-pixel (event-end event))))
+    (unless (and from to)
+      (user-error "canvas-browser: the drag ended off the page"))
+    (canvas-browser--drag (car from) (cdr from) (car to) (cdr to))))
 
 (defun canvas-browser-back ()
   "Go back in the history of the page."
@@ -2925,24 +2967,31 @@ An embedded page whose host no longer holds its picture goes instead."
                                (when canvas-browser--caret "caret")))
                " · "))
 
-(defvar canvas-browser-insert-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [remap self-insert-command] #'canvas-browser-self-insert)
-    (dolist (key canvas-browser--insert-keys)
-      (define-key map (kbd (car key)) #'canvas-browser-send-key))
-    (define-key map (kbd "C-k") #'canvas-browser-kill-line)
-    (define-key map (kbd "C-y") #'canvas-browser-yank)
-    (define-key map (kbd "TAB") #'canvas-browser-next-field)
-    (define-key map (kbd "<backtab>") #'canvas-browser-previous-field)
-    (define-key map (kbd "<escape>") #'canvas-browser-normal-mode)
-    ;; Another package may have taken `ESC' for itself, as meow does.
-    (define-key map (kbd "C-g") #'canvas-browser-insert-quit)
-    (define-key map (kbd "C-SPC") #'canvas-browser-field-set-mark)
-    (define-key map (kbd "C-@") #'canvas-browser-field-set-mark)
-    (define-key map (kbd "M-w") #'canvas-browser-field-copy)
-    (define-key map (kbd "C-w") #'canvas-browser-field-cut)
-    map)
+(defvar canvas-browser-insert-map (make-sparse-keymap)
   "Keymap of a page buffer in insert state: every key goes to the page.")
+
+(defun canvas-browser--bind-insert-keys (map)
+  "Bind the keys of insert state in MAP.
+A variable keeps its value when its file is loaded again, so keys bound
+where the map is made would never reach a running Emacs.  They are bound
+here, on every load."
+  (define-key map [remap self-insert-command] #'canvas-browser-self-insert)
+  (dolist (key canvas-browser--insert-keys)
+    (define-key map (kbd (car key)) #'canvas-browser-send-key))
+  (define-key map (kbd "C-k") #'canvas-browser-kill-line)
+  (define-key map (kbd "C-y") #'canvas-browser-yank)
+  (define-key map (kbd "TAB") #'canvas-browser-next-field)
+  (define-key map (kbd "<backtab>") #'canvas-browser-previous-field)
+  (define-key map (kbd "<escape>") #'canvas-browser-normal-mode)
+  ;; Another package may have taken `ESC' for itself, as meow does.
+  (define-key map (kbd "C-g") #'canvas-browser-insert-quit)
+  (define-key map (kbd "C-SPC") #'canvas-browser-field-set-mark)
+  (define-key map (kbd "C-@") #'canvas-browser-field-set-mark)
+  (define-key map (kbd "C-x h") #'canvas-browser-field-mark-whole)
+  (define-key map (kbd "M-w") #'canvas-browser-field-copy)
+  (define-key map (kbd "C-w") #'canvas-browser-field-cut))
+
+(canvas-browser--bind-insert-keys canvas-browser-insert-map)
 
 (declare-function eww "eww" (url &optional arg))
 
@@ -3003,12 +3052,14 @@ rather than telling the reader that it is undefined."
   map)
 
 (defun canvas-browser--bind-mouse (map)
-  "Bind the mouse in MAP: a click reaches the page, and the wheel scrolls it.
+  "Bind the mouse in MAP.
+A click reaches the page, a drag marks in it, and the wheel scrolls it.
 Emacs reports a fast wheel turn as a double or triple event."
   (dolist (turn '("" "double-" "triple-"))
     (dolist (direction '("down" "up"))
       (define-key map (vector (intern (format "%swheel-%s" turn direction)))
                   #'canvas-browser-wheel)))
+  (define-key map [drag-mouse-1] #'canvas-browser-drag)
   (canvas-browser--bind-clicks map #'canvas-browser-click))
 
 (canvas-browser--bind-mouse canvas-browser-mode-map)

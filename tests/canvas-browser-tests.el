@@ -3207,6 +3207,122 @@ The window manager says so on the root window, where Emacs reads it."
     (let ((last-command-event ?x)) (canvas-browser-self-insert))
     (should-not canvas-browser--field-mark)))
 
+(ert-deftest canvas-browser-the-buffer-end-keys-go-to-the-ends-of-a-field ()
+  ;; GIVEN a page buffer typing into a field
+  ;; WHEN the keys that go to the ends of a buffer are pressed
+  ;; THEN Home and End go to the page with Control held, which a field
+  ;;      takes as its start and its end
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (dolist (case '(("M-<" "Home" 2) ("M->" "End" 2)
+                    ("C-<home>" "Home" 2) ("C-<end>" "End" 2)))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--press (car case))
+      (let ((down (car (canvas-browser-test--keys-sent))))
+        (should (equal (list (car case) (plist-get down :key) (plist-get down :modifiers))
+                       case))))))
+
+(ert-deftest canvas-browser-the-mark-reaches-to-the-end-of-a-field ()
+  ;; GIVEN a field with the mark set
+  ;; WHEN M-> is pressed
+  ;; THEN End goes to the page with Control and Shift held, which marks
+  ;;      from the cursor to the end of the field
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--press "C-SPC")
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--press "M->")
+    (let ((down (car (canvas-browser-test--keys-sent))))
+      (should (equal (plist-get down :key) "End"))
+      (should (equal (plist-get down :modifiers) 10)))))
+
+(ert-deftest canvas-browser-c-x-h-marks-the-whole-field ()
+  ;; GIVEN a page buffer typing into a field
+  ;; WHEN C-x h is pressed
+  ;; THEN the key a goes to the page with Control held, as a key that
+  ;;      types nothing, with the code and the number of the key A: that
+  ;;      marks all of a field in a browser, AND the mark is set, so that
+  ;;      C-g drops the region before it leaves the field
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--press "C-x h")
+    (let ((down (car (canvas-browser-test--keys-sent))))
+      (should (equal (plist-get down :type) "rawKeyDown"))
+      (should (equal (plist-get down :key) "a"))
+      (should (equal (plist-get down :code) "KeyA"))
+      (should (equal (plist-get down :windowsVirtualKeyCode) 65))
+      (should (equal (plist-get down :modifiers) 2)))
+    (should canvas-browser--field-mark)))
+
+(ert-deftest canvas-browser-the-keys-of-insert-state-are-bound-on-every-load ()
+  ;; GIVEN a keymap of insert state from before a key was added, as a
+  ;;       running Emacs keeps it when the file is loaded again
+  ;; WHEN the keys of insert state are bound in it, as every load does
+  ;; THEN the map has the keys, the new ones among them
+  (let ((map (make-sparse-keymap)))
+    (canvas-browser--bind-insert-keys map)
+    (should (eq (keymap-lookup map "C-x h") 'canvas-browser-field-mark-whole))
+    (should (eq (keymap-lookup map "M->") 'canvas-browser-send-key))
+    (should (eq (keymap-lookup map "C-g") 'canvas-browser-insert-quit))))
+
+;;;; A drag of the mouse
+
+(defun canvas-browser-test--at (x y &optional off-the-page)
+  "A mouse position at the pixel X Y of the page in the selected window.
+With OFF-THE-PAGE, the position is in the window and not on the page."
+  (list (selected-window) 1 '(0 . 0) 0 nil 1 '(0 . 0)
+        (unless off-the-page canvas-browser--canvas)
+        (cons x y) '(800 . 600)))
+
+(defun canvas-browser-test--mouse-events ()
+  "The mouse events sent to the page, oldest first, as (TYPE X Y)."
+  (mapcar (lambda (event)
+            (list (plist-get event :type) (plist-get event :x) (plist-get event :y)))
+          (reverse (mapcar #'cdr (cl-remove "Input.dispatchMouseEvent"
+                                            canvas-browser-test--commands
+                                            :key #'car :test-not #'equal)))))
+
+(ert-deftest canvas-browser-a-drag-reaches-the-page-as-a-press-a-move-and-a-release ()
+  ;; GIVEN a page buffer
+  ;; WHEN the mouse is dragged from the pixel 40 by 90 to 200 by 95
+  ;; THEN the page gets a press at the first pixel, a move to the second
+  ;;      with the left button held, and a release there: a browser marks
+  ;;      what lies between
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
+                               (canvas-browser-test--at 200 95)))
+    (should (equal (canvas-browser-test--mouse-events)
+                   '(("mousePressed" 40 90) ("mouseMoved" 200 95) ("mouseReleased" 200 95))))
+    (let ((move (cdr (cl-find "mouseMoved" canvas-browser-test--commands
+                              :key (lambda (command) (plist-get (cdr command) :type))
+                              :test #'equal))))
+      (should (equal (plist-get move :buttons) 1)))))
+
+(ert-deftest canvas-browser-a-drag-that-ends-off-the-page-is-refused ()
+  ;; GIVEN a page buffer
+  ;; WHEN a drag starts on the page AND ends on something else in the
+  ;;      window, where there is no pixel of the page
+  ;; THEN nothing goes to the page, AND the reader is told why
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (should-error
+     (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
+                                (canvas-browser-test--at 0 0 t)))
+     :type 'user-error)
+    (should-not (canvas-browser-test--mouse-events))))
+
+(ert-deftest canvas-browser-a-drag-is-bound-in-both-states ()
+  ;; GIVEN a page buffer
+  ;; WHEN the drag of the left button is looked up, in normal state and
+  ;;      while typing into the page
+  ;; THEN it runs the command that sends the drag to the page
+  (canvas-browser-test--in-page
+    (should (eq (key-binding [drag-mouse-1]) 'canvas-browser-drag))
+    (canvas-browser-insert-mode)
+    (should (eq (key-binding [drag-mouse-1]) 'canvas-browser-drag))))
+
 ;;;; The caret of the page
 
 (ert-deftest canvas-browser-v-starts-the-caret ()

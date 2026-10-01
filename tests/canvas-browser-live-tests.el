@@ -726,3 +726,61 @@ leaves most of a fixture outside it."
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (canvas-browser-cdp-stop)
       (delete-directory canvas-browser-profile-directory t))))
+
+;;;; Marking in an editor that a page built itself
+
+(defmacro canvas-browser-live-test--in-editor (&rest body)
+  "Run BODY in a page buffer of the editor fixture, typing into its editor.
+The kill ring is empty, and chromium has a profile of its own."
+  (declare (indent 0))
+  `(let ((buffer nil) (kill-ring nil)
+         (canvas-browser-profile-directory
+          (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+            (make-temp-file "canvas-browser-live-" t))))
+     (unwind-protect
+         (progn
+           (setq buffer (canvas-browser
+                         (concat "file://" (expand-file-name "tests/fixtures/editor.html"))))
+           (with-current-buffer buffer
+             (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+             (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+             (should (canvas-browser-live-test--click-and-see "one"))
+             ,@body))
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (canvas-browser-cdp-stop)
+       (delete-directory canvas-browser-profile-directory t))))
+
+(defun canvas-browser-live-test--copied-both-p ()
+  "Whether the newest kill holds the text of both paragraphs of the editor."
+  (let ((text (car kill-ring)))
+    (and (stringp text)
+         (string-search "first paragraph" text)
+         (string-search "second paragraph" text)
+         t)))
+
+(ert-deftest canvas-browser-live-c-x-h-marks-all-of-an-editor ()
+  ;; GIVEN the editor fixture, an element that can be edited with two
+  ;;       paragraphs in it, with the keys going to it
+  ;; WHEN C-x h is pressed, and then M-w
+  ;; THEN the kill ring holds the text of both paragraphs
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-editor
+    (canvas-browser-live-test--press "C-x h")
+    (canvas-browser-live-test--settle)
+    (canvas-browser-live-test--press "M-w")
+    (should (canvas-browser-live-test--wait 5 #'canvas-browser-live-test--copied-both-p))))
+
+(ert-deftest canvas-browser-live-a-drag-marks-the-text-it-covers ()
+  ;; GIVEN the editor fixture, with the keys going to its editor
+  ;; WHEN the mouse is dragged from the start of the first paragraph to
+  ;;      the end of the second, and then M-w is pressed
+  ;; THEN the kill ring holds the text of both paragraphs
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-editor
+    (pcase-let ((`(,x1 ,y1 ,_ ,h1) (canvas-browser-live-test--rect "one"))
+                (`(,x2 ,y2 ,w2 ,h2) (canvas-browser-live-test--rect "two")))
+      (canvas-browser--drag (round (+ x1 1)) (round (+ y1 (/ h1 2.0)))
+                            (round (+ x2 w2 -2)) (round (+ y2 (/ h2 2.0)))))
+    (canvas-browser-live-test--settle)
+    (canvas-browser-live-test--press "M-w")
+    (should (canvas-browser-live-test--wait 5 #'canvas-browser-live-test--copied-both-p))))

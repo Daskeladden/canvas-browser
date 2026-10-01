@@ -171,6 +171,7 @@ Normal state keeps the keys of Emacs:
 | `M-s M-l` | searches that text with `consult-line` |
 | `e` | opens the same URL in eww |
 | a click | clicks the page at that pixel, and types there if it is a field |
+| a drag | marks what lies between its two ends, once the button is let go |
 | the wheel | scrolls what lies under the pointer, over a link as well |
 
 The scroll keys move the page itself, which happens at once. The wheel
@@ -284,12 +285,14 @@ and the insert mode of Surfingkeys have them do:
 | `C-a`, `C-e` | the start and the end of the line |
 | `C-f`, `C-b`, `C-n`, `C-p` | a character right and left, a line down and up |
 | `M-f`, `M-b` | a word right and left |
+| `M-<`, `M->` | the start and the end of the field |
 | `DEL`, `C-d` | delete the character before and after the cursor |
 | `M-DEL`, `M-d` | delete the word before and after the cursor |
 | `C-k` | delete to the end of the line |
 | `C-y` | type the newest kill of Emacs |
 | `TAB`, `S-TAB` | the next and the previous field |
 | `C-SPC` | set the mark: the motions after it mark a region of the field |
+| `C-x h` | mark all of the field |
 | `M-w`, `C-w` | copy the region, and cut it |
 | `C-g` | drop the mark, and then give the keys back to Emacs |
 
