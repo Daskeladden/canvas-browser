@@ -131,6 +131,14 @@ and embark treat them as they treat any bookmark. `C-x r m`,
 eww, so `w SPC` narrows to them. A bookmark of a page that a buffer
 shows already goes to that buffer.
 
+### Embark
+
+`embark-act` in a page buffer acts on the address of the page, as on
+any URL. You can open it in another browser or in eww, copy it, or
+download it. While the caret marks text, the text is the first target.
+The address is the second, and `embark-cycle` reaches it. On marked
+text, `s` searches for it in a page buffer of its own.
+
 ### Blocking ads
 
 `M-x canvas-browser-install-ublock` downloads the newest uBlock Origin

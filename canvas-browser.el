@@ -2592,6 +2592,9 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
 (defvar-local canvas-browser--caret-box nil
   "Where the caret of the page stands, as a box, or nil.")
 
+(defvar-local canvas-browser--caret-text nil
+  "The text that the caret of the page marks, as the page last told it.")
+
 (defconst canvas-browser--caret-js
   (concat "(function () {
      const version = 3;
@@ -2844,7 +2847,8 @@ THEN, when given, is called in this buffer with the answer."
    (lambda (report)
      (let ((to (canvas-browser--box-of (plist-get report :box))))
        (canvas-browser--fly canvas-browser--caret-box to)
-       (setq canvas-browser--caret-box to))
+       (setq canvas-browser--caret-box to
+             canvas-browser--caret-text (plist-get report :text)))
      (when then (funcall then report)))))
 
 (defun canvas-browser--caret-colours ()
@@ -3265,6 +3269,7 @@ nothing the window does not.  Take the mode out of
   ;; Any command may change the page anywhere, so what was moving before
   ;; it says nothing about the page after it.
   (add-hook 'pre-command-hook #'canvas-browser--forget-live nil t)
+  (canvas-browser--embark-here)
   (canvas-browser--watch-freshness))
 
 (defun canvas-browser--buffer-name (url)
@@ -3316,6 +3321,59 @@ page buffer, or what the fallback returns."
   (if (canvas-browser-can-show-p)
       (canvas-browser url)
     (apply canvas-browser-fallback-browser url args)))
+
+;;;; The targets of embark
+
+(defun canvas-browser--marked-text ()
+  "The text that the caret of this page marks, or nil when it marks none."
+  (and canvas-browser--caret
+       (stringp canvas-browser--caret-text)
+       (not (string-empty-p canvas-browser--caret-text))
+       canvas-browser--caret-text))
+
+(defun canvas-browser-embark-target ()
+  "The targets of embark in a page buffer.
+The text that the caret marks comes first, and the address of the page
+after it, as a URL.  Embark acts on the first, and cycles to the other."
+  (when (derived-mode-p 'canvas-browser-mode)
+    (append (when-let* ((text (canvas-browser--marked-text)))
+              (list (cons 'canvas-browser-text text)))
+            (when canvas-browser--url
+              (list (cons 'url canvas-browser--url))))))
+
+(defvar canvas-browser-embark-text-map (make-sparse-keymap)
+  "The actions of embark on the text that the caret of a page marks.
+Its parent holds the actions that embark has for any target.")
+
+;; Bound here and not where the map is made, so that a second load of
+;; this file brings a new key to a running Emacs.
+(keymap-set canvas-browser-embark-text-map "s" #'canvas-browser)
+
+(defvar embark-target-finders)
+(defvar embark-keymap-alist)
+(defvar embark-general-map)
+
+(defun canvas-browser--embark-here ()
+  "Have embark find its targets in this page buffer with one finder alone.
+That is `canvas-browser-embark-target\='.  The buffer holds one character,
+which shows the picture of the page.  A finder that reads text takes
+that character as its target, and embark shows the picture in its
+prompt when it cycles to it."
+  (setq-local embark-target-finders (list #'canvas-browser-embark-target)))
+
+(defun canvas-browser--embark-setup ()
+  "Tell embark of the targets of a page buffer, also of those open already.
+`s\=' on marked text opens a page buffer that searches for it."
+  (set-keymap-parent canvas-browser-embark-text-map embark-general-map)
+  (setf (alist-get 'canvas-browser-text embark-keymap-alist)
+        '(canvas-browser-embark-text-map))
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'canvas-browser-mode)
+        (canvas-browser--embark-here)))))
+
+(with-eval-after-load 'embark
+  (canvas-browser--embark-setup))
 
 ;;;; Bookmarks
 ;;

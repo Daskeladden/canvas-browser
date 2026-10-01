@@ -3984,6 +3984,95 @@ file that names the zip, into the directory it is given."
         (should-not (car asked))
         (should (equal "no-cache" (cdr (assoc "Pragma" (cadr asked)))))))))
 
+;;;; The targets of embark
+
+(defvar embark-target-finders)
+(defvar embark-keymap-alist)
+(defvar embark-general-map)
+
+(ert-deftest canvas-browser-embark-acts-on-the-address-of-the-page ()
+  ;; GIVEN a page buffer that shows https://example.org
+  ;; WHEN embark asks for its targets
+  ;; THEN the address is the target, as a URL, so the actions that
+  ;;      embark has for any URL act on the page
+  (canvas-browser-test--in-page
+    (should (equal (canvas-browser-embark-target)
+                   '((url . "https://example.org"))))))
+
+(ert-deftest canvas-browser-embark-acts-on-the-region-of-the-caret-first ()
+  ;; GIVEN a page whose caret marks the words " words"
+  ;; WHEN embark asks for its targets
+  ;; THEN the marked text comes first AND the address of the page after
+  ;;      it, which embark reaches by cycling
+  (canvas-browser-test--in-page
+    (canvas-browser-test--answering '(:box (10 20 2 16) :text " words" :region (10 20 50 16))
+      (canvas-browser-caret-mode)
+      (canvas-browser-test--press "C-SPC")
+      (canvas-browser-test--press "M-f"))
+    (should (equal (canvas-browser-embark-target)
+                   '((canvas-browser-text . " words") (url . "https://example.org"))))))
+
+(ert-deftest canvas-browser-embark-forgets-the-region-with-the-caret ()
+  ;; GIVEN a page whose caret marked text, AND the caret left since
+  ;; WHEN embark asks for its targets
+  ;; THEN the address is the only target
+  (canvas-browser-test--in-page
+    (canvas-browser-test--answering '(:box (10 20 2 16) :text " words" :region (10 20 50 16))
+      (canvas-browser-caret-mode)
+      (canvas-browser-test--press "C-SPC")
+      (canvas-browser-test--press "M-f"))
+    (canvas-browser-test--answering '(:box nil :text "")
+      (canvas-browser-caret-leave))
+    (should (equal (canvas-browser-embark-target)
+                   '((url . "https://example.org"))))))
+
+(ert-deftest canvas-browser-embark-finds-nothing-outside-a-page ()
+  ;; GIVEN a buffer that is no page, and a page with no address yet
+  ;; WHEN embark asks for its targets in each
+  ;; THEN there are none
+  (with-temp-buffer
+    (should-not (canvas-browser-embark-target))
+    (canvas-browser-mode)
+    (should-not (canvas-browser-embark-target))))
+
+(ert-deftest canvas-browser-embark-looks-at-a-page-through-its-own-finder-alone ()
+  ;; GIVEN a page buffer
+  ;; WHEN the target finders of embark are read in it
+  ;; THEN there is one, the finder of canvas-browser: the buffer holds
+  ;;      one character that shows the picture of the page, and a finder
+  ;;      that reads text takes that character as its target, so that
+  ;;      embark shows the picture in its prompt when it cycles to it
+  (canvas-browser-test--in-page
+    (should (local-variable-p 'embark-target-finders))
+    (should (equal embark-target-finders '(canvas-browser-embark-target)))))
+
+(ert-deftest canvas-browser-embark-setup-reaches-the-pages-that-are-open ()
+  ;; GIVEN a page buffer made before embark loaded, with no finders of
+  ;;       its own
+  ;; WHEN canvas-browser sets itself up with embark
+  ;; THEN that buffer has the finder of canvas-browser alone as well
+  (canvas-browser-test--in-page
+    (kill-local-variable 'embark-target-finders)
+    (let ((embark-keymap-alist nil)
+          (embark-general-map (make-sparse-keymap)))
+      (canvas-browser--embark-setup))
+    (should (equal (buffer-local-value 'embark-target-finders (current-buffer))
+                   '(canvas-browser-embark-target)))))
+
+(ert-deftest canvas-browser-embark-is-told-of-the-targets-when-it-loads ()
+  ;; GIVEN embark with no keymaps of its own
+  ;; WHEN canvas-browser sets itself up with it
+  ;; THEN the marked text has a keymap whose parent holds the actions of
+  ;;      embark for any target, where s searches for the text in a page
+  ;;      buffer of its own
+  (let ((embark-keymap-alist nil)
+        (embark-general-map (make-sparse-keymap)))
+    (canvas-browser--embark-setup)
+    (should (equal (alist-get 'canvas-browser-text embark-keymap-alist)
+                   '(canvas-browser-embark-text-map)))
+    (should (eq (keymap-parent canvas-browser-embark-text-map) embark-general-map))
+    (should (eq (keymap-lookup canvas-browser-embark-text-map "s") #'canvas-browser))))
+
 ;;;; Bookmarks
 
 (require 'bookmark)
