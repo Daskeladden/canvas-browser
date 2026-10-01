@@ -38,8 +38,11 @@ part of it to copy a picture, and shows a page inside another buffer.
 
 ## What it needs
 
-- Emacs 32 with canvas images and the cairo module of
-  [canvas-diagram](https://github.com/Daskeladden/canvas-diagram).
+- Emacs 32 with canvas images and with modules.
+- The `canvas-cairo` module. It is a part of
+  [canvas-diagram](https://github.com/Daskeladden/canvas-diagram) and
+  no package of its own. You compile it on your machine, against cairo
+  and pango.
 - [canvas-keys](https://github.com/Daskeladden/canvas-keys), the keys
   that every canvas buffer shares.
 - The `websocket` package, and `transient` for the menu.
@@ -62,6 +65,11 @@ before it opens. Only that file is copied.
 No archive carries canvas-browser. Clone it and the two canvas packages
 it needs, and build the module of canvas-diagram. The README of
 canvas-diagram says what that build needs.
+
+The build makes `canvas-cairo.so` in the directory of canvas-diagram.
+Emacs loads the module from there. If Emacs cannot open the load file
+`canvas-cairo`, the module is not built, or that directory is not on the
+load path.
 
 ```sh
 git clone https://github.com/Daskeladden/canvas-keys.git
