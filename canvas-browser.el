@@ -416,25 +416,36 @@ rather than a page with something moving on it."
                      (< (canvas-browser--boxes-area grown)
                         (* canvas-browser-live-share window)))))
     (if (not parts)
-        (canvas-browser--forget-live)
+        (canvas-browser--drop-live)
       (setq canvas-browser--live-boxes grown)
       (unless canvas-browser--live-timer
         (setq canvas-browser--live-timer
               (run-with-timer canvas-browser-live-interval canvas-browser-live-interval
                               #'canvas-browser--paint-crisp (current-buffer)))))))
 
-(defun canvas-browser--forget-live ()
-  "Draw the whole window again from every frame, and put the still off.
-Any command may have changed the page anywhere, and a page whose parts
-are forgotten is painted as it was before there were any.  A page being
-worked on is left to its frames: the still picture waits for the quiet
-after the last key."
-  (cl-incf canvas-browser--commands)
-  (setq canvas-browser--commanded (float-time))
+(defun canvas-browser--drop-live ()
+  "Draw the whole window again from every frame.
+A page whose parts are forgotten is painted as it was before there were
+any.  While there were parts, the frames went into them alone, so the
+rest of the canvas is as old as the last still picture.  The canvas
+therefore no longer counts as the still picture of the page, and the
+freshness check asks for one if none comes."
   (when canvas-browser--live-timer
     (cancel-timer canvas-browser--live-timer)
     (setq canvas-browser--live-timer nil))
-  (setq canvas-browser--live-boxes nil))
+  (when canvas-browser--live-boxes
+    (setq canvas-browser--live-boxes nil
+          canvas-browser--crisp nil)))
+
+(defun canvas-browser--forget-live ()
+  "Draw the whole window again from every frame, and put the still off.
+Any command may have changed the page anywhere.  A page being worked on
+is left to its frames: the still picture waits for the quiet after the
+last key, and one asked for before the command is dropped.  A page that
+says nothing moves on it is no command, and takes `canvas-browser--drop-live'."
+  (cl-incf canvas-browser--commands)
+  (setq canvas-browser--commanded (float-time))
+  (canvas-browser--drop-live))
 
 (defun canvas-browser--paint-boxes (file boxes)
   "Draw FILE, a picture of the whole window, inside BOXES alone.

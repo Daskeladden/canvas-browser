@@ -1966,6 +1966,61 @@ that moment now."
         (funcall answer '(:data "MA=="))
         (should (= painted 1))))))
 
+;;;; A canvas painted in parts, once the parts are forgotten
+
+(defmacro canvas-browser-test--with-drawing (drawn clipped &rest body)
+  "Run BODY with the drawing stubbed.
+DRAWN and CLIPPED are variables.  The first counts the pictures drawn,
+the second those drawn into the moving parts alone."
+  (declare (indent 2))
+  `(cl-letf (((symbol-function 'canvas-cairo-image) (lambda (&rest _) (cl-incf ,drawn)))
+             ((symbol-function 'canvas-cairo-clip) (lambda (&rest _) (cl-incf ,clipped)))
+             ((symbol-function 'canvas-refresh) #'ignore)
+             ((symbol-function 'canvas-cairo-save) #'ignore)
+             ((symbol-function 'canvas-cairo-restore) #'ignore)
+             ((symbol-function 'canvas-cairo-rectangle) #'ignore))
+     ,@body))
+
+(defun canvas-browser-test--paint-into-a-part ()
+  "Paint a still picture, name one moving part, and paint a frame into it."
+  (canvas-browser--paint (base64-encode-string (canvas-browser-test--png 800 600)))
+  (canvas-browser--took-live '((:x 100 :y 200 :w 22 :h 22)))
+  (canvas-browser--paint (base64-encode-string (canvas-browser-test--jpeg 800 600))))
+
+(ert-deftest canvas-browser-a-page-with-nothing-moving-keeps-its-still-picture ()
+  ;; GIVEN a still picture asked for, and with it the question what
+  ;;       keeps moving on the page
+  ;; WHEN the page answers that nothing moves, before the picture arrives
+  ;; THEN the picture is painted: no command ran in the buffer, so the
+  ;;      picture shows the page as it is
+  (canvas-browser-test--in-page
+    (let ((answer nil) (painted 0))
+      (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                 (lambda (_method _params &optional then &rest _) (setq answer then)))
+                ((symbol-function 'canvas-browser--paint-soon)
+                 (lambda (&rest _) (cl-incf painted))))
+        (canvas-browser--paint-window)
+        (canvas-browser--took-live nil)
+        (funcall answer '(:data "MA=="))
+        (should (= painted 1))))))
+
+(ert-deftest canvas-browser-forgotten-parts-have-the-window-asked-for-its-picture ()
+  ;; GIVEN a page drawn into its moving part alone, whose part is then
+  ;;       forgotten, AND no frame follows
+  ;; WHEN the freshness check looks at the page twice
+  ;; THEN it asks for a picture of the window: the canvas is no longer
+  ;;      known to show the page as it is
+  (canvas-browser-test--in-page
+    (let ((drawn 0) (clipped 0))
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) 'a-window)))
+        (canvas-browser-test--with-drawing drawn clipped
+          (canvas-browser-test--paint-into-a-part)
+          (canvas-browser--took-live nil)
+          (setq canvas-browser-test--commands nil)
+          (canvas-browser--keep-fresh (current-buffer))
+          (canvas-browser--keep-fresh (current-buffer))
+          (should (canvas-browser-test--params "Page.captureScreenshot")))))))
+
 ;;;; Typing into the page
 
 (ert-deftest canvas-browser-the-focus-is-asked-about-once-the-click-is-done ()
