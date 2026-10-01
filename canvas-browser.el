@@ -900,7 +900,7 @@ it again."
   '(("Enter" 13 "\r") ("Tab" 9) ("Backspace" 8) ("Delete" 46) ("Escape" 27)
     ("ArrowLeft" 37) ("ArrowUp" 38) ("ArrowRight" 39) ("ArrowDown" 40)
     ("Home" 36) ("End" 35) ("PageUp" 33) ("PageDown" 34)
-    ("a" 65 nil "KeyA"))
+    ("a" 65 nil "KeyA") ("z" 90 nil "KeyZ"))
   "The keys chromium is sent: the name, the number Windows gives the key,
 the text it types, if any, and its code where that is not its name.
 Chromium edits a field by that number: a key sent by its name alone
@@ -921,10 +921,27 @@ reaches the page as an event that deletes and moves nothing.")
     ("M-f" "ArrowRight" control) ("M-b" "ArrowLeft" control)
     ("M-<" "Home" control) ("M->" "End" control)
     ("C-<home>" "Home" control) ("C-<end>" "End" control)
-    ("C-d" "Delete") ("M-d" "Delete" control) ("M-DEL" "Backspace" control))
+    ("C-d" "Delete") ("M-d" "Delete" control) ("M-DEL" "Backspace" control)
+    ;; The keys of a browser itself.  Emacs binds them to the same
+    ;; motions and deletions, in the buffer, where a page has no text.
+    ("C-<right>" "ArrowRight" control) ("C-<left>" "ArrowLeft" control)
+    ("M-<right>" "ArrowRight" control) ("M-<left>" "ArrowLeft" control)
+    ("C-<up>" "ArrowUp" control) ("C-<down>" "ArrowDown" control)
+    ("C-<backspace>" "Backspace" control) ("C-<delete>" "Delete" control)
+    ;; Shift with a motion marks, as it does in a browser.
+    ("S-<left>" "ArrowLeft" shift) ("S-<right>" "ArrowRight" shift)
+    ("S-<up>" "ArrowUp" shift) ("S-<down>" "ArrowDown" shift)
+    ("S-<home>" "Home" shift) ("S-<end>" "End" shift)
+    ("C-S-<left>" "ArrowLeft" control shift) ("C-S-<right>" "ArrowRight" control shift)
+    ("C-S-<home>" "Home" control shift) ("C-S-<end>" "End" control shift)
+    ;; A chat sends on Enter and breaks the line on Shift and Enter, and
+    ;; many a form is sent with Control and Enter.
+    ("S-<return>" "Enter" shift) ("C-<return>" "Enter" control) ("C-j" "Enter")
+    ("C-v" "PageDown") ("M-v" "PageUp")
+    ("M-{" "ArrowUp" control) ("M-}" "ArrowDown" control))
   "The keys of insert state that go to the page as a key rather than text.
 Each is the key in Emacs, the name of the key it is in a browser, and
-the modifier held with it: a browser moves and deletes a word with
+the modifiers held with it: a browser moves and deletes a word with
 Control where Emacs does it with Meta, and goes to the ends of a field
 with Control and Home or End.")
 
@@ -937,11 +954,14 @@ with Control and Home or End.")
 (defun canvas-browser--key (key &optional modifiers answer)
   "Send KEY, a DevTools key name, to the page, down and up.
 MODIFIERS, a list such as (shift), are held with it.  A key with a text
-goes down as a key that types; any other as a raw key.  ANSWER, when
-given, is called once chromium has handled the key's release."
+goes down as a key that types, unless Control is held with it: a page
+that sends its form on Control and Enter must not get a line break as
+well.  Any other key goes down as a raw key.  ANSWER, when given, is
+called once chromium has handled the key's release."
   (pcase-let* ((`(,_ ,number ,text ,code)
                 (or (assoc key canvas-browser--keys)
                     (error "canvas-browser: no key named %S" key)))
+               (text (and (not (memq 'control modifiers)) text))
                (event (list :key key :code (or code key)
                             :windowsVirtualKeyCode number :nativeVirtualKeyCode number
                             :modifiers (canvas-browser--modifiers modifiers))))
@@ -1024,6 +1044,16 @@ field, so an editor that a page built itself takes it as well."
   (canvas-browser--key "a" '(control))
   (setq canvas-browser--field-mark t))
 
+(defun canvas-browser-field-undo ()
+  "Undo the last change of the field, as a browser does on Control and Z."
+  (interactive)
+  (canvas-browser--key "z" '(control)))
+
+(defun canvas-browser-field-redo ()
+  "Do again what was undone in the field."
+  (interactive)
+  (canvas-browser--key "z" '(control shift)))
+
 (defun canvas-browser--field-drop-mark ()
   "Drop the mark of the field, and the region it marks."
   (setq canvas-browser--field-mark nil)
@@ -1088,7 +1118,7 @@ while a hint was chosen count among those, and would be typed with it."
     ;; With the mark set a motion marks, as it does in a buffer, and any
     ;; other key, a deletion say, is done with the region.
     (if (and canvas-browser--field-mark (member key canvas-browser--motion-keys))
-        (setq modifiers (cons 'shift modifiers))
+        (setq modifiers (cl-adjoin 'shift modifiers))
       (setq canvas-browser--field-mark nil))
     (canvas-browser--key key modifiers)))
 
@@ -3072,6 +3102,12 @@ here, on every load."
     (define-key map (kbd (car key)) #'canvas-browser-send-key))
   (define-key map (kbd "C-k") #'canvas-browser-kill-line)
   (define-key map (kbd "C-y") #'canvas-browser-yank)
+  (define-key map (kbd "S-<insert>") #'canvas-browser-yank)
+  (define-key map [mouse-2] #'canvas-browser-yank)
+  (dolist (key '("C-/" "C-_" "C-x u"))
+    (define-key map (kbd key) #'canvas-browser-field-undo))
+  (dolist (key '("C-?" "C-M-_"))
+    (define-key map (kbd key) #'canvas-browser-field-redo))
   (define-key map (kbd "TAB") #'canvas-browser-next-field)
   (define-key map (kbd "<backtab>") #'canvas-browser-previous-field)
   (define-key map (kbd "<escape>") #'canvas-browser-normal-mode)

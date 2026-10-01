@@ -284,12 +284,18 @@ and the insert mode of Surfingkeys have them do:
 |---|---|
 | `C-a`, `C-e` | the start and the end of the line |
 | `C-f`, `C-b`, `C-n`, `C-p` | a character right and left, a line down and up |
-| `M-f`, `M-b` | a word right and left |
+| `M-f`, `M-b`, `C-<right>`, `C-<left>` | a word right and left |
+| `C-<up>`, `C-<down>`, `M-{`, `M-}` | a paragraph up and down |
+| `C-v`, `M-v` | a page down and up |
+| Shift with an arrow, `<home>` or `<end>` | mark while you move, as in a browser |
 | `M-<`, `M->` | the start and the end of the field |
 | `DEL`, `C-d` | delete the character before and after the cursor |
-| `M-DEL`, `M-d` | delete the word before and after the cursor |
+| `M-DEL`, `M-d`, `C-<backspace>`, `C-<delete>` | delete the word before and after the cursor |
 | `C-k` | kill to the end of the line, and at its end the line break |
-| `C-y` | type the newest kill of Emacs |
+| `C-y`, `S-<insert>`, the middle button | type the newest kill of Emacs |
+| `C-/`, `C-x u`, `C-?` | undo, and do again |
+| `S-<return>` | a line break where Enter alone sends, as in a chat |
+| `C-<return>` | Control and Enter, which send many a form |
 | `TAB`, `S-TAB` | the next and the previous field |
 | `C-SPC` | set the mark: the motions after it mark a region of the field |
 | `C-x h` | mark all of the field |

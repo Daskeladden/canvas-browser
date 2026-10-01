@@ -846,3 +846,75 @@ The kill ring is empty, and chromium has a profile of its own."
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (canvas-browser-cdp-stop)
       (delete-directory canvas-browser-profile-directory t))))
+
+;;;; The keys of a browser, sent from the keys of Emacs
+
+(defmacro canvas-browser-live-test--in-plain-field (text &rest body)
+  "Run BODY in a page buffer of the typing fixture, with TEXT typed into
+its plain field.  The kill ring is empty, and chromium has a profile of
+its own."
+  (declare (indent 1))
+  `(let ((buffer nil) (kill-ring nil)
+         (canvas-browser-profile-directory
+          (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+            (make-temp-file "canvas-browser-live-" t))))
+     (unwind-protect
+         (progn
+           (setq buffer (canvas-browser
+                         (concat "file://" (expand-file-name "tests/fixtures/typing.html"))))
+           (with-current-buffer buffer
+             (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+             (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+             (should (canvas-browser-live-test--click-and-see "plain"))
+             (mapc #'canvas-browser--type-character ,text)
+             (canvas-browser-live-test--settle)
+             ,@body))
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (canvas-browser-cdp-stop)
+       (delete-directory canvas-browser-profile-directory t))))
+
+(ert-deftest canvas-browser-live-the-undo-key-takes-back-what-was-typed ()
+  ;; GIVEN the plain field of the typing fixture, with "abc" typed into it
+  ;; WHEN C-/ is pressed
+  ;; THEN the field no longer holds "abc": chromium took typing back
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-plain-field "abc"
+    (should (equal (canvas-browser-live-test--value "plain") "abc"))
+    (canvas-browser-live-test--press "C-/")
+    (should (canvas-browser-live-test--wait
+             5 (lambda () (not (equal (canvas-browser-live-test--value "plain") "abc")))))))
+
+(ert-deftest canvas-browser-live-shift-and-a-motion-mark-in-a-field ()
+  ;; GIVEN the plain field of the typing fixture, holding "hello", with
+  ;;       the cursor at its start
+  ;; WHEN S-<right> is pressed twice, and then M-w
+  ;; THEN the newest kill is "he"
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-plain-field "hello"
+    (dolist (keys '("C-a" "S-<right>" "S-<right>"))
+      (canvas-browser-live-test--press keys)
+      (canvas-browser-live-test--settle))
+    (canvas-browser-live-test--press "M-w")
+    (should (canvas-browser-live-test--wait 5 (lambda () (equal (car kill-ring) "he"))))))
+
+(ert-deftest canvas-browser-live-shift-and-return-break-the-line-in-its-paragraph ()
+  ;; GIVEN the editor fixture, with the cursor at the end of its first
+  ;;       paragraph
+  ;; WHEN S-<return> is pressed
+  ;; THEN the first paragraph has a line break in it, AND the editor has
+  ;;      two paragraphs still: Shift and Enter break the line and start
+  ;;      no new paragraph, as in a chat where Enter alone sends
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-editor
+    (canvas-browser-live-test--press "C-e")
+    (canvas-browser-live-test--settle)
+    (canvas-browser-live-test--press "S-<return>")
+    (let ((answer nil))
+      (should (canvas-browser-live-test--wait
+               5 (lambda ()
+                   (canvas-browser--evaluate
+                    "[document.querySelectorAll('#editor p').length,
+                      !!document.querySelector('#one br')]"
+                    (lambda (value) (setq answer value)))
+                   (canvas-browser-live-test--settle)
+                   (equal answer '(2 t))))))))

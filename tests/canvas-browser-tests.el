@@ -2108,7 +2108,24 @@ the second those drawn into the moving parts alone."
                     ("C-n" "ArrowDown" 0) ("C-p" "ArrowUp" 0)
                     ("M-f" "ArrowRight" 2) ("M-b" "ArrowLeft" 2)
                     ("C-d" "Delete" 0) ("M-d" "Delete" 2)
-                    ("M-DEL" "Backspace" 2)))
+                    ("M-DEL" "Backspace" 2)
+                    ;; The keys of a browser itself, which Emacs binds to
+                    ;; the same motions and deletions.
+                    ("C-<right>" "ArrowRight" 2) ("C-<left>" "ArrowLeft" 2)
+                    ("M-<right>" "ArrowRight" 2) ("M-<left>" "ArrowLeft" 2)
+                    ("C-<up>" "ArrowUp" 2) ("C-<down>" "ArrowDown" 2)
+                    ("C-<backspace>" "Backspace" 2) ("C-<delete>" "Delete" 2)
+                    ;; Shift with a motion marks, as it does in a browser.
+                    ("S-<right>" "ArrowRight" 8) ("S-<left>" "ArrowLeft" 8)
+                    ("S-<up>" "ArrowUp" 8) ("S-<down>" "ArrowDown" 8)
+                    ("S-<home>" "Home" 8) ("S-<end>" "End" 8)
+                    ("C-S-<right>" "ArrowRight" 10) ("C-S-<left>" "ArrowLeft" 10)
+                    ("C-S-<home>" "Home" 10) ("C-S-<end>" "End" 10)
+                    ;; A line break that does not send, and the key that sends.
+                    ("S-<return>" "Enter" 8) ("C-<return>" "Enter" 2)
+                    ("C-j" "Enter" 0)
+                    ("C-v" "PageDown" 0) ("M-v" "PageUp" 0)
+                    ("M-{" "ArrowUp" 2) ("M-}" "ArrowDown" 2)))
       (setq canvas-browser-test--commands nil)
       (canvas-browser-test--press (car case))
       (let ((down (car (canvas-browser-test--keys-sent))))
@@ -3360,6 +3377,63 @@ The window manager says so on the root window, where Emacs reads it."
     (should (eq (keymap-lookup map "C-x h") 'canvas-browser-field-mark-whole))
     (should (eq (keymap-lookup map "M->") 'canvas-browser-send-key))
     (should (eq (keymap-lookup map "C-g") 'canvas-browser-insert-quit))))
+
+(ert-deftest canvas-browser-a-shifted-motion-with-the-mark-holds-shift-once ()
+  ;; GIVEN a field with the mark set
+  ;; WHEN a motion is pressed with Shift held
+  ;; THEN it goes to the page with Shift, counted once: the mark asks
+  ;;      for Shift, and the key has it already
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--press "C-SPC")
+    (dolist (case '(("S-<right>" 8) ("C-S-<right>" 10)))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--press (car case))
+      (should (equal (plist-get (car (canvas-browser-test--keys-sent)) :modifiers)
+                     (cadr case))))))
+
+(ert-deftest canvas-browser-a-key-held-with-control-types-no-text ()
+  ;; GIVEN a page buffer in insert state
+  ;; WHEN C-<return> is pressed
+  ;; THEN Enter goes down with Control as a key that types nothing: a
+  ;;      page that sends its form on that key gets the key, and no line
+  ;;      break is typed into the field
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--press "C-<return>")
+    (let ((down (car (canvas-browser-test--keys-sent))))
+      (should (equal (plist-get down :type) "rawKeyDown"))
+      (should-not (plist-member down :text)))))
+
+(ert-deftest canvas-browser-the-undo-keys-undo-in-the-field ()
+  ;; GIVEN a page buffer in insert state
+  ;; WHEN a key that undoes in Emacs is pressed, or one that redoes
+  ;; THEN the key z goes to the page with Control, and with Shift as well
+  ;;      for a redo, which undo and redo in a browser
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (dolist (case '(("C-/" 2) ("C-_" 2) ("C-x u" 2) ("C-?" 10) ("C-M-_" 10)))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--press (car case))
+      (let ((down (car (canvas-browser-test--keys-sent))))
+        (should (equal (list (car case) (plist-get down :key) (plist-get down :code)
+                             (plist-get down :windowsVirtualKeyCode)
+                             (plist-get down :modifiers))
+                       (list (car case) "z" "KeyZ" 90 (cadr case))))))))
+
+(ert-deftest canvas-browser-the-paste-keys-type-the-newest-kill ()
+  ;; GIVEN a page buffer in insert state, and "pasted" as the newest kill
+  ;; WHEN S-<insert> is pressed, or the middle button of the mouse
+  ;; THEN the kill is typed into the field, as C-y types it
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (let ((kill-ring (list "pasted")) (kill-ring-yank-pointer nil))
+      (should (eq (key-binding [mouse-2]) 'canvas-browser-yank))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--press "S-<insert>")
+      (should (equal (plist-get (canvas-browser-test--params "Input.insertText") :text)
+                     "pasted")))))
 
 ;;;; A drag of the mouse
 
