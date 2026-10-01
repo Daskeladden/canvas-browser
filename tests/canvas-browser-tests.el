@@ -144,6 +144,20 @@ that moment now."
     (should (eq (key-binding (kbd "o")) #'canvas-browser-open-url))
     (should (eq (key-binding (kbd "i")) #'canvas-browser-insert-mode))))
 
+(ert-deftest canvas-browser-the-keys-of-normal-state-are-bound-on-every-load ()
+  ;; GIVEN a keymap of normal state that lacks a key, as a running Emacs
+  ;;       has it when the key came to the file after the package loaded
+  ;; WHEN the file is loaded again
+  ;; THEN the map has the key
+  (let ((command (keymap-lookup canvas-browser-mode-map "o")))
+    (keymap-unset canvas-browser-mode-map "o" t)
+    (unwind-protect
+        (progn
+          (load (locate-library "canvas-browser.el") nil t)
+          (should (eq (keymap-lookup canvas-browser-mode-map "o")
+                      #'canvas-browser-open-url)))
+      (keymap-set canvas-browser-mode-map "o" command))))
+
 (ert-deftest canvas-browser-insert-state-sends-every-key-to-the-page ()
   ;; GIVEN a page buffer that entered insert state
   ;; WHEN a letter and a return are typed, and then ESC

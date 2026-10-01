@@ -2517,12 +2517,17 @@ and the settings.  The widths line the columns of the two rows up."
     :description (lambda ()
                    (canvas-keys-describe "scroll" (if canvas-browser--scroller "part" "page"))))])
 
-(defvar-keymap canvas-browser-mode-map
-  :doc "Keymap of a page buffer in normal state.
+(defvar canvas-browser-mode-map
+  (define-keymap :parent (make-composed-keymap canvas-keys-mode-map special-mode-map))
+  "Keymap of a page buffer in normal state.
 The common canvas keys come from canvas-keys: `SPC\=' opens the menu,
 `q\=' quits, `W\=' writes the picture, `C\=' customizes, and the zoom
-keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again."
-  :parent (make-composed-keymap canvas-keys-mode-map special-mode-map)
+keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
+
+;; The keys are bound here and not where the map is made.  A variable
+;; keeps its value when its file is loaded again, so keys bound there
+;; would never reach a running Emacs.
+(define-keymap :keymap canvas-browser-mode-map
   "M-p" #'canvas-browser-back
   "M-n" #'canvas-browser-forward
   "o" #'canvas-browser-open-url
