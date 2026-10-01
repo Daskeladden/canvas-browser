@@ -784,3 +784,59 @@ The kill ring is empty, and chromium has a profile of its own."
     (canvas-browser-live-test--settle)
     (canvas-browser-live-test--press "M-w")
     (should (canvas-browser-live-test--wait 5 #'canvas-browser-live-test--copied-both-p))))
+
+(defun canvas-browser-live-test--editor-lines ()
+  "The text of each paragraph of the editor fixture, as a list."
+  (let ((answer 'waiting))
+    (canvas-browser--evaluate
+     "Array.from(document.querySelectorAll('#editor p')).map(p => p.textContent)"
+     (lambda (value) (setq answer value)))
+    (canvas-browser-live-test--wait 10 (lambda () (not (eq answer 'waiting))))
+    answer))
+
+(ert-deftest canvas-browser-live-c-k-deletes-to-the-end-of-a-line ()
+  ;; GIVEN the editor fixture, with the cursor at the start of its first
+  ;;       paragraph
+  ;; WHEN C-k is pressed, and then C-k again
+  ;; THEN the first deletes the text of the paragraph and leaves the
+  ;;      empty line, AND the second deletes the line break, so that the
+  ;;      second paragraph is the first line, as with C-k in a buffer
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-editor
+    (canvas-browser-live-test--press "C-a")
+    (canvas-browser-live-test--settle)
+    (canvas-browser-live-test--press "C-k")
+    (should (canvas-browser-live-test--wait
+             5 (lambda () (equal (canvas-browser-live-test--editor-lines) '("" "second paragraph")))))
+    (canvas-browser-live-test--press "C-k")
+    (should (canvas-browser-live-test--wait
+             5 (lambda () (equal (canvas-browser-live-test--editor-lines) '("second paragraph")))))))
+
+(ert-deftest canvas-browser-live-c-k-deletes-the-rest-of-a-plain-field ()
+  ;; GIVEN the plain field of the typing fixture, holding "hello world",
+  ;;       with the cursor after "hello"
+  ;; WHEN C-k is pressed
+  ;; THEN the field holds "hello"
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((buffer nil)
+        (canvas-browser-profile-directory
+         (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+           (make-temp-file "canvas-browser-live-" t))))
+    (unwind-protect
+        (progn
+          (setq buffer (canvas-browser
+                        (concat "file://" (expand-file-name "tests/fixtures/typing.html"))))
+          (with-current-buffer buffer
+            (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+            (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+            (should (canvas-browser-live-test--click-and-see "plain"))
+            (mapc #'canvas-browser--type-character "hello world")
+            (canvas-browser-live-test--press "C-a")
+            (dotimes (_ 5) (canvas-browser-live-test--press "C-f"))
+            (canvas-browser-live-test--settle)
+            (canvas-browser-live-test--press "C-k")
+            (should (canvas-browser-live-test--wait
+                     5 (lambda () (equal (canvas-browser-live-test--value "plain") "hello"))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (canvas-browser-cdp-stop)
+      (delete-directory canvas-browser-profile-directory t))))

@@ -2115,19 +2115,36 @@ the second those drawn into the moving parts alone."
         (should (equal (list (car case) (plist-get down :key) (plist-get down :modifiers))
                        case))))))
 
-(ert-deftest canvas-browser-kill-line-deletes-to-the-end-of-the-field ()
+(defun canvas-browser-test--keys-down ()
+  "The keys that went down, oldest first, as (KEY MODIFIERS)."
+  (mapcar (lambda (event) (list (plist-get event :key) (plist-get event :modifiers)))
+          (cl-remove "keyUp" (canvas-browser-test--keys-sent)
+                     :key (lambda (event) (plist-get event :type)) :test #'equal)))
+
+(ert-deftest canvas-browser-kill-line-deletes-once-the-page-told-of-the-mark ()
   ;; GIVEN a page buffer in insert state
   ;; WHEN C-k is pressed
-  ;; THEN the rest of the line is chosen with Shift and End, and deleted
+  ;; THEN the page is asked to tell of the next change of its selection,
+  ;;      AND Shift and End go to it, which mark the rest of the line, AND
+  ;;      Delete does not go yet: an editor that keeps a selection of its
+  ;;      own has not learned of the mark, and would delete something else
+  ;; WHEN the page tells of the change
+  ;; THEN Delete goes
   (canvas-browser-test--in-page
     (canvas-browser-insert-mode)
-    (setq canvas-browser-test--commands nil)
-    (canvas-browser-test--press "C-k")
-    (let ((downs (cl-remove "keyUp" (canvas-browser-test--keys-sent)
-                            :key (lambda (e) (plist-get e :type)) :test #'equal)))
-      (should (equal (mapcar (lambda (e) (list (plist-get e :key) (plist-get e :modifiers)))
-                             downs)
-                     '(("End" 8) ("Delete" 0)))))))
+    (let ((told nil))
+      (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                 (lambda (method params &optional answer _session)
+                   (push (cons method params) canvas-browser-test--commands)
+                   (when (plist-get params :awaitPromise) (setq told answer)))))
+        (setq canvas-browser-test--commands nil)
+        (canvas-browser-test--press "C-k")
+        (should (string-search "selectionchange"
+                               (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                          :expression)))
+        (should (equal (canvas-browser-test--keys-down) '(("End" 8))))
+        (funcall told '(:result (:value "changed")))
+        (should (equal (canvas-browser-test--keys-down) '(("End" 8) ("Delete" 0))))))))
 
 (ert-deftest canvas-browser-yank-types-the-newest-kill ()
   ;; GIVEN a page buffer in insert state, and a kill in Emacs

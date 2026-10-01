@@ -1092,11 +1092,48 @@ while a hint was chosen count among those, and would be typed with it."
       (setq canvas-browser--field-mark nil))
     (canvas-browser--key key modifiers)))
 
+(defconst canvas-browser--selection-change-js
+  "new Promise(resolve => {
+     let done = false;
+     const finish = how => {
+       if (done) return;
+       done = true;
+       document.removeEventListener('selectionchange', onChange, true);
+       resolve(how);
+     };
+     const onChange = () => finish('changed');
+     document.addEventListener('selectionchange', onChange, true);
+     setTimeout(() => finish('unchanged'), 100);
+   })"
+  "The JavaScript of a promise that the next change of the selection keeps.
+The page tells its listeners of a change in the order they were added,
+so an editor that listens is told before this promise is kept.  When
+nothing changes within a tenth of a second, the promise is kept as well.")
+
+(defun canvas-browser--after-selection-change (then)
+  "Call THEN in this buffer once the page has told of a selection change.
+Call this before the key that changes the selection is sent.  An editor
+that keeps a selection of its own, as the one of Reddit does, learns of
+a new selection a moment after the key that made it.  A second key sent
+right after the first reaches it before that, and acts on the old
+selection."
+  (let ((buffer (current-buffer)))
+    (canvas-browser-cdp-send
+     "Runtime.evaluate"
+     (list :expression canvas-browser--selection-change-js :awaitPromise t :returnByValue t)
+     (lambda (_result)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer (funcall then))))
+     canvas-browser--session)))
+
 (defun canvas-browser-kill-line ()
-  "Delete from the cursor to the end of the line of the field."
+  "Delete from the cursor to the end of the line of the field.
+At the end of a line, the line break goes, as with `C-k\=' in a buffer.
+Shift and End mark the rest of the line, and Delete follows once the
+page has told of the mark."
   (interactive)
-  (canvas-browser--key "End" '(shift))
-  (canvas-browser--key "Delete"))
+  (canvas-browser--after-selection-change (lambda () (canvas-browser--key "Delete")))
+  (canvas-browser--key "End" '(shift)))
 
 (defun canvas-browser-yank ()
   "Type the newest kill of Emacs into the field."
