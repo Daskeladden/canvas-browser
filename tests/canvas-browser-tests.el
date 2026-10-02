@@ -3984,6 +3984,226 @@ file that names the zip, into the directory it is given."
         (should-not (car asked))
         (should (equal "no-cache" (cdr (assoc "Pragma" (cadr asked)))))))))
 
+;;;; A file for a page, picked in dired
+
+(require 'dired)
+
+(defmacro canvas-browser-test--attaching (directory &rest body)
+  "Run BODY in a page buffer, with DIRECTORY bound to a new directory.
+The directory holds the files one.txt and two.txt and the directory
+deeper, and it is where the page last took a file from.  The chromium
+is no snap, so a file goes to the page as it is.  Whatever BODY leaves
+of a pending choice of files is cleared away."
+  (declare (indent 1))
+  `(let* ((,directory (file-name-as-directory (make-temp-file "canvas-browser-attach-" t)))
+          (canvas-browser--attach-directory ,directory))
+     (dolist (name '("one.txt" "two.txt"))
+       (write-region name nil (expand-file-name name ,directory) nil 'silent))
+     (make-directory (expand-file-name "deeper" ,directory))
+     (unwind-protect
+         (cl-letf (((symbol-function 'canvas-browser-cdp-snap-p) #'ignore))
+           (canvas-browser-test--in-page ,@body))
+       (canvas-browser--attach-finish)
+       (dolist (buffer (buffer-list))
+         (when (string-prefix-p ,directory (buffer-local-value 'default-directory buffer))
+           (kill-buffer buffer)))
+       (delete-directory ,directory t))))
+
+(defun canvas-browser-test--ask-for-files (multiple)
+  "Have the page of this buffer ask for a file, or several with MULTIPLE.
+Return the dired buffer in which they are picked."
+  (canvas-browser-test--event
+   "Page.fileChooserOpened"
+   (list :frameId "F1" :mode (if multiple "selectMultiple" "selectSingle") :backendNodeId 7))
+  (seq-find (lambda (buffer) (buffer-local-value 'canvas-browser-attach-mode buffer))
+            (buffer-list)))
+
+(defun canvas-browser-test--mark (&rest names)
+  "Mark the files of NAMES in this dired buffer, and leave point on the last."
+  (dolist (name names)
+    (dired-goto-file (expand-file-name name default-directory))
+    (dired-mark 1)
+    (dired-goto-file (expand-file-name name default-directory))))
+
+(ert-deftest canvas-browser-a-page-hands-its-file-chooser-to-emacs ()
+  ;; GIVEN a page buffer
+  ;; WHEN it opens its page
+  ;; THEN chromium is told to hand the file chooser of the page over:
+  ;;      its own dialog opens on a display that nobody sees
+  (canvas-browser-test--in-page
+    (should (eq (plist-get (canvas-browser-test--params "Page.setInterceptFileChooserDialog")
+                           :enabled)
+                t))))
+
+(ert-deftest canvas-browser-a-page-that-asks-for-a-file-opens-dired ()
+  ;; GIVEN a page buffer, and the directory that a file was last taken from
+  ;; WHEN the page asks for a file
+  ;; THEN a dired buffer of that directory is the buffer of the selected
+  ;;      window, with the keys that send and cancel
+  (canvas-browser-test--attaching directory
+    (let ((dired (canvas-browser-test--ask-for-files nil)))
+      (should dired)
+      (should (eq dired (window-buffer (selected-window))))
+      (with-current-buffer dired
+        (should (derived-mode-p 'dired-mode))
+        (should (equal default-directory directory))
+        (should (eq (key-binding (kbd "C-c C-c")) #'canvas-browser-attach-send))
+        (should (eq (key-binding (kbd "C-c C-k")) #'canvas-browser-attach-cancel))))))
+
+(ert-deftest canvas-browser-the-file-at-point-goes-to-the-page ()
+  ;; GIVEN a page that asked for one file, and dired with point on a file
+  ;;       and nothing marked
+  ;; WHEN C-c C-c is pressed
+  ;; THEN the file is given to the field that asked, AND the keys of the
+  ;;      choice are gone from the dired buffer
+  (canvas-browser-test--attaching directory
+    (let ((dired (canvas-browser-test--ask-for-files nil)))
+      (with-current-buffer dired
+        (dired-goto-file (expand-file-name "one.txt" directory))
+        (setq canvas-browser-test--commands nil)
+        (canvas-browser-attach-send))
+      (let ((sent (canvas-browser-test--params "DOM.setFileInputFiles")))
+        (should (equal (plist-get sent :files) (vector (expand-file-name "one.txt" directory))))
+        (should (equal (plist-get sent :backendNodeId) 7)))
+      (should-not (buffer-local-value 'canvas-browser-attach-mode dired)))))
+
+(ert-deftest canvas-browser-the-marked-files-go-to-a-field-that-takes-several ()
+  ;; GIVEN a page that asked for several files, and two files marked
+  ;; WHEN C-c C-c is pressed
+  ;; THEN both are given to the field
+  (canvas-browser-test--attaching directory
+    (with-current-buffer (canvas-browser-test--ask-for-files t)
+      (canvas-browser-test--mark "one.txt" "two.txt")
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-attach-send))
+    (should (equal (plist-get (canvas-browser-test--params "DOM.setFileInputFiles") :files)
+                   (vector (expand-file-name "one.txt" directory)
+                           (expand-file-name "two.txt" directory))))))
+
+(ert-deftest canvas-browser-a-field-for-one-file-refuses-several ()
+  ;; GIVEN a page that asked for one file, and two files marked
+  ;; WHEN C-c C-c is pressed
+  ;; THEN it is refused, nothing goes to the page, AND the page still
+  ;;      waits, so that the marks can be put right
+  (canvas-browser-test--attaching directory
+    (let ((dired (canvas-browser-test--ask-for-files nil)))
+      (with-current-buffer dired
+        (canvas-browser-test--mark "one.txt" "two.txt")
+        (setq canvas-browser-test--commands nil)
+        (should-error (canvas-browser-attach-send) :type 'user-error))
+      (should-not (canvas-browser-test--params "DOM.setFileInputFiles"))
+      (should (buffer-local-value 'canvas-browser-attach-mode dired)))))
+
+(ert-deftest canvas-browser-a-directory-is-no-file-to-attach ()
+  ;; GIVEN a page that asked for a file, and dired with point on a directory
+  ;; WHEN C-c C-c is pressed
+  ;; THEN it is refused AND nothing goes to the page
+  (canvas-browser-test--attaching directory
+    (with-current-buffer (canvas-browser-test--ask-for-files nil)
+      (dired-goto-file (expand-file-name "deeper" directory))
+      (setq canvas-browser-test--commands nil)
+      (should-error (canvas-browser-attach-send) :type 'user-error))
+    (should-not (canvas-browser-test--params "DOM.setFileInputFiles"))))
+
+(ert-deftest canvas-browser-the-choice-follows-into-another-directory ()
+  ;; GIVEN a page that asked for a file
+  ;; WHEN dired opens another directory while the page waits
+  ;; THEN the keys that send and cancel are there as well, AND the
+  ;;      directory a file is sent from is where the next choice starts
+  (canvas-browser-test--attaching directory
+    (canvas-browser-test--ask-for-files nil)
+    (let ((deeper (expand-file-name "deeper/" directory)))
+      (write-region "three" nil (expand-file-name "three.txt" deeper) nil 'silent)
+      (with-current-buffer (dired-noselect deeper)
+        (should canvas-browser-attach-mode)
+        (dired-goto-file (expand-file-name "three.txt" deeper))
+        (canvas-browser-attach-send))
+      (should (equal canvas-browser--attach-directory deeper)))))
+
+(ert-deftest canvas-browser-return-on-a-file-picks-it-for-the-page ()
+  ;; GIVEN a page that asked for a file, and dired with point on a file
+  ;; WHEN RET is pressed
+  ;; THEN the file goes to the page: in a choice of files, RET picks,
+  ;;      where it would else open the file in a buffer
+  (canvas-browser-test--attaching directory
+    (with-current-buffer (canvas-browser-test--ask-for-files nil)
+      (dired-goto-file (expand-file-name "one.txt" directory))
+      (setq canvas-browser-test--commands nil)
+      (should (eq (key-binding (kbd "RET")) #'canvas-browser-attach-open))
+      (canvas-browser-attach-open))
+    (should (equal (plist-get (canvas-browser-test--params "DOM.setFileInputFiles") :files)
+                   (vector (expand-file-name "one.txt" directory))))))
+
+(ert-deftest canvas-browser-return-on-a-directory-goes-into-it ()
+  ;; GIVEN a page that asked for a file, and dired with point on a directory
+  ;; WHEN RET is pressed
+  ;; THEN dired shows that directory, nothing goes to the page, AND the
+  ;;      page still waits
+  (canvas-browser-test--attaching directory
+    (with-current-buffer (canvas-browser-test--ask-for-files nil)
+      (dired-goto-file (expand-file-name "deeper" directory))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-attach-open)
+      (should (equal default-directory (expand-file-name "deeper/" directory)))
+      (should canvas-browser-attach-mode))
+    (should-not (canvas-browser-test--params "DOM.setFileInputFiles"))
+    (should canvas-browser--chooser)))
+
+(ert-deftest canvas-browser-a-page-that-is-killed-waits-for-no-file ()
+  ;; GIVEN a page that asked for a file
+  ;; WHEN its buffer lets go of its page, as it does when it is killed
+  ;; THEN no page waits any more, AND the keys of the choice are gone
+  ;;      from the dired buffer
+  (canvas-browser-test--attaching directory
+    (let ((dired (canvas-browser-test--ask-for-files nil)))
+      ;; A temporary buffer runs no hook when it is killed, so the
+      ;; function of the hook is called.
+      (canvas-browser--release)
+      (should-not canvas-browser--chooser)
+      (should-not (buffer-local-value 'canvas-browser-attach-mode dired)))))
+
+(ert-deftest canvas-browser-cancelling-tells-the-field-that-nothing-was-chosen ()
+  ;; GIVEN a page that asked for a file
+  ;; WHEN C-c C-k is pressed in dired
+  ;; THEN the field that asked gets a cancel event, as it does when a
+  ;;      file dialog is closed, AND the keys of the choice are gone
+  (canvas-browser-test--attaching directory
+    (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+               (lambda (method params &optional answer _session)
+                 (push (cons method params) canvas-browser-test--commands)
+                 (when answer
+                   (funcall answer (when (equal method "DOM.resolveNode")
+                                     '(:object (:objectId "O1"))))))))
+      (let ((dired (canvas-browser-test--ask-for-files nil)))
+        (with-current-buffer dired (canvas-browser-attach-cancel))
+        (should (equal (plist-get (canvas-browser-test--params "DOM.resolveNode") :backendNodeId)
+                       7))
+        (let ((call (canvas-browser-test--params "Runtime.callFunctionOn")))
+          (should (equal (plist-get call :objectId) "O1"))
+          (should (string-search "'cancel'" (plist-get call :functionDeclaration))))
+        (should-not (buffer-local-value 'canvas-browser-attach-mode dired))))))
+
+(ert-deftest canvas-browser-a-file-a-snap-cannot-read-is-copied-for-it ()
+  ;; GIVEN a snap chromium, and a file in a place that a snap cannot read
+  ;; WHEN the file is sent to the page
+  ;; THEN the page gets a copy of it in the directory of the snap
+  (canvas-browser-test--attaching directory
+    (let ((snap-home (file-name-as-directory (make-temp-file "canvas-browser-snap-" t))))
+      (unwind-protect
+          (cl-letf (((symbol-function 'canvas-browser-cdp-snap-p) (lambda () t))
+                    ((symbol-function 'canvas-browser--snap-can-read-p) (lambda (_file) nil))
+                    ((symbol-function 'canvas-browser-cdp-snap-home) (lambda () snap-home)))
+            (with-current-buffer (canvas-browser-test--ask-for-files nil)
+              (dired-goto-file (expand-file-name "one.txt" directory))
+              (setq canvas-browser-test--commands nil)
+              (canvas-browser-attach-send))
+            (let ((sent (aref (plist-get (canvas-browser-test--params "DOM.setFileInputFiles")
+                                         :files)
+                              0)))
+              (should (string-prefix-p snap-home sent))
+              (should (file-exists-p sent))))
+        (delete-directory snap-home t)))))
+
 ;;;; The targets of embark
 
 (defvar embark-target-finders)

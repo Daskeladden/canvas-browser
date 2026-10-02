@@ -696,7 +696,10 @@ second one with an error that it is active already."
      canvas-browser--session "Page.frameNavigated"
      (lambda (params)
        (when (buffer-live-p buffer)
-         (with-current-buffer buffer (canvas-browser--frame-navigated params)))))))
+         (with-current-buffer buffer (canvas-browser--frame-navigated params)))))
+    (canvas-browser-cdp-listen
+     canvas-browser--session "Page.fileChooserOpened"
+     (canvas-browser--here #'canvas-browser--file-chooser-opened))))
 
 (defun canvas-browser--frame-navigated (params)
   "Take PARAMS of the event that says a frame of this page navigated.
@@ -751,6 +754,9 @@ does: it was opened at its address."
            (setq canvas-browser--session session)
            (canvas-browser--listen)
            (canvas-browser--tell "Page.enable" nil)
+           ;; Chromium's own file dialog opens on a display that
+           ;; nobody sees, so the page hands the choice to Emacs.
+           (canvas-browser--tell "Page.setInterceptFileChooserDialog" (list :enabled t))
            ;; A page embedded in another buffer leaves the keys to the
            ;; page you browse.
            (canvas-browser--awaken (not canvas-browser--host))
@@ -862,8 +868,13 @@ it again."
            (canvas-browser--attach url))))))
   url)
 
+(defvar canvas-browser--chooser)
+
 (defun canvas-browser--release ()
-  "Close this buffer's target and forget its session."
+  "Close this buffer's target and forget its session.
+A choice of files that this page waited for is forgotten with it."
+  (when (eq (plist-get canvas-browser--chooser :buffer) (current-buffer))
+    (canvas-browser--attach-finish))
   (setq canvas-browser--screencast nil)
   (when canvas-browser--session
     (canvas-browser-cdp-forget canvas-browser--session))
@@ -3321,6 +3332,156 @@ page buffer, or what the fallback returns."
   (if (canvas-browser-can-show-p)
       (canvas-browser url)
     (apply canvas-browser-fallback-browser url args)))
+
+;;;; A file for a page, picked in dired
+
+(declare-function dired-get-marked-files "dired"
+                  (&optional localp arg filter distinguish-one-marked error))
+(declare-function dired-other-window "dired" (dirname &optional switches))
+(declare-function dired-get-file-for-visit "dired" ())
+(declare-function dired-find-file "dired" ())
+
+(defvar canvas-browser--attach-directory nil
+  "The directory that a file was last given to a page from, or nil.")
+
+(defvar canvas-browser--chooser nil
+  "The choice of files that a page waits for, or nil.
+A plist: :buffer is the page buffer, :node the field of the page that
+asked, and :multiple whether the field takes several files.")
+
+(defvar canvas-browser-attach-mode-map (make-sparse-keymap)
+  "Keymap of a dired buffer while a page waits for files.")
+
+;; Bound here and not where the map is made, so that a second load of
+;; this file brings a new key to a running Emacs.
+(keymap-set canvas-browser-attach-mode-map "C-c C-c" #'canvas-browser-attach-send)
+(keymap-set canvas-browser-attach-mode-map "C-c C-k" #'canvas-browser-attach-cancel)
+(keymap-set canvas-browser-attach-mode-map "<remap> <dired-find-file>"
+            #'canvas-browser-attach-open)
+
+(defun canvas-browser--attach-header ()
+  "The line over a dired buffer that says what a page waits for."
+  (format "%s wants %s: C-c C-c sends what is marked, or the file at point; C-c C-k cancels"
+          (buffer-name (plist-get canvas-browser--chooser :buffer))
+          (if (plist-get canvas-browser--chooser :multiple) "files" "a file")))
+
+(define-minor-mode canvas-browser-attach-mode
+  "Pick in this dired buffer the files that a page asked for.
+Mark them and press `C-c C-c\=', or press it on one file.  `C-c C-k\='
+tells the page that nothing was chosen."
+  :lighter " Attach"
+  :keymap canvas-browser-attach-mode-map
+  (if canvas-browser-attach-mode
+      (setq-local header-line-format '(:eval (canvas-browser--attach-header)))
+    (kill-local-variable 'header-line-format)))
+
+(defun canvas-browser--attach-watch ()
+  "Give this new dired buffer the keys of the choice that a page waits for."
+  (when canvas-browser--chooser
+    (canvas-browser-attach-mode 1)))
+
+(defun canvas-browser--file-chooser-opened (params)
+  "Take PARAMS of the event that says this page asks for files.
+A dired buffer opens, in the directory a file was last taken from, and
+the files are picked there."
+  (canvas-browser--attach-finish)
+  (setq canvas-browser--chooser
+        (list :buffer (current-buffer)
+              :node (plist-get params :backendNodeId)
+              :multiple (equal (plist-get params :mode) "selectMultiple")))
+  (add-hook 'dired-mode-hook #'canvas-browser--attach-watch)
+  (dired-other-window (or canvas-browser--attach-directory "~/"))
+  (canvas-browser-attach-mode 1))
+
+(defun canvas-browser--attach-finish ()
+  "Forget the choice of files that a page waits for, in every dired buffer."
+  (setq canvas-browser--chooser nil)
+  (remove-hook 'dired-mode-hook #'canvas-browser--attach-watch)
+  (dolist (buffer (buffer-list))
+    (when (buffer-local-value 'canvas-browser-attach-mode buffer)
+      (with-current-buffer buffer (canvas-browser-attach-mode -1)))))
+
+(defun canvas-browser--attach-files ()
+  "The files chosen in this dired buffer for the page that waits.
+They are the marked files, or the file at point when none is marked."
+  (let ((files (dired-get-marked-files nil nil nil nil t)))
+    (when-let* ((directory (seq-find #'file-directory-p files)))
+      (user-error "canvas-browser: %s is a directory" (file-name-nondirectory directory)))
+    (when (and (cdr files) (not (plist-get canvas-browser--chooser :multiple)))
+      (user-error "canvas-browser: the page takes one file, and %d are marked"
+                  (length files)))
+    files))
+
+(defun canvas-browser--file-for-chromium (file)
+  "FILE, or a copy of it where the chromium in use can read it.
+A snap chromium reads no hidden directory of the home and no /tmp but
+its own."
+  (if (and (canvas-browser-cdp-snap-p) (not (canvas-browser--snap-can-read-p file)))
+      (canvas-browser--copy-for-snap file)
+    file))
+
+(defun canvas-browser--attach-leave (page)
+  "Bury this dired buffer, and go back to the window of PAGE if it has one."
+  (quit-window)
+  (when-let* ((window (get-buffer-window page t)))
+    (select-window window)))
+
+(defun canvas-browser--attach-give (files)
+  "Give FILES to the page that waits, and end the choice."
+  (let ((page (plist-get canvas-browser--chooser :buffer))
+        (node (plist-get canvas-browser--chooser :node)))
+    (setq canvas-browser--attach-directory default-directory)
+    (with-current-buffer page
+      (canvas-browser--tell
+       "DOM.setFileInputFiles"
+       (list :files (vconcat (mapcar #'canvas-browser--file-for-chromium files))
+             :backendNodeId node)))
+    (canvas-browser--attach-finish)
+    (canvas-browser--attach-leave page)
+    (message "canvas-browser: gave the page %d file%s"
+             (length files) (if (cdr files) "s" ""))))
+
+(defun canvas-browser-attach-send ()
+  "Give the page that waits the marked files, or the file at point."
+  (interactive)
+  (unless canvas-browser--chooser
+    (user-error "canvas-browser: no page waits for a file"))
+  (canvas-browser--attach-give (canvas-browser--attach-files)))
+
+(defun canvas-browser-attach-open ()
+  "Go into the directory at point, or give the file at point to the page.
+This is `RET\=' while a page waits for a file.  Without it, `RET\=' on a
+file opens the file in a buffer, where the keys of the choice are not."
+  (interactive)
+  (let ((file (dired-get-file-for-visit)))
+    (if (file-directory-p file)
+        (dired-find-file)
+      (unless canvas-browser--chooser
+        (user-error "canvas-browser: no page waits for a file"))
+      (canvas-browser--attach-give (list file)))))
+
+(defun canvas-browser-attach-cancel ()
+  "Tell the page that waits that no file was chosen.
+The field that asked gets a cancel event, as it does when a file dialog
+is closed."
+  (interactive)
+  (unless canvas-browser--chooser
+    (user-error "canvas-browser: no page waits for a file"))
+  (let ((page (plist-get canvas-browser--chooser :buffer))
+        (node (plist-get canvas-browser--chooser :node)))
+    (with-current-buffer page
+      (canvas-browser--tell
+       "DOM.resolveNode" (list :backendNodeId node)
+       (canvas-browser--here
+        (lambda (result)
+          (canvas-browser--tell
+           "Runtime.callFunctionOn"
+           (list :objectId (plist-get (plist-get result :object) :objectId)
+                 :functionDeclaration
+                 "function () { this.dispatchEvent(new Event('cancel', {bubbles: true})); }"))))))
+    (canvas-browser--attach-finish)
+    (canvas-browser--attach-leave page)
+    (message "canvas-browser: no file for the page")))
 
 ;;;; The targets of embark
 

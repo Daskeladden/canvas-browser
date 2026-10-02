@@ -131,6 +131,16 @@ and embark treat them as they treat any bookmark. `C-x r m`,
 eww, so `w SPC` narrows to them. A bookmark of a page that a buffer
 shows already goes to that buffer.
 
+### Attaching a file
+
+When you attach a file to a mail, the page asks for the file. A dired
+buffer then opens in the other window, in the directory you last took a
+file from. Mark the files there and press `C-c C-c`, or press it on one
+file. `C-c C-k` tells the page that nothing was chosen. While a page
+waits, the two keys are there in every dired buffer, so you can go to
+another directory first. For a snap chromium, a file that the snap
+cannot read is copied to `~/snap/chromium/common/canvas-browser-files`.
+
 ### Embark
 
 `embark-act` in a page buffer acts on the address of the page, as on

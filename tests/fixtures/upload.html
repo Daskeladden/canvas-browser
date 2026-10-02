@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head><title>canvas-browser upload fixture</title></head>
+  <body>
+    <!-- Two fields that take files, one of them several.  They are
+         narrow, because the page of a test is only 200 pixels wide.  The
+         page keeps what each field was given, and whether a choice was
+         cancelled. -->
+    <p><input id="one" type="file" style="width: 180px; height: 30px"></p>
+    <p><input id="many" type="file" multiple style="width: 180px; height: 30px"></p>
+    <script>
+      window.picked = {};
+      window.cancelled = [];
+      for (const id of ['one', 'many']) {
+        const field = document.getElementById(id);
+        field.addEventListener('change', () => {
+          window.picked[id] = Array.from(field.files).map(file => file.name + ':' + file.size);
+        });
+        field.addEventListener('cancel', () => window.cancelled.push(id));
+      }
+    </script>
+  </body>
+</html>

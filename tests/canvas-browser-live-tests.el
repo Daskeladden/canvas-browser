@@ -959,3 +959,94 @@ its own."
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (canvas-browser-cdp-stop)
       (delete-directory canvas-browser-profile-directory t))))
+
+;;;; A file for a page, picked in dired
+
+(require 'dired)
+
+(defmacro canvas-browser-live-test--uploading (directory &rest body)
+  "Run BODY in a page buffer of the upload fixture.
+DIRECTORY is bound to a new directory that holds one.txt and two.txt,
+and is where a choice of files starts.  It is in the home of the snap,
+which a snap chromium can read, so no copy of a file is left behind.
+Chromium has a profile of its own, and what the test leaves of a choice
+is cleared away."
+  (declare (indent 1))
+  `(let* ((buffer nil)
+          (,directory
+           (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+             (file-name-as-directory (make-temp-file "canvas-browser-upload-" t))))
+          (canvas-browser--attach-directory ,directory)
+          (canvas-browser-profile-directory
+           (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+             (make-temp-file "canvas-browser-live-" t))))
+     (dolist (name '("one.txt" "two.txt"))
+       (write-region name nil (expand-file-name name ,directory) nil 'silent))
+     (unwind-protect
+         (progn
+           (setq buffer (canvas-browser
+                         (concat "file://" (expand-file-name "tests/fixtures/upload.html"))))
+           (with-current-buffer buffer
+             (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+             (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+             ,@body))
+       (canvas-browser--attach-finish)
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (canvas-browser-cdp-stop)
+       (delete-directory canvas-browser-profile-directory t)
+       (delete-directory ,directory t))))
+
+(defun canvas-browser-live-test--ask-for-files (id)
+  "Click the file field ID of this page; the dired buffer that then opens."
+  (let ((middle (canvas-browser-live-test--middle id)))
+    (should middle)
+    (canvas-browser--click (car middle) (cdr middle)))
+  (should (canvas-browser-live-test--wait 10 (lambda () canvas-browser--chooser)))
+  (seq-find (lambda (buffer) (buffer-local-value 'canvas-browser-attach-mode buffer))
+            (buffer-list)))
+
+(defun canvas-browser-live-test--page-says (script)
+  "The value of SCRIPT in this page."
+  (let ((answer 'waiting))
+    (canvas-browser--evaluate script (lambda (value) (setq answer value)))
+    (canvas-browser-live-test--wait 10 (lambda () (not (eq answer 'waiting))))
+    answer))
+
+(ert-deftest canvas-browser-live-a-file-picked-in-dired-reaches-the-page ()
+  ;; GIVEN the upload fixture, and a directory with two files
+  ;; WHEN the field for several files is clicked, both files are marked
+  ;;      in the dired buffer that opens, and C-c C-c is pressed
+  ;; THEN the page has both files, with their names and their sizes
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--uploading directory
+    (let ((page (current-buffer)))
+      (with-current-buffer (canvas-browser-live-test--ask-for-files "many")
+        (dolist (name '("one.txt" "two.txt"))
+          (dired-goto-file (expand-file-name name directory))
+          (dired-mark 1))
+        (canvas-browser-attach-send))
+      (with-current-buffer page
+        (should (canvas-browser-live-test--wait
+                 10 (lambda ()
+                      (equal (canvas-browser-live-test--page-says "window.picked.many || null")
+                             '("one.txt:7" "two.txt:7")))))))))
+
+(ert-deftest canvas-browser-live-a-cancelled-choice-is-told-to-the-page ()
+  ;; GIVEN the upload fixture
+  ;; WHEN the field for one file is clicked, and C-c C-k is pressed in
+  ;;      the dired buffer that opens
+  ;; THEN the page is told that the choice of that field was cancelled,
+  ;;      AND the field has no file
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--uploading directory
+    (let ((page (current-buffer)))
+      (with-current-buffer (canvas-browser-live-test--ask-for-files "one")
+        (canvas-browser-attach-cancel))
+      (with-current-buffer page
+        (should (canvas-browser-live-test--wait
+                 10 (lambda ()
+                      (equal (canvas-browser-live-test--page-says "window.cancelled")
+                             '("one")))))
+        (should (equal (canvas-browser-live-test--page-says
+                        "document.getElementById('one').files.length")
+                       0))))))
