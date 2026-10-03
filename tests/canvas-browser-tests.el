@@ -4366,15 +4366,16 @@ Return the dired buffer in which they are picked."
 (defvar embark-target-finders)
 (defvar embark-keymap-alist)
 (defvar embark-general-map)
+(defvar embark-target-injection-hooks)
 
 (ert-deftest canvas-browser-embark-acts-on-the-address-of-the-page ()
   ;; GIVEN a page buffer that shows https://example.org
   ;; WHEN embark asks for its targets
-  ;; THEN the address is the target, as a URL, so the actions that
-  ;;      embark has for any URL act on the page
+  ;; THEN the address is the target, as a page, which has the actions
+  ;;      that embark has for any URL and those of a page beside them
   (canvas-browser-test--in-page
     (should (equal (canvas-browser-embark-target)
-                   '((url . "https://example.org"))))))
+                   '((canvas-browser-page . "https://example.org"))))))
 
 (ert-deftest canvas-browser-embark-acts-on-the-region-of-the-caret-first ()
   ;; GIVEN a page whose caret marks the words " words"
@@ -4387,12 +4388,13 @@ Return the dired buffer in which they are picked."
       (canvas-browser-test--press "C-SPC")
       (canvas-browser-test--press "M-f"))
     (should (equal (canvas-browser-embark-target)
-                   '((canvas-browser-text . " words") (url . "https://example.org"))))))
+                   '((canvas-browser-text . " words")
+                     (canvas-browser-page . "https://example.org"))))))
 
 (ert-deftest canvas-browser-embark-forgets-the-region-with-the-caret ()
   ;; GIVEN a page whose caret marked text, AND the caret left since
   ;; WHEN embark asks for its targets
-  ;; THEN the address is the only target
+  ;; THEN the page is the only target
   (canvas-browser-test--in-page
     (canvas-browser-test--answering '(:box (10 20 2 16) :text " words" :region (10 20 50 16))
       (canvas-browser-caret-mode)
@@ -4401,7 +4403,7 @@ Return the dired buffer in which they are picked."
     (canvas-browser-test--answering '(:box nil :text "")
       (canvas-browser-caret-leave))
     (should (equal (canvas-browser-embark-target)
-                   '((url . "https://example.org"))))))
+                   '((canvas-browser-page . "https://example.org"))))))
 
 (ert-deftest canvas-browser-embark-finds-nothing-outside-a-page ()
   ;; GIVEN a buffer that is no page, and a page with no address yet
@@ -4431,6 +4433,7 @@ Return the dired buffer in which they are picked."
   (canvas-browser-test--in-page
     (kill-local-variable 'embark-target-finders)
     (let ((embark-keymap-alist nil)
+          (embark-target-injection-hooks nil)
           (embark-general-map (make-sparse-keymap)))
       (canvas-browser--embark-setup))
     (should (equal (buffer-local-value 'embark-target-finders (current-buffer))
@@ -4443,12 +4446,44 @@ Return the dired buffer in which they are picked."
   ;;      embark for any target, where s searches for the text in a page
   ;;      buffer of its own
   (let ((embark-keymap-alist nil)
+        (embark-target-injection-hooks nil)
         (embark-general-map (make-sparse-keymap)))
     (canvas-browser--embark-setup)
     (should (equal (alist-get 'canvas-browser-text embark-keymap-alist)
                    '(canvas-browser-embark-text-map)))
     (should (eq (keymap-parent canvas-browser-embark-text-map) embark-general-map))
     (should (eq (keymap-lookup canvas-browser-embark-text-map "s") #'canvas-browser))))
+
+(ert-deftest canvas-browser-embark-gives-a-page-the-actions-of-a-url-and-its-own ()
+  ;; GIVEN embark with no keymaps of its own
+  ;; WHEN canvas-browser sets itself up with it
+  ;; THEN a page has the keymap of a page before the one embark has for
+  ;;      any URL, so the actions on a URL stay
+  (let ((embark-keymap-alist nil)
+        (embark-target-injection-hooks nil)
+        (embark-general-map (make-sparse-keymap)))
+    (canvas-browser--embark-setup)
+    (should (equal (alist-get 'canvas-browser-page embark-keymap-alist)
+                   '(canvas-browser-embark-page-map embark-url-map)))))
+
+(ert-deftest canvas-browser-embark-sends-the-target-to-a-receiver ()
+  ;; GIVEN embark with no keymaps of its own
+  ;; WHEN canvas-browser sets itself up with it
+  ;; THEN > sends marked text to a receiver, and sends the whole page
+  ;;      when the page is the target AND embark does not answer the
+  ;;      question of which receiver with the target
+  (let ((embark-keymap-alist nil)
+        (embark-target-injection-hooks nil)
+        (embark-general-map (make-sparse-keymap)))
+    (canvas-browser--embark-setup)
+    (should (eq (keymap-lookup canvas-browser-embark-text-map ">")
+                #'canvas-browser-send-to))
+    (should (eq (keymap-lookup canvas-browser-embark-page-map ">")
+                #'canvas-browser-send-page-to))
+    (should (equal (alist-get 'canvas-browser-send-to embark-target-injection-hooks)
+                   '(embark--ignore-target)))
+    (should (equal (alist-get 'canvas-browser-send-page-to embark-target-injection-hooks)
+                   '(embark--ignore-target)))))
 
 ;;;; Bookmarks
 
@@ -4559,3 +4594,370 @@ Return the dired buffer in which they are picked."
   (should (eq 'canvas-browser-open-bookmark
               (plist-get (canvas-browser-test--menu-entry "J") :command))))
 
+
+;;;; Sending the page to a receiver
+
+(defvar org-capture-templates)
+(defvar org-roam-directory)
+(defvar org-roam-db-location)
+(defvar org-id-track-globally)
+
+(defvar canvas-browser-test--received nil
+  "What the receiver of a test was given.")
+
+(defun canvas-browser-test--receive (content)
+  "Keep CONTENT, as the receiver of a test."
+  (setq canvas-browser-test--received content))
+
+(defmacro canvas-browser-test--sending (&rest body)
+  "Run BODY in a page titled \"A page\" whose one receiver keeps what it gets.
+The question of which receiver is answered with that one."
+  (declare (indent 0))
+  `(canvas-browser-test--in-page
+     (let ((canvas-browser-test--received nil)
+           (canvas-browser-receivers '(("test" . canvas-browser-test--receive))))
+       (setq canvas-browser--title "A page")
+       (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "test")))
+         ,@body))))
+
+(defun canvas-browser-test--mark-words ()
+  "Have the caret of this page mark the text \" words\"."
+  (canvas-browser-test--answering '(:box (10 20 2 16) :text " words" :region (10 20 50 16))
+    (canvas-browser-caret-mode)
+    (canvas-browser-test--press "C-SPC")
+    (canvas-browser-test--press "M-f")))
+
+(ert-deftest canvas-browser-send-to-gives-the-marked-text-to-the-receiver ()
+  ;; GIVEN a page whose caret marks the text " words"
+  ;; WHEN the page is sent to a receiver
+  ;; THEN the receiver gets that text, with the address and the title of
+  ;;      the page it comes from
+  (canvas-browser-test--sending
+    (canvas-browser-test--mark-words)
+    (canvas-browser-send-to)
+    (should (equal canvas-browser-test--received
+                   '(:kind text :text " words"
+                     :url "https://example.org" :title "A page")))))
+
+(ert-deftest canvas-browser-send-to-gives-the-text-of-the-page-when-none-is-marked ()
+  ;; GIVEN a page whose text is two lines, with nothing marked
+  ;; WHEN the page is sent to a receiver
+  ;; THEN the receiver gets the text of the whole page
+  (canvas-browser-test--sending
+    (canvas-browser-test--answering "one\ntwo"
+      (canvas-browser-send-to))
+    (should (equal canvas-browser-test--received
+                   '(:kind page :text "one\ntwo"
+                     :url "https://example.org" :title "A page")))))
+
+(ert-deftest canvas-browser-send-page-to-gives-the-page-also-when-text-is-marked ()
+  ;; GIVEN a page whose caret marks text
+  ;; WHEN the whole page is sent to a receiver
+  ;; THEN the receiver gets the text of the page, not the marked text
+  (canvas-browser-test--sending
+    (canvas-browser-test--mark-words)
+    (canvas-browser-test--answering "one\ntwo"
+      (canvas-browser-send-page-to))
+    (should (eq (plist-get canvas-browser-test--received :kind) 'page))
+    (should (equal (plist-get canvas-browser-test--received :text) "one\ntwo"))))
+
+(defmacro canvas-browser-test--asked-scripts (answer &rest body)
+  "Run BODY in a page that answers every script with ANSWER.
+Return the scripts that BODY had the page run, oldest first."
+  (declare (indent 1))
+  `(progn
+     (setq canvas-browser-test--commands nil)
+     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                (lambda (method params &optional answer _session &rest _)
+                  (push (cons method params) canvas-browser-test--commands)
+                  (when answer (funcall answer (list :result (list :value ,answer)))))))
+       ,@body)
+     (reverse (canvas-browser-test--scripts))))
+
+(ert-deftest canvas-browser-the-text-that-is-sent-is-read-by-one-script ()
+  ;; GIVEN a page
+  ;; WHEN the text to send is read
+  ;; THEN the script that reads the text of an element is run on the body
+  ;;      of the page, AND what it gives comes back as it is
+  (canvas-browser-test--in-page
+    (should (equal (canvas-browser-test--asked-scripts "words"
+                     (should (equal (canvas-browser--page-text) "words")))
+                   (list (concat canvas-browser--text-js "(document.body)"))))))
+
+(ert-deftest canvas-browser-the-html-of-what-is-sent-comes-from-the-page-as-it-is ()
+  ;; GIVEN a page, and what a receiver was given of it: a whole page, and
+  ;;       marked text
+  ;; WHEN a receiver asks for the HTML of each
+  ;; THEN the page is asked for its own HTML, and the selection for the
+  ;;      HTML that it covers, AND each comes back as the page gave it
+  (canvas-browser-test--in-page
+    (should (equal (canvas-browser-test--asked-scripts "<p>x</p>"
+                     (should (equal (canvas-browser-content-html '(:kind page)) "<p>x</p>")))
+                   (list (concat canvas-browser--html-js "(document.body)"))))
+    (let ((scripts (canvas-browser-test--asked-scripts "<p>x</p>"
+                     (should (equal (canvas-browser-content-html '(:kind text)) "<p>x</p>")))))
+      (should (string-search "getSelection()" (car scripts)))
+      (should (string-search "cloneContents()" (car scripts))))))
+
+(ert-deftest canvas-browser-what-has-no-html-gives-none ()
+  ;; GIVEN marked text in a field, which has no HTML, so the page gives null
+  ;; WHEN a receiver asks for its HTML
+  ;; THEN there is none
+  (canvas-browser-test--in-page
+    (canvas-browser-test--asked-scripts :null
+      (should-not (canvas-browser-content-html '(:kind text))))))
+
+(ert-deftest canvas-browser-send-to-calls-the-receiver-in-the-page-buffer ()
+  ;; GIVEN a page and a receiver that notes the buffer it runs in
+  ;; WHEN the page is sent to it
+  ;; THEN the receiver runs in the page buffer, where it can read more
+  (canvas-browser-test--sending
+    (let* ((page (current-buffer))
+           (ran-in nil)
+           (canvas-browser-receivers
+            (list (cons "test" (lambda (_content) (setq ran-in (current-buffer)))))))
+      (canvas-browser-test--answering "text"
+        (canvas-browser-send-to))
+      (should (eq ran-in page)))))
+
+(ert-deftest canvas-browser-send-to-without-receivers-says-so ()
+  ;; GIVEN a page and an empty list of receivers
+  ;; WHEN the page is sent
+  ;; THEN an error says that there is no receiver, and the page is not read
+  (canvas-browser-test--sending
+    (let ((canvas-browser-receivers nil))
+      (setq canvas-browser-test--commands nil)
+      (should (string-search "no receiver"
+                             (cadr (should-error (canvas-browser-send-to) :type 'user-error))))
+      (should-not (canvas-browser-test--params "Runtime.evaluate")))))
+
+(ert-deftest canvas-browser-send-to-gives-up-on-a-page-that-does-not-answer ()
+  ;; GIVEN a page whose chromium never answers
+  ;; WHEN the page is sent to a receiver
+  ;; THEN an error names the wait, and the receiver gets nothing
+  (canvas-browser-test--sending
+    (let ((canvas-browser-cdp-timeout 0.05))
+      (cl-letf (((symbol-function 'canvas-browser-cdp-send) #'ignore))
+        (should (string-search "did not answer"
+                               (cadr (should-error (canvas-browser-send-to))))))
+      (should-not canvas-browser-test--received))))
+
+(defmacro canvas-browser-test--failing-script (&rest body)
+  "Run BODY in a page where the script of the page text fails with a TypeError."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'canvas-browser-cdp-send)
+              (lambda (_method _params &optional answer _session &rest _)
+                (when answer
+                  (funcall answer
+                           '(:result (:type "object" :subtype "error")
+                             :exceptionDetails
+                             (:text "Uncaught"
+                              :exception (:description "TypeError: no split")))))))
+             ((symbol-function 'display-buffer) #'ignore))
+     ,@body))
+
+(ert-deftest canvas-browser-send-to-says-so-when-the-page-cannot-give-its-text ()
+  ;; GIVEN a page in which the script of the page text fails
+  ;; WHEN the page is sent to a receiver
+  ;; THEN an error names the failure, AND the receiver gets nothing, where
+  ;;      it got an empty text before
+  (canvas-browser-test--sending
+    (canvas-browser-test--failing-script
+      (should (string-search "TypeError: no split"
+                             (cadr (should-error (canvas-browser-send-to))))))
+    (should-not canvas-browser-test--received)))
+
+(ert-deftest canvas-browser-text-says-so-when-the-page-cannot-give-its-text ()
+  ;; GIVEN a page in which the script of the page text fails
+  ;; WHEN the text of the page is asked for
+  ;; THEN an error names the failure
+  (canvas-browser-test--in-page
+    (unwind-protect
+        (canvas-browser-test--failing-script
+          (should (string-search "TypeError: no split"
+                                 (cadr (should-error (canvas-browser-text))))))
+      (kill-buffer (canvas-browser--text-buffer)))))
+
+(ert-deftest canvas-browser-the-receivers-that-come-with-it-are-functions ()
+  ;; GIVEN the receivers the package comes with
+  ;; WHEN they are read
+  ;; THEN each has a name and a function that exists
+  (let ((receivers (default-value 'canvas-browser-receivers)))
+    (should (equal (mapcar #'car receivers) '("buffer" "org capture" "org-roam node")))
+    (should (cl-every #'fboundp (mapcar #'cdr receivers)))))
+
+(ert-deftest canvas-browser-the-buffer-receiver-inserts-the-text-at-point ()
+  ;; GIVEN a buffer that no window shows, with point between a and b
+  ;; WHEN text is sent to that buffer
+  ;; THEN the text stands between a and b
+  (with-temp-buffer
+    (insert "ab")
+    (goto-char 2)
+    (let ((target (current-buffer)))
+      (cl-letf (((symbol-function 'read-buffer) (lambda (&rest _) (buffer-name target))))
+        (with-temp-buffer
+          (canvas-browser-send-to-buffer '(:kind text :text "X" :url "u" :title "t"))))
+      (should (equal (buffer-string) "aXb")))))
+
+(ert-deftest canvas-browser-the-buffer-receiver-inserts-where-the-window-has-point ()
+  ;; GIVEN a buffer that a window shows with its point after b, while the
+  ;;       point of the buffer itself is before a
+  ;; WHEN text is sent to that buffer
+  ;; THEN the text stands after b, where the user sees the cursor
+  (with-temp-buffer
+    (insert "ab")
+    (goto-char (point-min))
+    (let ((target (current-buffer)))
+      (save-window-excursion
+        (let ((window (split-window)))
+          (set-window-buffer window target)
+          (set-window-point window 3))
+        (cl-letf (((symbol-function 'read-buffer) (lambda (&rest _) (buffer-name target))))
+          (with-temp-buffer
+            (canvas-browser-send-to-buffer '(:kind text :text "X" :url "u" :title "t")))))
+      (should (equal (buffer-string) "abX")))))
+
+(ert-deftest canvas-browser-the-buffer-receiver-pastes-as-the-buffer-does ()
+  ;; GIVEN a read-only buffer with a yank command of its own, as the
+  ;;       buffer of a terminal has, which hands the text to its process
+  ;; WHEN text is sent to that buffer
+  ;; THEN the yank command of the buffer gets the text, and nothing is
+  ;;      inserted AND the kill ring is as it was
+  (with-temp-buffer
+    (let* ((target (current-buffer))
+           (pasted nil)
+           (kill-ring (list "an old kill"))
+           (kill-ring-yank-pointer kill-ring)
+           (map (make-sparse-keymap)))
+      (define-key map [remap yank]
+                  (lambda () (interactive) (setq pasted (current-kill 0))))
+      (use-local-map map)
+      (setq buffer-read-only t)
+      (cl-letf (((symbol-function 'read-buffer) (lambda (&rest _) (buffer-name target))))
+        (with-temp-buffer
+          (canvas-browser-send-to-buffer '(:kind text :text "X" :url "u" :title "t"))))
+      (should (equal pasted "X"))
+      (should (equal (buffer-string) ""))
+      (should (equal kill-ring '("an old kill"))))))
+
+(ert-deftest canvas-browser-the-org-capture-receiver-fills-a-template ()
+  ;; GIVEN a capture template that takes a link to the page and the text
+  ;; WHEN marked text is sent to org capture, and that template is chosen
+  ;; THEN the note holds the link, named by the title, and the text
+  (let* ((file (make-temp-file "canvas-browser-capture" nil ".org"))
+         (org-capture-templates
+          `(("t" "test" entry (file ,file) "* %a\n%i" :immediate-finish t)))
+         (unread-command-events (listify-key-sequence "t")))
+    (unwind-protect
+        (progn
+          (canvas-browser-send-to-org-capture
+           '(:kind text :text "the words" :url "https://example.org/a" :title "A page"))
+          (with-current-buffer (find-buffer-visiting file)
+            (should (string-search "[[https://example.org/a][A page]]" (buffer-string)))
+            (should (string-search "the words" (buffer-string)))))
+      (when-let* ((buffer (find-buffer-visiting file)))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))))
+
+(defmacro canvas-browser-test--with-roam (directory &rest body)
+  "Run BODY with org-roam in a new DIRECTORY of its own.
+The templates of the receiver are as they come, but finished at once:
+nobody is there to press C-c C-c.  The ids of the nodes stay out of the
+file of ids of the user."
+  (declare (indent 1))
+  `(let* ((,directory (file-name-as-directory (make-temp-file "canvas-browser-roam" t)))
+          (org-roam-directory ,directory)
+          (org-roam-db-location (expand-file-name "roam.db" ,directory))
+          (org-id-track-globally nil)
+          (canvas-browser-org-roam-templates
+           (mapcar (lambda (template) (append template '(:immediate-finish t)))
+                   (default-value 'canvas-browser-org-roam-templates))))
+     (unwind-protect
+         (progn ,@body)
+       (dolist (buffer (buffer-list))
+         (when (and (buffer-file-name buffer)
+                    (file-in-directory-p (buffer-file-name buffer) ,directory))
+           (with-current-buffer buffer (set-buffer-modified-p nil))
+           (kill-buffer buffer)))
+       (delete-directory ,directory t))))
+
+(defun canvas-browser-test--note (file)
+  "What the note FILE holds."
+  (with-current-buffer (find-file-noselect file) (buffer-string)))
+
+(ert-deftest canvas-browser-the-org-roam-receiver-asks-which-node-takes-the-text ()
+  ;; GIVEN org-roam with an empty directory
+  ;; WHEN marked text is sent to org-roam, and a node that does not exist
+  ;;      yet is named for it
+  ;; THEN a node with the name that was given holds the text as a quote,
+  ;;      under a heading that links to the page by its title, AND the
+  ;;      title of the page is not the title of the node, where every
+  ;;      note from one page had the title that the page happened to have
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (canvas-browser-test--with-roam directory
+    (cl-letf (((symbol-function 'org-roam-node-read)
+               (lambda (&rest _) (org-roam-node-create :title "Reading notes"))))
+      (canvas-browser-send-to-org-roam
+       '(:kind text :text "the words" :url "https://example.org/a" :title "A page")))
+    (let ((note (canvas-browser-test--note (expand-file-name "reading_notes.org" directory))))
+      (should (string-search "#+title: Reading notes" note))
+      ;; What was sent has a heading of its own, which links to the page.
+      (should (string-search "\n* From [[https://example.org/a][A page]]\n" note))
+      (should (string-search "#+begin_quote\nthe words\n#+end_quote" note))
+      (should-not (string-search "#+title: A page" note)))))
+
+(ert-deftest canvas-browser-the-org-roam-receiver-needs-no-name-that-a-package-may-take ()
+  ;; GIVEN an Emacs where some package has a function called `body',
+  ;;       which org-roam calls on the node when a template says ${body}
+  ;; WHEN text is sent to org-roam with the template as it comes
+  ;; THEN the note holds the text, where the capture failed with the
+  ;;      error of that function
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (canvas-browser-test--with-roam directory
+    (cl-letf (((symbol-function 'body)
+               (lambda (&rest _) (error "No applicable method: ws-body")))
+              ((symbol-function 'org-roam-node-read)
+               (lambda (&rest _) (org-roam-node-create :title "Reading notes"))))
+      (canvas-browser-send-to-org-roam
+       '(:kind text :text "the words\nin two lines" :url "https://example.org/a" :title "A page")))
+    (should (string-search "#+begin_quote\nthe words\nin two lines\n#+end_quote"
+                           (canvas-browser-test--note
+                            (expand-file-name "reading_notes.org" directory))))))
+
+(ert-deftest canvas-browser-the-org-roam-receiver-adds-to-a-node-that-exists ()
+  ;; GIVEN org-roam with one node, which holds text sent from a page
+  ;; WHEN text is sent from another page, and that node is named for it
+  ;; THEN the node holds both texts, each under a link to its own page
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (canvas-browser-test--with-roam directory
+    (cl-letf (((symbol-function 'org-roam-node-read)
+               (lambda (&rest _) (org-roam-node-create :title "Reading notes"))))
+      (canvas-browser-send-to-org-roam
+       '(:kind text :text "the words" :url "https://example.org/a" :title "A page")))
+    (org-roam-db-sync)
+    (cl-letf (((symbol-function 'org-roam-node-read)
+               (lambda (&rest _) (org-roam-node-from-title-or-alias "Reading notes"))))
+      (canvas-browser-send-to-org-roam
+       '(:kind part :text "more words" :url "https://example.org/b" :title "B page")))
+    (should (equal (directory-files directory nil "\\.org\\'") '("reading_notes.org")))
+    (let ((note (canvas-browser-test--note (expand-file-name "reading_notes.org" directory))))
+      (should (string-match-p
+               (concat "\\[\\[https://example.org/a\\]\\[A page\\]\\]\\(.\\|\n\\)*the words"
+                       "\\(.\\|\n\\)*\\[\\[https://example.org/b\\]\\[B page\\]\\]\\(.\\|\n\\)*more words")
+               note)))))
+
+(ert-deftest canvas-browser-the-send-key-is-bound-in-normal-and-caret-state ()
+  ;; GIVEN a page buffer and its menu
+  ;; WHEN > is looked up in normal state, in caret state and in the menu
+  ;; THEN it sends the page to a receiver in all three
+  (canvas-browser-test--in-page
+    (should (eq (key-binding (kbd ">")) #'canvas-browser-send-to))
+    (canvas-browser-test--answering '(:box (10 20 2 16) :text "")
+      (canvas-browser-caret-mode))
+    (should (eq (key-binding (kbd ">")) #'canvas-browser-send-to)))
+  (should (eq (plist-get (canvas-browser-test--menu-entry ">") :command)
+              'canvas-browser-send-to)))

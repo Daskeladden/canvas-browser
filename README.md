@@ -141,13 +141,54 @@ waits, the two keys are there in every dired buffer, so you can go to
 another directory first. For a snap chromium, a file that the snap
 cannot read is copied to `~/snap/chromium/common/canvas-browser-files`.
 
+### Sending a page somewhere
+
+`>` sends the page to a receiver, and asks which one. While the caret
+marks text, it sends that text. With nothing marked, it sends the text
+of the whole page. The text is all the text that the page shows there.
+That includes what a web component draws of its own, which chromium
+leaves out of its own text of a page. canvas-browser reads nothing into
+the text: what is made of it is the business of the receiver. `t` shows the
+same text.
+
+Three receivers come with canvas-browser:
+
+- `buffer` pastes the text into a buffer you name, at its cursor, as
+  `C-y` does there. So it also works for the buffer of a terminal.
+- `org capture` starts `org-capture` with a template you choose. In the
+  template, `%i` is the text and `%a` is a link to the page. `%:link`
+  and `%:description` are its address and its title.
+- `org-roam node` asks for a node, one that exists or a new one with
+  the title that you type. What is sent gets a heading of its own in
+  that note, which links to the page. Under it stands the text, as a
+  quote.
+  The templates are in `canvas-browser-org-roam-templates`, where `%i`
+  is the text.
+
+A receiver is a function with a name in `canvas-browser-receivers`. It
+runs in the page buffer and gets one plist: `:kind` is `text` or
+`page`, and `:text`, `:url` and `:title` are the text, the address
+and the title. A receiver that wants more than the text calls
+`(canvas-browser-content-html CONTENT)`, which gives the HTML of the
+same thing as the page has it. The HTML still holds what lies inside
+what, such as a reply inside the comment that it answers. What a web
+component draws of its own is in a `template` inside the component. This adds a
+receiver that copies the text:
+
+```elisp
+(add-to-list 'canvas-browser-receivers
+             (cons "kill ring"
+                   (lambda (content) (kill-new (plist-get content :text)))))
+```
+
 ### Embark
 
-`embark-act` in a page buffer acts on the address of the page, as on
-any URL. You can open it in another browser or in eww, copy it, or
-download it. While the caret marks text, the text is the first target.
-The address is the second, and `embark-cycle` reaches it. On marked
-text, `s` searches for it in a page buffer of its own.
+`embark-act` in a page buffer acts on the page. It has the actions of
+any URL, so you can open the address in another browser or in eww, copy
+it, or download it. `>` sends the page to a receiver. While the caret
+marks text, the text is the first target, and `embark-cycle` reaches
+the page. On marked text, `s` searches for it in a page buffer of its
+own, and `>` sends it to a receiver.
 
 ### Blocking ads
 
@@ -178,6 +219,7 @@ Normal state keeps the keys of Emacs:
 | `o` | opens a URL in this buffer, or searches for the words you type |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
 | `y` | copies the address of this page, as `f y` copies the address of a link |
+| `>` | sends the marked text to a receiver you name, or else the text of the page |
 | `O` | the same in a page buffer of its own, as the `O` of Vimium and qutebrowser opens a tab |
 | `g` | reads the page again |
 | `M-p`, `M-n` | go back and forward in the history |

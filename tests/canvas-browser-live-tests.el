@@ -1051,6 +1051,37 @@ is cleared away."
                         "document.getElementById('one').files.length")
                        0))))))
 
+(ert-deftest canvas-browser-live-a-page-is-sent-to-a-receiver ()
+  ;; GIVEN the fixture page, with nothing marked, and one receiver
+  ;; WHEN the page is sent to that receiver
+  ;; THEN the receiver gets the text of the page, its address and its
+  ;;      title, in the same call: the command waits for chromium
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let* ((buffer nil)
+         (received nil)
+         (canvas-browser-receivers
+          (list (cons "test" (lambda (content) (setq received content)))))
+         (canvas-browser-profile-directory
+          (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+            (make-temp-file "canvas-browser-live-" t))))
+    (unwind-protect
+        (let ((url (concat "file://" (expand-file-name "tests/fixtures/page.html"))))
+          (setq buffer (canvas-browser url))
+          (with-current-buffer buffer
+            (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+            ;; The page has the name of its file until it has loaded.
+            (should (canvas-browser-live-test--wait
+                     30 (lambda () (equal canvas-browser--title "canvas-browser fixture"))))
+            (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "test")))
+              (canvas-browser-send-to))
+            (should (eq (plist-get received :kind) 'page))
+            (should (string-search "the live test" (plist-get received :text)))
+            (should (equal (plist-get received :url) canvas-browser--url))
+            (should (equal (plist-get received :title) "canvas-browser fixture"))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (canvas-browser-cdp-stop)
+      (delete-directory canvas-browser-profile-directory t))))
+
 (defmacro canvas-browser-live-test--in-fixture (name &rest body)
   "Run BODY in a page buffer of the fixture NAME, once the page is there.
 Chromium has a profile of its own."
@@ -1075,6 +1106,55 @@ Chromium has a profile of its own."
        (when (buffer-live-p buffer) (kill-buffer buffer))
        (canvas-browser-cdp-stop)
        (delete-directory canvas-browser-profile-directory t))))
+
+(ert-deftest canvas-browser-live-the-html-of-marked-text-is-what-the-mark-covers ()
+  ;; GIVEN the thread fixture, where the selection of the page covers
+  ;;       one comment
+  ;; WHEN a receiver asks for the HTML of the marked text
+  ;; THEN it gets the HTML inside that comment, AND nothing of the
+  ;;      comment after it
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "thread.html"
+    (canvas-browser-live-test--page-says
+     "getSelection().selectAllChildren(document.getElementById('c3')); true")
+    (let ((html (canvas-browser-content-html '(:kind text))))
+      (should (string-search "<div slot=\"meta\"><b>alice</b>" html))
+      (should (string-search "I see." html))
+      (should-not (string-search "carol" html)))))
+
+(ert-deftest canvas-browser-live-the-text-of-a-page-without-components-is-as-chromium-gives-it ()
+  ;; GIVEN the fixture page, which has no web component
+  ;; WHEN the text of the page is read
+  ;; THEN it is the text that chromium gives for the page, to the letter
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "page.html"
+    (should (equal (canvas-browser--page-text)
+                   (canvas-browser-live-test--page-says "document.body.innerText")))))
+
+(ert-deftest canvas-browser-live-the-text-of-a-page-holds-what-its-components-draw ()
+  ;; GIVEN the components fixture: a panel that is a web component, which
+  ;;       draws rows and a sentence of its own, with components inside
+  ;;       them, shows one child that the page gave it, and hides another
+  ;; WHEN the text of the page is read
+  ;; THEN it holds all the text that the page shows, in the order it
+  ;;      shows it, also what the components draw themselves, where
+  ;;      chromium gives only what the page gave the panel as a child,
+  ;;      AND it holds nothing that the page does not show
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "components.html"
+    (should (equal (canvas-browser-live-test--page-says "document.body.innerText")
+                   "Before the panel.\n\nCommunities\n\nAfter the panel."))
+    (should (equal (canvas-browser--page-text)
+                   (string-join '("Before the panel."
+                                  ""
+                                  "Communities"
+                                  "row Home"
+                                  "row Popular"
+                                  ""
+                                  "A sentence with 7 inside."
+                                  ""
+                                  "After the panel.")
+                                "\n")))))
 
 (ert-deftest canvas-browser-live-a-page-that-names-itself-later-gets-that-title ()
   ;; GIVEN the fixture page, which has loaded and given its title

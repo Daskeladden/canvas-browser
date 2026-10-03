@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser thread fixture</title>
+    <script>
+      // A comment that is a web component: it shows the children it has
+      // a slot for, and holds its replies inside itself.
+      customElements.define('x-comment', class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({mode: 'open'}).innerHTML =
+            '<style>:host { display: block; }</style>' +
+            '<slot name="meta"></slot><slot name="body"></slot>' +
+            '<div style="margin-left: 24px"><slot name="children"></slot></div>';
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <main>
+    <h1>A post</h1>
+    <p>The text of the post.</p>
+    <x-wrap style="display: contents">
+      <x-comment id="c1">
+        <div slot="meta"><b>alice</b> <span>4h ago</span></div>
+        <div slot="body"><p>What is the role?</p></div>
+        <div>no slot shows this</div>
+        <x-comment id="c2" slot="children">
+          <div slot="meta"><b>bob</b> <span>3h ago</span></div>
+          <div slot="body"><p>The drawing layer.</p><p>It uses cairo.</p></div>
+          <x-comment id="c3" slot="children">
+            <div slot="meta"><b>alice</b> <span>1h ago</span></div>
+            <div slot="body"><p>I see.</p><p style="display: none">hidden words</p></div>
+          </x-comment>
+        </x-comment>
+      </x-comment>
+      <x-comment id="c4">
+        <div slot="meta"><b>carol</b> <span>2h ago</span></div>
+        <div slot="body"><p>Nice.</p></div>
+      </x-comment>
+    </x-wrap>
+    <ul>
+      <li>one <a href="#a">link</a> here
+        <ul>
+          <li>one a</li>
+        </ul>
+      </li>
+      <li>two</li>
+    </ul>
+    <div role="tree">
+      <div role="treeitem" aria-level="1">top</div>
+      <div role="treeitem" aria-level="2">under top</div>
+    </div>
+    </main>
+    <aside>Words of the sidebar</aside>
+    <div role="heading" aria-level="3">A heading at level three</div>
+  </body>
+</html>

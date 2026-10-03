@@ -2406,25 +2406,120 @@ Without consult, isearch takes over in that buffer."
         (call-interactively 'consult-line)
       (call-interactively 'isearch-forward))))
 
+(defconst canvas-browser--text-js
+  "(root => {
+     const up = n => n.assignedSlot || n.parentNode || n.host;
+     const deep = new Set();
+     const mark = n => { for (; n && !deep.has(n); n = up(n)) deep.add(n); };
+     const scan = within => within.querySelectorAll('*').forEach(e => {
+       if (!e.shadowRoot) return;
+       mark(e);
+       e.shadowRoot.querySelectorAll('slot').forEach(mark);
+       scan(e.shadowRoot);
+     });
+     scan(document);
+     if (!deep.has(root)) return root.innerText;
+     const display = e => getComputedStyle(e).display;
+     const shown = e => display(e) === 'contents'
+       || e.checkVisibility({checkVisibilityCSS: true, visibilityProperty: true});
+     const kids = e => e.shadowRoot ? e.shadowRoot.childNodes
+       : e.localName !== 'slot' ? e.childNodes
+       : e.assignedNodes({flatten: true}).length ? e.assignedNodes({flatten: true})
+       : e.childNodes;
+     const lines = [];
+     let run = '';
+     const flush = () => {
+       const text = run.replace(/\\s+/g, ' ').trim();
+       if (text) lines.push(text);
+       run = '';
+     };
+     const visit = node => {
+       for (const child of kids(node)) {
+         if (child.nodeType === Node.TEXT_NODE) { run += child.data; continue; }
+         if (child.nodeType !== Node.ELEMENT_NODE || !shown(child)) continue;
+         if (child.localName === 'br') { flush(); continue; }
+         const look = display(child);
+         const inside = deep.has(child) || look === 'contents'
+           || typeof child.innerText !== 'string';
+         if (look.startsWith('inline') || look === 'contents') {
+           if (inside) visit(child); else run += child.innerText;
+           continue;
+         }
+         flush();
+         const apart = child.localName === 'p';
+         if (apart) lines.push('');
+         if (inside) { visit(child); flush(); } else lines.push(...child.innerText.split('\\n'));
+         if (apart) lines.push('');
+       }
+     };
+     visit(root);
+     flush();
+     return lines.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+   })"
+  "The JavaScript function that gives the text of an element of a page.
+It is all the text that the page shows there, in the order it shows it,
+and nothing is read into it.
+
+Chromium gives the text of an element from the children that the page
+gave the element.  A web component draws content of its own, which is
+not among them, so chromium leaves it out: of a list that is a component
+it gives the heading that the page gave the list, and not its rows.
+
+An element with no component inside it gives its text as chromium makes
+it, to the letter.  An element with a component inside it is read child
+by child, through what each component draws and through the places it
+shows its own children in.  A block there is a line, a paragraph has an
+empty line around it, and what the page does not show is left out.")
+
+(defconst canvas-browser--text-script
+  (concat canvas-browser--text-js "(document.body)")
+  "The JavaScript that gives the text of a page.")
+
+(defconst canvas-browser--html-js
+  "(root => {
+     if (!root.getHTML) return root.outerHTML;
+     const roots = [];
+     const scan = within => within.querySelectorAll('*').forEach(take);
+     const take = e => { if (e.shadowRoot) { roots.push(e.shadowRoot); scan(e.shadowRoot); } };
+     take(root);
+     scan(root);
+     const shell = root.cloneNode(false).outerHTML;
+     const close = shell.lastIndexOf('</');
+     return shell.slice(0, close) + root.getHTML({shadowRoots: roots}) + shell.slice(close);
+   })"
+  "The JavaScript function that gives the HTML of an element of a page.
+It is the HTML as the page has it.  What a web component draws of its
+own is in it too, the way HTML writes that: in a template inside the
+component that says it is the inside of one.")
+
+(defun canvas-browser--value-of (result)
+  "The value in RESULT, the answer of chromium to a script.
+The null of JSON is nil.  An error names what went wrong when the
+script failed in the page."
+  (when-let* ((failure (plist-get result :exceptionDetails)))
+    (error "canvas-browser: a script failed in the page: %s"
+           (or (plist-get (plist-get failure :exception) :description)
+               (plist-get failure :text))))
+  (let ((value (plist-get (plist-get result :result) :value)))
+    (and (not (eq value :null)) value)))
+
 (defun canvas-browser--text-buffer ()
   "The buffer that holds the text of this page."
   (get-buffer-create (format "*canvas-browser-text: %s*"
                              (or canvas-browser--title canvas-browser--url))))
 
 (defun canvas-browser-text ()
-  "Put the text of the page in a buffer, where the keys of Emacs work."
+  "Put the text of the page in a buffer, where the keys of Emacs work.
+It is the text that `>\=' sends."
   (interactive)
-  (let ((target (canvas-browser--text-buffer)))
-    (canvas-browser-cdp-send
-     "Runtime.evaluate" (list :expression "document.body.innerText" :returnByValue t)
-     (lambda (result)
-       (with-current-buffer target
-         (let ((inhibit-read-only t))
-           (erase-buffer)
-           (insert (or (plist-get (plist-get result :result) :value) ""))
-           (goto-char (point-min))))
-       (display-buffer target))
-     canvas-browser--session)))
+  (let ((text (canvas-browser--page-text))
+        (target (canvas-browser--text-buffer)))
+    (with-current-buffer target
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text)
+        (goto-char (point-min))))
+    (display-buffer target)))
 
 ;;;; The zoom and the picture
 
@@ -2590,7 +2685,8 @@ and the settings.  The widths line the columns of the two rows up."
    ("t" "text" canvas-browser-text)
    ("L" "lines" canvas-browser-search-text)
    ("e" "eww" canvas-browser-open-in-eww)
-   ("y" "copy URL" canvas-browser-copy-url)]
+   ("y" "copy URL" canvas-browser-copy-url)
+   (">" "send to" canvas-browser-send-to)]
   ["Modes"
    ("d" canvas-browser-toggle-dark :transient t
     :description (lambda () (canvas-keys-setting "dark" 'canvas-browser-dark)))
@@ -2618,6 +2714,7 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "o" #'canvas-browser-open-url
   "O" #'canvas-browser
   "y" #'canvas-browser-copy-url
+  ">" #'canvas-browser-send-to
   "B" #'canvas-browser-bookmark
   "J" #'canvas-browser-open-bookmark
   "v" #'canvas-browser-caret-mode
@@ -3546,7 +3643,23 @@ is closed."
     (canvas-browser--attach-leave page)
     (message "canvas-browser: no file for the page")))
 
-;;;; The targets of embark
+;;;; Sending the page to a receiver
+
+(defcustom canvas-browser-receivers
+  '(("buffer" . canvas-browser-send-to-buffer)
+    ("org capture" . canvas-browser-send-to-org-capture)
+    ("org-roam node" . canvas-browser-send-to-org-roam))
+  "Where `canvas-browser-send-to\=' can send a page, each (NAME . FUNCTION).
+FUNCTION is called in the page buffer with one argument, a plist.  Its
+`:kind' is `text' for the text that the caret marks, and `page' for the
+text of the whole page.  The text is all that the page shows there, and
+nothing is read into it on the way: what is made of it is the business
+of FUNCTION, which gets the HTML from `canvas-browser-content-html\='
+when it wants what the text has lost.  Its `:text' is that text, and its
+`:url' and `:title' are the address and the title of the page.  Another
+package adds a receiver of its own with `add-to-list\='."
+  :type '(alist :key-type string :value-type function)
+  :group 'canvas-browser)
 
 (defun canvas-browser--marked-text ()
   "The text that the caret of this page marks, or nil when it marks none."
@@ -3555,15 +3668,207 @@ is closed."
        (not (string-empty-p canvas-browser--caret-text))
        canvas-browser--caret-text))
 
+(defun canvas-browser--answer-now (method params &optional refused)
+  "The answer of chromium to METHOD with PARAMS in this page.
+It is nil for a command that chromium refused; REFUSED, when given, is
+called with what chromium says, and else the reader is told.  Emacs
+waits here for the answer, so that the command that asks has it before
+it goes on, and its errors reach the user."
+  (let ((result 'waiting)
+        (deadline (+ (float-time) canvas-browser-cdp-timeout)))
+    (canvas-browser-cdp-send method params (lambda (answer) (setq result answer))
+                             canvas-browser--session refused)
+    (while (and (eq result 'waiting) (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    (when (eq result 'waiting)
+      (error "canvas-browser: the page did not answer in %s seconds"
+             canvas-browser-cdp-timeout))
+    result))
+
+(defun canvas-browser--value-now (script &optional await)
+  "The value that SCRIPT gives in this page; nil for the null of JSON.
+With AWAIT, the value of the promise that SCRIPT gives.  See
+`canvas-browser--answer-now\='."
+  (canvas-browser--value-of
+   (canvas-browser--answer-now
+    "Runtime.evaluate"
+    (append (list :expression script :returnByValue t) (and await (list :awaitPromise t))))))
+
+(defun canvas-browser--page-text ()
+  "The text of this page."
+  (or (canvas-browser--value-now canvas-browser--text-script) ""))
+
+(defconst canvas-browser--selection-html-script
+  "(() => {
+     const selection = getSelection();
+     if (!selection.rangeCount) return null;
+     const box = document.createElement('div');
+     box.append(selection.getRangeAt(0).cloneContents());
+     return box.innerHTML || null;
+   })()"
+  "The JavaScript that gives the HTML that the selection of a page covers.
+It gives null when the selection covers no HTML, as in a field.")
+
+(defun canvas-browser-content-html (content)
+  "The HTML of CONTENT, which a receiver was given, as the page has it.
+It is nil when the page has no HTML for it, as for text marked in a
+field.  A receiver calls this, in the page buffer that it runs in, when
+it wants more than the text: the HTML still holds what lies inside
+what, which the text does not.  Nothing is taken out of it or read into
+it here."
+  (canvas-browser--value-now
+   (pcase-exhaustive (plist-get content :kind)
+     ('page (concat canvas-browser--html-js "(document.body)"))
+     ('text canvas-browser--selection-html-script))))
+
+(defun canvas-browser--content (kind text)
+  "What a receiver gets of this page: TEXT of KIND, its address and title.
+KIND is `text' for the text that the caret marks, and `page' for the
+text of the whole page.  A page without a title is named by its
+address."
+  (list :kind kind :text text
+        :url canvas-browser--url
+        :title (or canvas-browser--title canvas-browser--url)))
+
+(defun canvas-browser--read-receiver ()
+  "Ask which receiver gets the page, and return its function."
+  (unless canvas-browser-receivers
+    (user-error "canvas-browser: no receiver in `canvas-browser-receivers'"))
+  (let ((name (completing-read "Send to: " canvas-browser-receivers nil t)))
+    (or (cdr (assoc name canvas-browser-receivers))
+        (user-error "canvas-browser: no receiver is named %S" name))))
+
+(defun canvas-browser--send (kind text)
+  "Ask for a receiver, and give it the content of KIND of this page.
+TEXT is a function that gives the text.  The receiver is asked for
+first, so that a page is not read for nothing."
+  (let ((receiver (canvas-browser--read-receiver)))
+    (funcall receiver (canvas-browser--content kind (funcall text)))))
+
+(defun canvas-browser-send-to ()
+  "Send the text that the caret marks to a receiver.
+With nothing marked, send the whole page.  The receivers are those of
+`canvas-browser-receivers\='."
+  (interactive)
+  (if (canvas-browser--marked-text)
+      (canvas-browser--send 'text #'canvas-browser--marked-text)
+    (canvas-browser-send-page-to)))
+
+(defun canvas-browser-send-page-to ()
+  "Send the text of the whole page to a receiver.
+It does so whatever the caret marks."
+  (interactive)
+  (canvas-browser--send 'page #'canvas-browser--page-text))
+
+(defun canvas-browser--paste (text)
+  "Paste TEXT into this buffer with the command it has for `yank\='.
+The buffer of a terminal is read-only and takes text through its
+process, which its own yank command does.  The kill ring stays as it
+is."
+  (let* ((kill-ring (list text))
+         (kill-ring-yank-pointer kill-ring)
+         (interprogram-paste-function nil))
+    (call-interactively (or (command-remapping 'yank) #'yank))))
+
+(defun canvas-browser-send-to-buffer (content)
+  "Paste the text of CONTENT into a buffer that is asked for.
+The text goes where the cursor of that buffer shows: at the point of
+the window that shows it, or at its own point when no window does."
+  (let* ((buffer (get-buffer (read-buffer "Paste into buffer: "
+                                          (other-buffer (current-buffer) t) t)))
+         (window (get-buffer-window buffer t)))
+    (if window
+        (with-selected-window window (canvas-browser--paste (plist-get content :text)))
+      (with-current-buffer buffer (canvas-browser--paste (plist-get content :text))))))
+
+(declare-function org-link-store-props "ol" (&rest plist))
+(declare-function org-link-make-string "ol" (link &optional description))
+(declare-function org-capture "org-capture" (&optional goto keys))
+(declare-function org-roam-capture- "org-roam-capture")
+(defvar org-capture-link-is-already-stored)
+
+(defun canvas-browser--store-org-link (content text)
+  "Tell org of the page of CONTENT, as the link and TEXT of a capture.
+A template then has the link in %a, the address in %:link, the title in
+%:description and TEXT in %i."
+  (let ((url (plist-get content :url))
+        (title (plist-get content :title)))
+    (org-link-store-props :type (url-type (url-generic-parse-url url))
+                          :link url
+                          :description title
+                          :annotation (org-link-make-string url title)
+                          :initial text)))
+
+(defun canvas-browser-send-to-org-capture (content)
+  "Capture CONTENT with a template of `org-capture\=', which is asked for."
+  (require 'org-capture)
+  (canvas-browser--store-org-link content (plist-get content :text))
+  ;; Without this, org-capture stores a link to the page buffer, and
+  ;; that one replaces the link to the page.
+  (let ((org-capture-link-is-already-stored t))
+    (org-capture)))
+
+(defcustom canvas-browser-org-roam-templates
+  '(("p" "page" plain "%i\n%?"
+     :target (file+head "${slug}.org" "#+title: ${title}")
+     :unnarrowed t))
+  "The templates of the org-roam receiver, as org-roam writes its templates.
+See `org-roam-capture-templates\=' for what one holds.  %i stands for
+what is sent, with a heading of its own that links to the page: the
+text, as a quote.  %a stands for a link to the page, named by the title
+of the page, and ${title} for the title of the node.
+
+The text is not ${body}, as org-roam has it for a page sent from a
+browser.  For ${NAME} org-roam first calls a function called NAME, when
+there is one, and a package that is loaded may have a function `body\=':
+the web-server package has."
+  :type '(repeat sexp)
+  :group 'canvas-browser)
+
+(declare-function org-roam-node-read "org-roam-node"
+                  (&optional initial-input filter-fn sort-fn require-match prompt))
+
+(defun canvas-browser--org-section (content)
+  "What a send of CONTENT writes into a note: a heading of its own.
+The heading links to the page.  Under it comes the text, as a quote."
+  (concat "* From "
+          (org-link-make-string (plist-get content :url) (plist-get content :title))
+          "\n\n"
+          (format "#+begin_quote\n%s\n#+end_quote" (plist-get content :text))))
+
+(defun canvas-browser--capture-in-node (node content)
+  "Capture CONTENT in the note of NODE, under a heading of its own."
+  (canvas-browser--store-org-link content (canvas-browser--org-section content))
+  (let ((org-capture-link-is-already-stored t))
+    (org-roam-capture- :node node :templates canvas-browser-org-roam-templates)))
+
+(defun canvas-browser-send-to-org-roam (content)
+  "Capture CONTENT in an org-roam node, which is asked for.
+The node is one that exists, or a new one with the title that you type.
+What is sent gets a heading of its own in the note, which links to
+the page: the text, as a quote.  The templates are those of
+`canvas-browser-org-roam-templates\='.
+
+The node is not found by the address of the page, and not named by its
+title.  Many a page has one address and one title for all that it
+shows, so every note from it would land in one node with a title that
+says nothing."
+  (require 'org-roam)
+  (canvas-browser--capture-in-node
+   (org-roam-node-read nil nil nil nil "Capture in node: ") content))
+
+;;;; The targets of embark
+
 (defun canvas-browser-embark-target ()
   "The targets of embark in a page buffer.
-The text that the caret marks comes first, and the address of the page
-after it, as a URL.  Embark acts on the first, and cycles to the other."
+The text that the caret marks comes first, and the page after it,
+named by its address.  Embark acts on the first, and cycles to the
+other."
   (when (derived-mode-p 'canvas-browser-mode)
     (append (when-let* ((text (canvas-browser--marked-text)))
               (list (cons 'canvas-browser-text text)))
             (when canvas-browser--url
-              (list (cons 'url canvas-browser--url))))))
+              (list (cons 'canvas-browser-page canvas-browser--url))))))
 
 (defvar canvas-browser-embark-text-map (make-sparse-keymap)
   "The actions of embark on the text that the caret of a page marks.
@@ -3572,10 +3877,17 @@ Its parent holds the actions that embark has for any target.")
 ;; Bound here and not where the map is made, so that a second load of
 ;; this file brings a new key to a running Emacs.
 (keymap-set canvas-browser-embark-text-map "s" #'canvas-browser)
+(keymap-set canvas-browser-embark-text-map ">" #'canvas-browser-send-to)
+
+(defvar canvas-browser-embark-page-map (make-sparse-keymap)
+  "The actions of embark on a page, beside those embark has for any URL.")
+
+(keymap-set canvas-browser-embark-page-map ">" #'canvas-browser-send-page-to)
 
 (defvar embark-target-finders)
 (defvar embark-keymap-alist)
 (defvar embark-general-map)
+(defvar embark-target-injection-hooks)
 
 (defun canvas-browser--embark-here ()
   "Have embark find its targets in this page buffer with one finder alone.
@@ -3587,10 +3899,17 @@ prompt when it cycles to it."
 
 (defun canvas-browser--embark-setup ()
   "Tell embark of the targets of a page buffer, also of those open already.
-`s\=' on marked text opens a page buffer that searches for it."
+`s\=' on marked text opens a page buffer that searches for it, and `>\='
+sends the target to a receiver.  A page has the actions of a URL too."
   (set-keymap-parent canvas-browser-embark-text-map embark-general-map)
   (setf (alist-get 'canvas-browser-text embark-keymap-alist)
         '(canvas-browser-embark-text-map))
+  (setf (alist-get 'canvas-browser-page embark-keymap-alist)
+        '(canvas-browser-embark-page-map embark-url-map))
+  ;; Embark answers the first question of an action with the target and
+  ;; presses RET.  These actions ask which receiver, not for the target.
+  (dolist (command '(canvas-browser-send-to canvas-browser-send-page-to))
+    (setf (alist-get command embark-target-injection-hooks) '(embark--ignore-target)))
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
       (when (derived-mode-p 'canvas-browser-mode)

@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser components fixture</title>
+    <script>
+      // Web components that draw text of their own, which is not among
+      // the children that the page gave them.
+      const define = (name, html) =>
+        customElements.define(name, class extends HTMLElement {
+          constructor() {
+            super();
+            this.attachShadow({mode: 'open'}).innerHTML = html;
+          }
+        });
+      define('x-count', '<b>7</b>');
+      define('x-row',
+             '<style>:host { display: block; } .hidden { display: none; }</style>' +
+             '<span>row </span><slot></slot><span class="hidden">hidden words</span>');
+      define('x-panel',
+             '<style>:host { display: block; }</style>' +
+             '<div><slot name="title"></slot></div>' +
+             '<x-row>Home</x-row><x-row>Popular</x-row>' +
+             '<p>A sentence with <x-count></x-count> inside.</p>');
+    </script>
+  </head>
+  <body>
+    <p>Before the panel.</p>
+    <x-panel id="panel">
+      <span slot="title">Communities</span>
+      <span>no slot shows this</span>
+    </x-panel>
+    <p>After the panel.</p>
+  </body>
+</html>
