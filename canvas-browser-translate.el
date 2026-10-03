@@ -350,9 +350,15 @@ Two items with one head are one message, as far as a note can tell."
                  " · ")))
 
 (defun canvas-browser--org-item (item depth)
-  "ITEM as an item of an org list at DEPTH, with its replies inside it."
-  (let ((head (canvas-browser-org-head item))
-        (text (plist-get item :text)))
+  "ITEM as an item of an org list at DEPTH, with its replies inside it.
+An ITEM with :edited, a time, is a new version of a message, and its
+head says so."
+  (let* ((edited (plist-get item :edited))
+         (head (concat (canvas-browser-org-head item)
+                       (if edited
+                           (format " · edited, as of %s" (canvas-browser--org-time edited))
+                         "")))
+         (text (plist-get item :text)))
     (string-join
      (delq nil (list (canvas-browser--indent (concat "- " head) depth)
                      (and text (canvas-browser--indent text (1+ depth)))

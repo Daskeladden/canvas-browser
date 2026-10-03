@@ -5403,6 +5403,40 @@ file of ids of the user."
                  note))
         (should-not (string-search "#+begin_quote" note))))))
 
+(ert-deftest canvas-browser-a-second-send-to-a-node-merges-the-thread ()
+  ;; GIVEN a node that holds a thread from a first send
+  ;; WHEN the thread is sent to that node again, with a new message and
+  ;;      a new reply
+  ;; THEN the note holds the thread once, with the new message and the
+  ;;      new reply where they belong, under the one heading of the
+  ;;      first send, AND a message counts what was added
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (let* ((first (list (list :author "alice" :text "What is the role?")))
+         (again (list (list :author "alice" :text "What is the role?"
+                            :replies (list (list :author "bob" :text "The drawing layer.")))
+                      (list :author "carol" :text "Nice.")))
+         (content (lambda (thread)
+                    (list :kind 'page :text "the text" :thread thread
+                          :url "https://example.org/a" :title "A page")))
+         (said nil))
+    (canvas-browser-test--with-roam directory
+      (cl-letf (((symbol-function 'org-roam-node-read)
+                 (lambda (&rest _) (org-roam-node-create :title "Roles"))))
+        (canvas-browser-send-to-org-roam (funcall content first)))
+      (org-roam-db-sync)
+      (cl-letf (((symbol-function 'org-roam-node-read)
+                 (lambda (&rest _) (org-roam-node-from-title-or-alias "Roles")))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (canvas-browser-send-to-org-roam (funcall content again)))
+      (let ((note (canvas-browser-test--note (expand-file-name "roles.org" directory))))
+        (should (= (cl-count-if (lambda (line) (string-prefix-p "* From " line))
+                                (split-string note "\n"))
+                   1))
+        (should (string-search (canvas-browser-thread-org again) note)))
+      (should (string-search "2 new" said)))))
+
 (ert-deftest canvas-browser-the-org-roam-receiver-needs-no-name-that-a-package-may-take ()
   ;; GIVEN an Emacs where some package has a function called `body',
   ;;       which org-roam calls on the node when a template says ${body}

@@ -22,6 +22,7 @@
 (require 'url-util)
 (require 'canvas-browser-cdp)
 (require 'canvas-browser-translate)
+(require 'canvas-browser-merge)
 
 (defcustom canvas-browser-quality 70
   "The quality of a screencast frame, from 1 to 100.
@@ -4061,6 +4062,9 @@ the web-server package has."
 (declare-function org-roam-node-read "org-roam-node"
                   (&optional initial-input filter-fn sort-fn require-match prompt))
 
+(declare-function org-roam-node-title "org-roam-node" (node))
+(declare-function org-roam-node-file "org-roam-node" (node))
+
 (defun canvas-browser--org-section (content)
   "What a send of CONTENT writes into a note: a heading of its own.
 The heading links to the page.  Under it comes a thread as an org list,
@@ -4069,6 +4073,26 @@ or other text as a quote."
           (org-link-make-string (plist-get content :url) (plist-get content :title))
           "\n\n"
           (canvas-browser--org-text content t)))
+
+(declare-function org-roam-db-update-file "org-roam-db" (&optional file-path no-require))
+
+(defun canvas-browser--merge-into-node (node content)
+  "Merge the thread of CONTENT into the note of NODE, if it holds the thread.
+Return non-nil when it did; a message says what was added.  A node
+without a note, content without a thread, and a note that holds none of
+its messages are left to the capture."
+  (when-let* ((thread (plist-get content :thread))
+              (file (org-roam-node-file node)))
+    (with-current-buffer (find-file-noselect file)
+      (when-let* ((counts (canvas-browser-org-merge thread)))
+        (save-buffer)
+        (org-roam-db-update-file file)
+        (message "canvas-browser: %s: %s"
+                 (org-roam-node-title node)
+                 (if (equal counts '(0 . 0))
+                     "nothing new"
+                   (format "%d new, %d edited" (car counts) (cdr counts))))
+        t))))
 
 (defun canvas-browser--capture-in-node (node content)
   "Capture CONTENT in the note of NODE, under a heading of its own."
@@ -4086,10 +4110,15 @@ templates are those of `canvas-browser-org-roam-templates\='.
 The node is not found by the address of the page, and not named by its
 title.  Many a page has one address and one title for all that it
 shows, so every note from it would land in one node with a title that
-says nothing."
+says nothing.
+
+A node that holds the thread already is not given it a second time:
+the new messages are merged into it, as `canvas-browser-org-merge\='
+does."
   (require 'org-roam)
-  (canvas-browser--capture-in-node
-   (org-roam-node-read nil nil nil nil "Capture in node: ") content))
+  (let ((node (org-roam-node-read nil nil nil nil "Capture in node: ")))
+    (unless (canvas-browser--merge-into-node node content)
+      (canvas-browser--capture-in-node node content))))
 
 ;;;; The targets of embark
 
