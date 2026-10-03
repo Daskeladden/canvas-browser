@@ -1348,3 +1348,28 @@ Chromium has a profile of its own."
      "document.title = 'A later title'; document.body.append('more words'); true")
     (should (canvas-browser-live-test--wait
              10 (lambda () (equal canvas-browser--title "A later title"))))))
+
+(ert-deftest canvas-browser-live-a-page-with-a-translator-is-read-as-a-thread ()
+  ;; GIVEN the thread fixture, AND a translator for its address that
+  ;;       says what a comment is and where its author and its text are
+  ;; WHEN the text of the page is read as it is sent
+  ;; THEN it is the thread: each comment with its author, a reply two
+  ;;      spaces further in than what it answers, AND nothing of the
+  ;;      rest of the page
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (skip-unless (libxml-available-p))
+  (let ((canvas-browser-translators
+         (list (cons "fixtures/thread\\.html"
+                     (canvas-browser-thread-translator
+                      `(x-comment
+                        :author ,(lambda (comment)
+                                   (car (dom-by-tag (canvas-browser-dom-with comment 'slot "meta")
+                                                    'b)))
+                        :body (inside slot "body")))))))
+    (canvas-browser-live-test--in-fixture "thread.html"
+      (should (equal (canvas-browser--text-to-read 'page #'canvas-browser--page-text)
+                     (string-join '("alice" "" "What is the role?" ""
+                                    "  bob" "" "  The drawing layer." "" "  It uses cairo." ""
+                                    "    alice" "" "    I see." ""
+                                    "carol" "" "Nice.")
+                                  "\n"))))))

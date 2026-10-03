@@ -13,7 +13,8 @@ LOAD    = -L . -L $(DIAGRAM) -L $(KEYS) -L tests -L $(ELPACA)/websocket \
 # where org-roam is not installed.
 ROAM    = -L $(ELPACA)/org-roam -L $(ELPACA)/emacsql -L $(ELPACA)/magit-section \
           -L $(ELPACA)/dash -L $(ELPACA)/llama
-SUITES  = tests/canvas-browser-cdp-tests.el tests/canvas-browser-tests.el
+SUITES  = tests/canvas-browser-cdp-tests.el tests/canvas-browser-translate-tests.el \
+          tests/canvas-browser-tests.el
 
 .PHONY: test live clean
 

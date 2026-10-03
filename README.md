@@ -171,15 +171,17 @@ Three receivers come with canvas-browser:
   and `%:description` are its address and its title.
 - `org-roam node` asks for a node, one that exists or a new one with
   the title that you type. What is sent gets a heading of its own in
-  that note, which links to the page. Under it stands the text, as a
-  quote.
+  that note, which links to the page. Under it stands a thread from a
+  translator as an org list, and other text as a quote.
   The templates are in `canvas-browser-org-roam-templates`, where `%i`
   is the text.
 
 A receiver is a function with a name in `canvas-browser-receivers`. It
 runs in the page buffer and gets one plist: `:kind` is `text`, `page`
 or `part`, and `:text`, `:url` and `:title` are the text, the address
-and the title. A receiver that wants more than the text calls
+and the title. When a translator gave a thread, `:thread` holds it as
+Lisp data, which the section Translators describes. A receiver that
+wants more than the text calls
 `(canvas-browser-content-html CONTENT)`, which gives the HTML of the
 same thing as the page has it. The HTML still holds what lies inside
 what, such as a reply inside the comment that it answers. What a web
@@ -191,6 +193,83 @@ receiver that copies the text:
              (cons "kill ring"
                    (lambda (content) (kill-new (plist-get content :text)))))
 ```
+
+### Translators
+
+canvas-browser knows no site. A translator is the one place that knows
+one. It is a small snippet in your init file: a pattern for
+the address of a page, and what makes text to read from the HTML of
+that page. A page whose address has a translator is sent, and shown by
+`t`, as the text that the translator makes. If the translator finds
+nothing to translate in what is sent, the text goes as the page shows
+it.
+
+Most pages worth a translator are threads: a post, and comments with
+replies under them. For those, a translator only says which elements
+are the items, and where each keeps its title, its author, its time and
+its text. This one is for the comment pages of Reddit:
+
+```elisp
+(canvas-browser-add-translator
+ "reddit\\.com/r/[^/]+/comments/"
+ (canvas-browser-thread-translator
+  '(shreddit-post :title (attr post-title) :author (attr author)
+                  :time (attr created-timestamp)
+                  :body (inside slot "text-body"))
+  '(shreddit-comment :author (attr author) :time (attr created)
+                     :body (inside slot "comment"))))
+```
+
+The text then names each item with its author and its time. A reply
+stands two spaces further in than the comment that it answers:
+
+```
+alice · 2026-10-01 20:15
+
+How well does it work?
+
+  bob · 2026-10-01 20:26
+
+  For me it works well so far.
+```
+
+In the text, a picture stands as its description in brackets, such as
+`[image]`, and an emoji as itself.
+
+A thread translator also gives the thread as Lisp data: a list of
+items, each a plist with `:title`, `:author`, `:time`, `:text` and
+`:replies`. A receiver gets it as `:thread`, next to the text. The org
+capture and org-roam receivers use it: in the note, the thread is an
+org list. The author is in bold, and a reply is an item inside the item
+it answers. An empty line stands between two items, and each time is an
+org timestamp. `canvas-browser-thread-text` and
+`canvas-browser-thread-org` write a thread out as text and as an org
+list.
+
+An item is named by its tag, as `shreddit-comment` above, or by an
+attribute as `(data-role "comment")`. Inside an item:
+
+- `(attr NAME)` is an attribute of the item.
+- `(inside ATTRIBUTE VALUE)` is the first element inside it whose
+  attribute has that value.
+- `(matching ATTRIBUTE REGEXP)` is the first element inside it whose
+  attribute matches the regexp, as `(matching id "\\`content-")`.
+- `(tag NAME)` is the first element inside it with that tag.
+- `(inside ATTRIBUTE VALUE READ)`, `(matching ATTRIBUTE REGEXP READ)`
+  and `(tag NAME READ)` give the
+  attribute READ of that element, as `(tag time datetime)` gives the
+  time of a `time` element.
+- A function of the element can do the rest.
+
+An item that holds no title, no author and no text is dropped. So an
+element that a page marks like an item, such as the frame of a picture,
+does no harm.
+
+A page that is no thread takes any function as its translator. That
+function gets the parsed HTML, which `dom.el` reads, and returns the
+text. The helpers `canvas-browser-dom-text` and
+`canvas-browser-dom-with` are there for it. Translators need an Emacs
+with libxml.
 
 ### Embark
 

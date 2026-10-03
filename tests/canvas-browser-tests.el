@@ -5058,6 +5058,103 @@ Return the scripts that BODY had the page run, oldest first."
     (canvas-browser-test--asked-scripts :null
       (should-not (canvas-browser-content-html '(:kind text))))))
 
+(defmacro canvas-browser-test--with-page-of (html text &rest body)
+  "Run BODY in a page that gives HTML as its HTML and TEXT as its text."
+  (declare (indent 2))
+  `(cl-letf (((symbol-function 'canvas-browser-cdp-send)
+              (lambda (method params &optional answer _session &rest _)
+                (push (cons method params) canvas-browser-test--commands)
+                (when answer
+                  (funcall answer
+                           (list :result
+                                 (list :value
+                                       (if (string-search canvas-browser--html-js
+                                                          (or (plist-get params :expression) ""))
+                                           ,html
+                                         ,text)))))))
+             ((symbol-function 'display-buffer) #'ignore))
+     ,@body))
+
+(defun canvas-browser-test--html-asked-p ()
+  "Whether the page was asked for HTML."
+  (cl-some (lambda (script) (string-search canvas-browser--html-js script))
+           (canvas-browser-test--scripts)))
+
+(ert-deftest canvas-browser-a-page-with-a-translator-is-sent-as-its-translation ()
+  ;; GIVEN a page at an address that has a translator, which makes text
+  ;;       of the comments in the HTML of the page
+  ;; WHEN the page is sent to a receiver
+  ;; THEN the receiver gets the text that the translator made, not the
+  ;;      text that the page shows, AND the thread as data beside it
+  (skip-unless (libxml-available-p))
+  (canvas-browser-test--sending
+    (let ((canvas-browser-translators
+           (list (cons "example\\.org"
+                       (canvas-browser-thread-translator
+                        '(x-comment :author (attr by) :body (inside slot "comment")))))))
+      (canvas-browser-test--with-page-of
+          "<x-comment by=\"alice\"><div slot=\"comment\">Hi.</div><button>Reply</button></x-comment>"
+          "alice Hi. Reply"
+        (canvas-browser-send-to)))
+    (should (equal (plist-get canvas-browser-test--received :text) "alice\n\nHi."))
+    (should (equal (plist-get canvas-browser-test--received :thread)
+                   '((:author "alice" :text "Hi."))))
+    (should (equal (plist-get canvas-browser-test--received :url) "https://example.org"))))
+
+(ert-deftest canvas-browser-a-translator-that-finds-nothing-leaves-the-text-of-the-page ()
+  ;; GIVEN a page at an address that has a translator, which finds
+  ;;       nothing to translate in what is sent
+  ;; WHEN the page is sent to a receiver
+  ;; THEN the receiver gets the text that the page shows, AND a message
+  ;;      says that the translator found nothing, so that a snippet that
+  ;;      does not fit the page is seen
+  (skip-unless (libxml-available-p))
+  (canvas-browser-test--sending
+    (let ((canvas-browser-translators (list (cons "example\\.org" #'ignore)))
+          (said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (canvas-browser-test--with-page-of "<p>words</p>" "plain words"
+          (canvas-browser-send-to)))
+      (should (string-search "found nothing" said))
+      (should (string-search "example\\.org" said)))
+    (should (equal (plist-get canvas-browser-test--received :text) "plain words"))))
+
+(ert-deftest canvas-browser-a-page-without-a-translator-is-not-asked-for-its-html ()
+  ;; GIVEN a page at an address that no translator matches
+  ;; WHEN the page is sent to a receiver
+  ;; THEN the receiver gets the text that the page shows, AND the page
+  ;;      was not asked for its HTML, which nobody reads then
+  (canvas-browser-test--sending
+    (let ((canvas-browser-translators (list (cons "elsewhere\\.org" #'ignore))))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--with-page-of "<p>words</p>" "plain words"
+        (canvas-browser-send-to))
+      (should-not (canvas-browser-test--html-asked-p)))
+    (should (equal (plist-get canvas-browser-test--received :text) "plain words"))))
+
+(ert-deftest canvas-browser-the-part-that-is-picked-is-translated-too ()
+  ;; GIVEN a page with a translator, where a part is picked
+  ;; WHEN the part is sent, and when its text is shown
+  ;; THEN the receiver gets the translation of the HTML of that part,
+  ;;      AND the buffer with the text holds the same
+  (skip-unless (libxml-available-p))
+  (canvas-browser-test--sending
+    (setq canvas-browser--part '(:place 1 :scrolls nil))
+    (let ((canvas-browser-translators
+           (list (cons "example\\.org" (lambda (dom) (format "%d paragraphs"
+                                                            (length (dom-by-tag dom 'p))))))))
+      (canvas-browser-test--with-page-of "<p>one</p><p>two</p>" "one two"
+        (cl-letf (((symbol-function 'canvas-browser--part-box) #'ignore))
+          (canvas-browser-send-to))
+        (canvas-browser-text)))
+    (should (equal (plist-get canvas-browser-test--received :kind) 'part))
+    (should (equal (plist-get canvas-browser-test--received :text) "2 paragraphs"))
+    (let ((text-buffer (canvas-browser--text-buffer)))
+      (unwind-protect
+          (should (equal (with-current-buffer text-buffer (buffer-string)) "2 paragraphs"))
+        (kill-buffer text-buffer)))))
+
 (ert-deftest canvas-browser-sending-a-part-needs-a-part ()
   ;; GIVEN a page where no part is picked
   ;; WHEN a part is sent
@@ -5267,6 +5364,44 @@ file of ids of the user."
       (should (string-search "\n* From [[https://example.org/a][A page]]\n" note))
       (should (string-search "#+begin_quote\nthe words\n#+end_quote" note))
       (should-not (string-search "#+title: A page" note)))))
+
+(ert-deftest canvas-browser-the-org-receivers-write-a-thread-as-an-org-list ()
+  ;; GIVEN what a translator made of a thread: the text, and the thread
+  ;;       as data
+  ;; WHEN it is sent to org capture, and to an org-roam node
+  ;; THEN each note holds the thread as an org list, a reply inside the
+  ;;      item it answers, and not the text for a reader, AND the note of
+  ;;      org-roam has the list on its own, not in a quote
+  (let* ((thread '((:author "alice" :text "What is the role?"
+                    :replies ((:author "bob" :text "The drawing layer.")))))
+         (content (list :kind 'page :text "alice\n\nWhat is the role?" :thread thread
+                        :url "https://example.org/a" :title "A page"))
+         (file (make-temp-file "canvas-browser-capture" nil ".org"))
+         (org-capture-templates
+          `(("t" "test" entry (file ,file) "* %a\n%i" :immediate-finish t)))
+         (unread-command-events (listify-key-sequence "t")))
+    (unwind-protect
+        (progn
+          (canvas-browser-send-to-org-capture content)
+          (with-current-buffer (find-buffer-visiting file)
+            (should (string-search
+                     "- *alice*\n\n  What is the role?\n\n  - *bob*\n\n    The drawing layer."
+                     (buffer-string)))))
+      (when-let* ((buffer (find-buffer-visiting file)))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer))
+      (delete-file file))
+    (skip-unless (locate-library "org-roam"))
+    (require 'org-roam)
+    (canvas-browser-test--with-roam directory
+      (cl-letf (((symbol-function 'org-roam-node-read)
+                 (lambda (&rest _) (org-roam-node-create :title "Roles"))))
+        (canvas-browser-send-to-org-roam content))
+      (let ((note (canvas-browser-test--note (expand-file-name "roles.org" directory))))
+        (should (string-search
+                 "- *alice*\n\n  What is the role?\n\n  - *bob*\n\n    The drawing layer."
+                 note))
+        (should-not (string-search "#+begin_quote" note))))))
 
 (ert-deftest canvas-browser-the-org-roam-receiver-needs-no-name-that-a-package-may-take ()
   ;; GIVEN an Emacs where some package has a function called `body',

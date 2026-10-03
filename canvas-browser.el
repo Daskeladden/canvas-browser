@@ -21,6 +21,7 @@
 (require 'transient)
 (require 'url-util)
 (require 'canvas-browser-cdp)
+(require 'canvas-browser-translate)
 
 (defcustom canvas-browser-quality 70
   "The quality of a screencast frame, from 1 to 100.
@@ -2631,11 +2632,12 @@ script failed in the page."
 (defun canvas-browser-text ()
   "Put the text of the page in a buffer, where the keys of Emacs work.
 When a part of the page is picked, with `S\=', it is the text of that
-part.  It is the text that `>\=' sends."
+part.  It is the text that `>\=' sends: translated, when the address
+of the page has a translator."
   (interactive)
   (let ((text (if canvas-browser--part
-                  (canvas-browser--part-text)
-                (canvas-browser--page-text)))
+                  (canvas-browser--text-to-read 'part #'canvas-browser--part-text)
+                (canvas-browser--text-to-read 'page #'canvas-browser--page-text)))
         (target (canvas-browser--text-buffer)))
     (with-current-buffer target
       (let ((inhibit-read-only t))
@@ -3782,9 +3784,13 @@ text of the whole page, and `part' for the text of the part of it that
 is picked.  The text is all that the page shows there, and nothing is
 read into it on the way: what is made of it is the business of
 FUNCTION, which gets the HTML from `canvas-browser-content-html\=' when
-it wants what the text has lost.  Its `:text' is that text, and its
-`:url' and `:title' are the address and the title of the page.  Another
-package adds a receiver of its own with `add-to-list\='."
+it wants what the text has lost.  Only a translator of
+`canvas-browser-translators\=' comes between: when the address of the
+page has one, the text is what it made of the page, and `:thread' is
+the thread as Lisp data, when the translator gave one.  Its `:text' is
+that text, and its `:url' and `:title' are the address and the title of
+the page.  Another package adds a receiver of its own with
+`add-to-list\='."
   :type '(alist :key-type string :value-type function)
   :group 'canvas-browser)
 
@@ -3872,14 +3878,42 @@ It is nil for a part that has gone, or that is out of the window."
                       (canvas-browser--part-js)))))
     (and box (> (plist-get box :w) 0) (> (plist-get box :h) 0) box)))
 
-(defun canvas-browser--content (kind text)
-  "What a receiver gets of this page: TEXT of KIND, its address and title.
+(defun canvas-browser--translation (kind)
+  "What the translator of this page makes of KIND of it, or nil.
+It is a plist of `canvas-browser-translate\='.
+It is nil when the address has no translator, and when the translator
+finds nothing to translate, which a message says.  The page is asked
+for its HTML only when its address has a translator."
+  (when-let* ((entry (and canvas-browser--url
+                          (canvas-browser-translator-for canvas-browser--url))))
+    (or (when-let* ((html (canvas-browser-content-html (list :kind kind))))
+          (canvas-browser-translate canvas-browser--url html))
+        ;; A snippet that does not fit the page would go unseen else.
+        (progn (message "canvas-browser: the translator for %s found nothing here"
+                        (car entry))
+               nil))))
+
+(defun canvas-browser--reading (kind plain)
+  "KIND of this page for a reader, as a plist with :text, and :thread.
+It is the translation, when the address of the page has a translator
+that gives one.  Else :text is what PLAIN, a function, gives: the text
+as the page shows it, and there is no :thread."
+  (or (canvas-browser--translation kind) (list :text (funcall plain))))
+
+(defun canvas-browser--text-to-read (kind plain)
+  "The text of KIND of this page, for a reader; see `canvas-browser--reading\='."
+  (plist-get (canvas-browser--reading kind plain) :text))
+
+(defun canvas-browser--content (kind reading)
+  "What a receiver gets of this page: READING of KIND, its address and title.
 KIND is `text' for the text that the caret marks, `page' for the text
-of the whole page, and `part' for that of one part of it.  A page
-without a title is named by its address."
-  (list :kind kind :text text
-        :url canvas-browser--url
-        :title (or canvas-browser--title canvas-browser--url)))
+of the whole page, and `part' for that of one part of it.  READING is
+a plist of `canvas-browser--reading\='.  A page without a title is
+named by its address."
+  (append (list :kind kind :text (plist-get reading :text))
+          (and (plist-get reading :thread) (list :thread (plist-get reading :thread)))
+          (list :url canvas-browser--url
+                :title (or canvas-browser--title canvas-browser--url))))
 
 (defun canvas-browser--read-receiver ()
   "Ask which receiver gets the page, and return its function."
@@ -3894,7 +3928,7 @@ without a title is named by its address."
 TEXT is a function that gives the text.  The receiver is asked for
 first, so that a page is not read for nothing."
   (let ((receiver (canvas-browser--read-receiver)))
-    (funcall receiver (canvas-browser--content kind (funcall text)))))
+    (funcall receiver (canvas-browser--content kind (canvas-browser--reading kind text)))))
 
 (defun canvas-browser-send-to ()
   "Send the text that the caret marks to a receiver.
@@ -3947,7 +3981,8 @@ out of the window."
          (receiver (if box
                        (canvas-browser--read-receiver-over box)
                      (canvas-browser--read-receiver))))
-    (funcall receiver (canvas-browser--content 'part (canvas-browser--part-text)))))
+    (funcall receiver (canvas-browser--content
+                       'part (canvas-browser--reading 'part #'canvas-browser--part-text)))))
 
 (defun canvas-browser--paste (text)
   "Paste TEXT into this buffer with the command it has for `yank\='.
@@ -3988,10 +4023,18 @@ A template then has the link in %a, the address in %:link, the title in
                           :annotation (org-link-make-string url title)
                           :initial text)))
 
+(defun canvas-browser--org-text (content &optional quote)
+  "The text of CONTENT for a note of org.
+A thread that a translator gave is an org list.  Other text is as it
+is, or in a quote block with QUOTE."
+  (cond ((plist-get content :thread) (canvas-browser-thread-org (plist-get content :thread)))
+        (quote (format "#+begin_quote\n%s\n#+end_quote" (plist-get content :text)))
+        (t (plist-get content :text))))
+
 (defun canvas-browser-send-to-org-capture (content)
   "Capture CONTENT with a template of `org-capture\=', which is asked for."
   (require 'org-capture)
-  (canvas-browser--store-org-link content (plist-get content :text))
+  (canvas-browser--store-org-link content (canvas-browser--org-text content))
   ;; Without this, org-capture stores a link to the page buffer, and
   ;; that one replaces the link to the page.
   (let ((org-capture-link-is-already-stored t))
@@ -4003,9 +4046,10 @@ A template then has the link in %a, the address in %:link, the title in
      :unnarrowed t))
   "The templates of the org-roam receiver, as org-roam writes its templates.
 See `org-roam-capture-templates\=' for what one holds.  %i stands for
-what is sent, with a heading of its own that links to the page: the
-text, as a quote.  %a stands for a link to the page, named by the title
-of the page, and ${title} for the title of the node.
+what is sent, with a heading of its own that links to the page: a
+thread that a translator gave as an org list, and other text as a
+quote.  %a stands for a link to the page, named by the title of the
+page, and ${title} for the title of the node.
 
 The text is not ${body}, as org-roam has it for a page sent from a
 browser.  For ${NAME} org-roam first calls a function called NAME, when
@@ -4019,11 +4063,12 @@ the web-server package has."
 
 (defun canvas-browser--org-section (content)
   "What a send of CONTENT writes into a note: a heading of its own.
-The heading links to the page.  Under it comes the text, as a quote."
+The heading links to the page.  Under it comes a thread as an org list,
+or other text as a quote."
   (concat "* From "
           (org-link-make-string (plist-get content :url) (plist-get content :title))
           "\n\n"
-          (format "#+begin_quote\n%s\n#+end_quote" (plist-get content :text))))
+          (canvas-browser--org-text content t)))
 
 (defun canvas-browser--capture-in-node (node content)
   "Capture CONTENT in the note of NODE, under a heading of its own."
@@ -4035,8 +4080,8 @@ The heading links to the page.  Under it comes the text, as a quote."
   "Capture CONTENT in an org-roam node, which is asked for.
 The node is one that exists, or a new one with the title that you type.
 What is sent gets a heading of its own in the note, which links to
-the page: the text, as a quote.  The templates are those of
-`canvas-browser-org-roam-templates\='.
+the page: a thread as an org list, and other text as a quote.  The
+templates are those of `canvas-browser-org-roam-templates\='.
 
 The node is not found by the address of the page, and not named by its
 title.  Many a page has one address and one title for all that it
