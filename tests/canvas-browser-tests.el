@@ -2781,6 +2781,100 @@ selection at once."
       (should-not (buffer-live-p opened))
       (should-not (canvas-browser-test--params "Target.closeTarget")))))
 
+(defun canvas-browser-test--tab-info (target url)
+  "What chromium says of the tab TARGET at URL, which no page opened."
+  (list :targetInfo (list :targetId target :type "page" :url url :title "A tab")))
+
+(defun canvas-browser-test--page-buffers ()
+  "How many page buffers there are."
+  (cl-count-if (lambda (buffer) (eq (buffer-local-value 'major-mode buffer) 'canvas-browser-mode))
+               (buffer-list)))
+
+(defmacro canvas-browser-test--with-tabs (&rest body)
+  "Run BODY in a page, and kill the page buffers that BODY made after it."
+  (declare (indent 0))
+  `(let ((canvas-browser--rest-target "REST")
+         (canvas-browser--closed-targets nil))
+     (canvas-browser-test--in-page
+       (let ((page (current-buffer)))
+         (unwind-protect
+             (progn ,@body)
+           (dolist (buffer (buffer-list))
+             (when (and (eq (buffer-local-value 'major-mode buffer) 'canvas-browser-mode)
+                        (not (eq buffer page)))
+               (kill-buffer buffer))))))))
+
+(ert-deftest canvas-browser-a-tab-that-chromium-opens-on-its-own-gets-a-buffer ()
+  ;; GIVEN a page buffer
+  ;; WHEN chromium opens a tab at a web address that no page opened, as
+  ;;      it does when the service worker of a site opens a window after
+  ;;      its notification was clicked
+  ;; THEN the tab is shown in a page buffer of its own, attached to it
+  ;;      and not sent anywhere.  Left without a buffer it stood in front
+  ;;      in chromium where nobody saw it, and its site took it as looked
+  ;;      at and showed no notification any more
+  ;; WHEN chromium tells of the tab again
+  ;; THEN no second buffer is made
+  (canvas-browser-test--with-tabs
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser--target-created
+     (canvas-browser-test--tab-info "S1" "https://mail.example/mail/1"))
+    (let ((opened (canvas-browser--buffer-of-target "S1")))
+      (should (buffer-live-p opened))
+      (should (equal (buffer-local-value 'canvas-browser--url opened)
+                     "https://mail.example/mail/1"))
+      (should (equal (plist-get (canvas-browser-test--params "Target.attachToTarget") :targetId)
+                     "S1"))
+      (should-not (canvas-browser-test--params "Page.navigate")))
+    (canvas-browser--target-created
+     (canvas-browser-test--tab-info "S1" "https://mail.example/mail/1"))
+    (should (= (canvas-browser-test--page-buffers) 2))))
+
+(ert-deftest canvas-browser-a-tab-that-gets-its-address-later-gets-its-buffer-then ()
+  ;; GIVEN a tab that chromium opened on its own with no address yet
+  ;; THEN it has no buffer: a page buffer makes its own tab that way too
+  ;; WHEN chromium says that the tab is at a web address now
+  ;; THEN it is shown in a page buffer, once
+  (canvas-browser-test--with-tabs
+    (canvas-browser--target-created (canvas-browser-test--tab-info "S2" "about:blank"))
+    (should-not (canvas-browser--buffer-of-target "S2"))
+    (canvas-browser--target-changed
+     (canvas-browser-test--tab-info "S2" "https://mail.example/mail/2"))
+    (should (buffer-live-p (canvas-browser--buffer-of-target "S2")))
+    (canvas-browser--target-changed
+     (canvas-browser-test--tab-info "S2" "https://mail.example/mail/3"))
+    (should (= (canvas-browser-test--page-buffers) 2))))
+
+(ert-deftest canvas-browser-tabs-that-are-no-pages-of-the-web-get-no-buffer ()
+  ;; GIVEN a page buffer
+  ;; WHEN chromium tells of its own new-tab page, of the empty tab that
+  ;;      stands in front of the pages that are put away, of a tab that
+  ;;      a page buffer closed a moment ago, and of a page that it loads
+  ;;      ahead of a click
+  ;; THEN none of them gets a buffer
+  (canvas-browser-test--with-tabs
+    (push "GONE" canvas-browser--closed-targets)
+    (dolist (info (list (canvas-browser-test--tab-info "N1" "chrome://newtab/")
+                        (canvas-browser-test--tab-info "REST" "https://example.org/")
+                        (canvas-browser-test--tab-info "GONE" "https://example.org/")
+                        ;; A page that chromium loads ahead of a click.
+                        (list :targetInfo (list :targetId "AHEAD" :type "page" :subtype "prerender"
+                                                :url "https://example.org/next"))))
+      (canvas-browser--target-created info)
+      (canvas-browser--target-changed info))
+    (should (= (canvas-browser-test--page-buffers) 1))))
+
+(ert-deftest canvas-browser-a-page-buffer-that-is-killed-notes-its-tab-as-closed ()
+  ;; GIVEN a page buffer
+  ;; WHEN it lets go of its tab, as it does when it is killed
+  ;; THEN the tab is among those that were closed of late, so that what
+  ;;      chromium still says of it makes no new buffer
+  (let ((canvas-browser--closed-targets nil))
+    (canvas-browser-test--in-page
+      (let ((target canvas-browser--target))
+        (canvas-browser--release)
+        (should (member target canvas-browser--closed-targets))))))
+
 (defvar canvas-minimap-exclude-modes)
 
 (ert-deftest canvas-browser-a-page-has-no-map-key ()
@@ -3138,14 +3232,13 @@ parameters, and deleting a frame records it in DELETED instead."
   ;; THEN the embedded page is given a way to say it goes fullscreen, AND
   ;;      the page of its own is not, having the whole window already
   (canvas-browser-test--embedded page text host
-    (should (equal (canvas-browser-test--params "Runtime.addBinding")
-                   '(:name "canvasBrowserFullscreen")))
-    (should (string-match-p "fullscreenchange"
-                            (plist-get (canvas-browser-test--params
-                                        "Page.addScriptToEvaluateOnNewDocument")
-                                       :source))))
+    (should (member '("Runtime.addBinding" :name "canvasBrowserFullscreen")
+                    canvas-browser-test--commands))
+    (should (cl-some (lambda (script) (string-match-p "fullscreenchange" script))
+                     (canvas-browser-test--scripts-before-load))))
   (canvas-browser-test--in-page
-    (should-not (assoc "Runtime.addBinding" canvas-browser-test--commands))))
+    (should-not (member '("Runtime.addBinding" :name "canvasBrowserFullscreen")
+                        canvas-browser-test--commands))))
 
 (ert-deftest canvas-browser-an-embedded-page-fullscreen-fills-a-frame-and-comes-back ()
   ;; GIVEN a page embedded in a host at 400 by 225, its text there
@@ -3317,12 +3410,13 @@ The window manager says so on the root window, where Emacs reads it."
 
 (ert-deftest canvas-browser-a-page-that-is-not-ours-changes-nothing ()
   ;; GIVEN a page buffer
-  ;; WHEN chromium tells of a new address of a page nobody here shows
+  ;; WHEN chromium tells of a new address of a page that another page
+  ;;      opened, which nobody here shows
   ;; THEN this buffer keeps its name and its address
   (canvas-browser-test--in-page
     (let ((name (buffer-name)))
       (canvas-browser--target-changed
-       (list :targetInfo (list :targetId "SOMEONE-ELSE" :type "page"
+       (list :targetInfo (list :targetId "SOMEONE-ELSE" :type "page" :openerId "A-STRANGER"
                                :url "https://example.org/elsewhere" :title "Elsewhere")))
       (should (equal (buffer-name) name))
       (should (equal canvas-browser--url "https://example.org")))))
@@ -5652,3 +5746,489 @@ It is found as org finds it, from where the link stands."
     (should (eq (key-binding (kbd ">")) #'canvas-browser-send-to)))
   (should (eq (plist-get (canvas-browser-test--menu-entry ">") :command)
               'canvas-browser-send-to)))
+
+;;;; The notifications of a page
+
+(defun canvas-browser-test--focus-told ()
+  "What chromium was last told about the focus of the page: t, :json-false, or nil."
+  (plist-get (canvas-browser-test--params "Emulation.setFocusEmulationEnabled") :enabled))
+
+(ert-deftest canvas-browser-a-page-that-no-window-shows-is-looked-at-no-more ()
+  ;; GIVEN a page that was told it has the focus, as the page you look at is
+  ;; WHEN no window shows it any more
+  ;; THEN chromium is told that the page has the focus no more, AND an
+  ;;      empty tab is made, which is then in front of the page in
+  ;;      chromium's window.  A site holds its notifications back while
+  ;;      it believes that you look at it, and a page that was put away
+  ;;      believed so for good: it had the focus, and it was the tab in
+  ;;      front
+  ;; WHEN it is looked at again
+  ;; THEN it is told that it has the focus once more
+  (let ((canvas-browser--rest-target nil))
+    (canvas-browser-test--in-page
+      (should canvas-browser--focused)
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser--sleep)
+      (should (eq (canvas-browser-test--focus-told) :json-false))
+      (should-not canvas-browser--focused)
+      (should (equal (canvas-browser-test--params "Target.createTarget") '(:url "about:blank")))
+      (should (equal canvas-browser--rest-target "T1"))
+      ;; The tab of the page was put in front before the empty tab came:
+      ;; a page that was clicked gives up the focus of chromium only to
+      ;; a tab that takes its place in front.
+      (should (equal (mapcar #'car (last canvas-browser-test--commands 2))
+                     '("Target.createTarget" "Target.activateTarget")))
+      (should (equal (cdar (last canvas-browser-test--commands))
+                     (list :targetId canvas-browser--target)))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser--wake t)
+      (should (eq (canvas-browser-test--focus-told) t)))))
+
+(ert-deftest canvas-browser-the-empty-tab-is-made-once-and-put-in-front-after ()
+  ;; GIVEN chromium with the empty tab of an earlier page that was put away
+  ;; WHEN a page that was looked at is put away
+  ;; THEN the empty tab is put in front, AND no second one is made
+  ;; WHEN the page is put away again, as each change of the windows does
+  ;;      to a page that no window shows
+  ;; THEN chromium is told nothing: the page was not looked at since
+  (let ((canvas-browser--rest-target "REST"))
+    (canvas-browser-test--in-page
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser--sleep)
+      ;; First the tab of the page, and then the empty tab.
+      (should (equal (cl-loop for (method . params) in (reverse canvas-browser-test--commands)
+                              when (equal method "Target.activateTarget")
+                              collect (plist-get params :targetId))
+                     (list canvas-browser--target "REST")))
+      (should-not (canvas-browser-test--params "Target.createTarget"))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser--sleep)
+      (should-not canvas-browser-test--commands))))
+
+(ert-deftest canvas-browser-an-empty-tab-that-is-gone-is-made-again ()
+  ;; GIVEN the id of an empty tab that chromium has no more, as after
+  ;;       chromium started again
+  ;; WHEN a page that was looked at is put away
+  ;; THEN chromium refuses to put that tab in front, AND a new empty tab
+  ;;      is made, AND the reader is told nothing
+  (let ((canvas-browser--rest-target "GONE"))
+    (canvas-browser-test--in-page
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--refusing "Target.activateTarget" 2 "No target with given id found"
+        (canvas-browser--sleep)
+        (should (equal (canvas-browser-test--params "Target.createTarget") '(:url "about:blank")))
+        (should-not said)))))
+
+(defun canvas-browser-test--scripts-before-load ()
+  "The scripts that chromium was told to run before each page loads."
+  (cl-loop for (method . params) in canvas-browser-test--commands
+           when (equal method "Page.addScriptToEvaluateOnNewDocument")
+           collect (plist-get params :source)))
+
+(defun canvas-browser-test--page-tells (said &optional context)
+  "Have the page of this buffer tell Emacs SAID about a notification.
+SAID is a plist, and CONTEXT the place in the page that tells, 7 when nil."
+  (canvas-browser-test--event "Runtime.bindingCalled"
+                              (list :name "canvasBrowserNotify"
+                                    :payload (json-encode said)
+                                    :executionContextId (or context 7))))
+
+(defconst canvas-browser-test--new-mail
+  '(:event "show" :id 3 :title "New mail" :body "From alice" :tag "" :icon ""
+    :origin "https://example.org")
+  "What a page tells Emacs when it shows a notification.")
+
+(defconst canvas-browser-test--notify-name
+  '("Runtime.addBinding" :name "canvasBrowserNotify")
+  "The command that gives a page the name to call Emacs by.")
+
+(defmacro canvas-browser-test--deciding (answer &rest body)
+  "Run BODY where the question about notifications is answered with ANSWER.
+The question goes to `asked', and what is kept to `saved'."
+  (declare (indent 1))
+  `(let ((asked nil) (saved nil))
+     (cl-letf (((symbol-function 'y-or-n-p) (lambda (prompt) (setq asked prompt) ,answer))
+               ((symbol-function 'customize-save-variable)
+                (lambda (variable value &rest _) (setq saved (list variable value)))))
+       ,@body)))
+
+(defun canvas-browser-test--frame-goes-to (url)
+  "Have chromium say that a frame of this page went to URL."
+  (canvas-browser-test--event "Page.frameNavigated" (list :frame (list :id "F1" :url url))))
+
+(ert-deftest canvas-browser-a-page-that-opens-is-given-nothing-to-call ()
+  ;; GIVEN a page buffer that opens, with no site kept
+  ;; THEN a script for notifications goes in before each page loads,
+  ;;      which leaves a page alone unless it may show notifications,
+  ;;      AND the page is given no name to call Emacs by, so that a site
+  ;;      finds nothing put into its browser
+  (canvas-browser-test--in-page
+    (should (cl-some (lambda (script)
+                       (and (string-search "canvasBrowserNotify" script)
+                            (string-search "Notification.permission !== 'granted') return" script)))
+                     (canvas-browser-test--scripts-before-load)))
+    (should-not (member canvas-browser-test--notify-name canvas-browser-test--commands))))
+
+(ert-deftest canvas-browser-a-frame-at-a-site-that-may-notify-is-given-the-name ()
+  ;; GIVEN one site that may show notifications, and one that may not
+  ;; WHEN a frame of the page goes to a site that nothing is kept about,
+  ;;      and to the site that may not
+  ;; THEN the page is given no name to call Emacs by
+  ;; WHEN a frame goes to a page of the site that may
+  ;; THEN the page is given the name, each time, since chromium keeps
+  ;;      it only for the frames that are there
+  (canvas-browser-test--in-page
+    (let ((canvas-browser-notification-sites '(("https://mail.example" . t) ("https://no.example"))))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--frame-goes-to "https://other.example/")
+      (canvas-browser-test--frame-goes-to "https://no.example/inbox")
+      (canvas-browser-test--frame-goes-to "about:blank")
+      (should-not (member canvas-browser-test--notify-name canvas-browser-test--commands))
+      (canvas-browser-test--frame-goes-to "https://mail.example/inbox?id=1")
+      (canvas-browser-test--frame-goes-to "https://mail.example/sent")
+      (should (= (cl-count canvas-browser-test--notify-name canvas-browser-test--commands
+                           :test #'equal)
+                 2)))))
+
+(ert-deftest canvas-browser-a-notification-of-a-page-goes-to-the-hook ()
+  ;; GIVEN a page with a title, AND a function on the hook of notifications
+  ;; WHEN the page shows a notification
+  ;; THEN the function gets the title and the body of the notification,
+  ;;      the site, the address and the title of the page, and its buffer
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "Mail")
+    (let* ((got nil)
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (canvas-browser-test--page-tells canvas-browser-test--new-mail)
+      (should (equal (plist-get got :title) "New mail"))
+      (should (equal (plist-get got :body) "From alice"))
+      (should (equal (plist-get got :source) "example.org"))
+      (should (equal (plist-get got :origin) "https://example.org"))
+      (should (equal (plist-get got :url) "https://example.org"))
+      (should (equal (plist-get got :page-title) "Mail"))
+      (should (eq (plist-get got :buffer) (current-buffer))))))
+
+(ert-deftest canvas-browser-a-notification-is-said-in-the-echo-area-as-it-comes ()
+  ;; GIVEN the hook of notifications as the package comes
+  ;; WHEN a page shows a notification
+  ;; THEN the echo area names the site, the title and the body
+  (canvas-browser-test--in-page
+    (let ((canvas-browser-notification-functions
+           (default-value 'canvas-browser-notification-functions))
+          (said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (canvas-browser-test--page-tells canvas-browser-test--new-mail))
+      (should (equal said "example.org: New mail: From alice")))))
+
+(ert-deftest canvas-browser-opening-a-notification-shows-its-page-and-clicks-it ()
+  ;; GIVEN a notification that a page showed, from one of its frames
+  ;; WHEN it is opened from another buffer
+  ;; THEN the page buffer is shown, AND the page is told that the
+  ;;      notification was clicked, in the frame that showed it
+  (canvas-browser-test--in-page
+    (let* ((page (current-buffer))
+           (got nil)
+           (shown nil)
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (canvas-browser-test--page-tells canvas-browser-test--new-mail 9)
+      (setq canvas-browser-test--commands nil)
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (setq shown buffer))))
+        (with-temp-buffer
+          (canvas-browser-notification-open got)))
+      (should (eq shown page))
+      (let ((params (canvas-browser-test--params "Runtime.evaluate")))
+        (should (string-search "click(3)" (plist-get params :expression)))
+        (should (equal (plist-get params :contextId) 9))))))
+
+(ert-deftest canvas-browser-a-notification-of-a-page-that-is-gone-cannot-be-opened ()
+  ;; GIVEN a notification whose page buffer was killed since
+  ;; WHEN it is opened
+  ;; THEN an error says that the page is gone
+  (let ((got nil))
+    (canvas-browser-test--in-page
+      (let ((canvas-browser-notification-functions
+             (list (lambda (notification) (setq got notification)))))
+        (canvas-browser-test--page-tells canvas-browser-test--new-mail)))
+    (should (string-search "is gone"
+                           (cadr (should-error (canvas-browser-notification-open got)
+                                               :type 'user-error))))))
+
+(ert-deftest canvas-browser-a-site-that-is-allowed-shows-notifications-at-once ()
+  ;; GIVEN a page of a site that nothing is kept about
+  ;; WHEN the reader says in its buffer that the site may show
+  ;;      notifications
+  ;; THEN the question names the site, AND the answer is kept, AND
+  ;;      chromium is told that the site may, AND the page that is there
+  ;;      is given the name to call Emacs by and the script, so that it
+  ;;      need not be loaded again
+  (canvas-browser-test--in-page
+    (let ((canvas-browser-notification-sites nil))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--deciding t
+        (canvas-browser-notifications)
+        (should (string-search "https://example.org" asked))
+        (should (equal saved '(canvas-browser-notification-sites
+                               (("https://example.org" . t))))))
+      (should (equal (canvas-browser-test--params "Browser.setPermission")
+                     '(:permission (:name "notifications") :setting "granted"
+                       :origin "https://example.org")))
+      (should (member canvas-browser-test--notify-name canvas-browser-test--commands))
+      (should (string-search "canvasBrowserNotify"
+                             (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                        :expression))))))
+
+(ert-deftest canvas-browser-a-site-that-is-refused-gets-nothing ()
+  ;; GIVEN a page of a site that may show notifications
+  ;; WHEN the reader says in its buffer that the site may not
+  ;; THEN the answer is kept, AND chromium is told that the site may
+  ;;      not, AND the page is given nothing
+  (canvas-browser-test--in-page
+    (let ((canvas-browser-notification-sites (list (cons "https://example.org" t))))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--deciding nil
+        (canvas-browser-notifications)
+        (should (equal saved '(canvas-browser-notification-sites (("https://example.org"))))))
+      (should (equal (plist-get (canvas-browser-test--params "Browser.setPermission") :setting)
+                     "denied"))
+      (should-not (member canvas-browser-test--notify-name canvas-browser-test--commands))
+      (should-not (canvas-browser-test--params "Runtime.evaluate")))))
+
+(ert-deftest canvas-browser-the-site-of-a-page-is-named-as-the-page-names-it ()
+  ;; GIVEN a page at an address with a port and a path
+  ;; WHEN the reader says that its site may show notifications
+  ;; THEN the site is kept with its port and without the path, as a page
+  ;;      names its own site
+  (canvas-browser-test--in-page
+    (setq canvas-browser--url "http://localhost:8080/mail/inbox?id=1")
+    (let ((canvas-browser-notification-sites nil))
+      (canvas-browser-test--deciding t
+        (canvas-browser-notifications)
+        (should (equal saved '(canvas-browser-notification-sites
+                               (("http://localhost:8080" . t)))))))))
+
+(ert-deftest canvas-browser-chromium-is-told-of-the-sites-that-are-kept ()
+  ;; GIVEN two sites that are kept, one that may show notifications and
+  ;;       one that may not
+  ;; WHEN a page buffer opens
+  ;; THEN chromium is told of both, so that a page of either finds its
+  ;;      answer there
+  (let ((canvas-browser-notification-sites '(("https://a.example" . t) ("https://b.example"))))
+    (canvas-browser-test--in-page
+      (should (member '("Browser.setPermission" :permission (:name "notifications")
+                        :setting "granted" :origin "https://a.example")
+                      canvas-browser-test--commands))
+      (should (member '("Browser.setPermission" :permission (:name "notifications")
+                        :setting "denied" :origin "https://b.example")
+                      canvas-browser-test--commands)))))
+
+;;;; Emacs as the notification service of the session
+
+;; The functions of the bus are stubbed below.  They are loaded first:
+;; a file that loads while its functions are stubbed puts the real ones
+;; in their place, and a test would then reach the bus of the session.
+(require 'dbus nil t)
+
+(defmacro canvas-browser-test--with-bus (owner &rest body)
+  "Run BODY with the session bus stubbed, where OWNER is its notification service.
+OWNER is nil when no program is.  What Emacs registers goes to
+`registered': (SERVICE) for the service, and (METHOD . HANDLER) for
+each method.  The signals that Emacs sends go to `signals', each
+\(TO NAME ARGUMENTS)."
+  (declare (indent 1))
+  `(let ((registered nil)
+         (signals nil)
+         (canvas-browser--dbus-served nil)
+         (canvas-browser--dbus-count 0))
+     (skip-unless (featurep 'dbus))
+     (cl-letf (((symbol-function 'dbus-get-name-owner) (lambda (&rest _) ,owner))
+               ((symbol-function 'dbus-register-service)
+                (lambda (_bus service &rest _) (push (list service) registered) :primary-owner))
+               ((symbol-function 'dbus-register-method)
+                (lambda (_bus _service _path _interface method handler &rest _)
+                  (push (cons method handler) registered)))
+               ((symbol-function 'dbus-send-signal)
+                (lambda (_bus to _path _interface name &rest arguments)
+                  (push (list to name arguments) signals))))
+       ,@body)))
+
+(defmacro canvas-browser-test--serving (&rest body)
+  "Run BODY where Emacs is the notification service, in a page at example.org.
+`notify' is the function that takes a notification from the bus, and
+`got' the notifications that the hook was given, newest first."
+  (declare (indent 0))
+  `(canvas-browser-test--with-bus nil
+     (let* ((got nil)
+            (canvas-browser-notification-service t)
+            (canvas-browser-notification-functions
+             (list (lambda (notification) (push notification got)))))
+       (canvas-browser-test--in-page
+         (let ((notify (cdr (assoc "Notify" registered))))
+           ,@body)))))
+
+(ert-deftest canvas-browser-is-the-notification-service-when-asked-and-none-is-there ()
+  ;; GIVEN the option to be the notification service, AND a session bus
+  ;;       where no program is that service
+  ;; WHEN a page buffer opens, which starts chromium
+  ;; THEN Emacs is the service, with the four methods that a program
+  ;;      calls on it, so that chromium finds it when it starts
+  ;; WHEN a second page opens
+  ;; THEN nothing is registered again
+  (canvas-browser-test--with-bus nil
+    (let ((canvas-browser-notification-service t))
+      (canvas-browser-test--in-page
+        (should (member '("org.freedesktop.Notifications") registered))
+        (should (equal (sort (delq nil (mapcar (lambda (entry) (and (cdr entry) (car entry)))
+                                               registered))
+                             #'string<)
+                       '("CloseNotification" "GetCapabilities" "GetServerInformation" "Notify")))
+        (let ((count (length registered)))
+          (canvas-browser--serve-notifications)
+          (should (= count (length registered))))))))
+
+(ert-deftest canvas-browser-leaves-the-notification-service-to-a-program-that-is-it ()
+  ;; GIVEN the option to be the notification service, AND a desktop
+  ;;       whose own program is that service already
+  ;; WHEN a page buffer opens
+  ;; THEN Emacs registers nothing: the desktop shows the notifications
+  (canvas-browser-test--with-bus ":1.42"
+    (let ((canvas-browser-notification-service t))
+      (canvas-browser-test--in-page
+        (should-not registered)))))
+
+(ert-deftest canvas-browser-is-no-notification-service-unless-asked ()
+  ;; GIVEN the option as it comes, AND no notification service on the bus
+  ;; WHEN a page buffer opens
+  ;; THEN Emacs registers nothing: it takes that place in a session only
+  ;;      when the reader said so
+  (canvas-browser-test--with-bus nil
+    (let ((canvas-browser-notification-service nil))
+      (canvas-browser-test--in-page
+        (should-not registered)))))
+
+(ert-deftest canvas-browser-a-notification-from-chromium-goes-to-the-hook-with-its-page ()
+  ;; GIVEN Emacs as the notification service, AND a page of example.org
+  ;; WHEN chromium shows a notification of that site through the bus, as
+  ;;      it does for one that a service worker shows: the text starts
+  ;;      with the site, and the words follow after an empty line
+  ;; THEN the hook gets the title, the words without the site, the site
+  ;;      as where it comes from, and the page buffer of that site, AND
+  ;;      chromium is answered with an id, a new one for each
+  ;; WHEN chromium shows one in place of the first
+  ;; THEN it is answered with the id of the first
+  (canvas-browser-test--serving
+    (should (equal (funcall notify "Chromium" 0 "" "New mail" "example.org\n\nFrom alice"
+                            '("default" "Activate") nil -1)
+                   '(:uint32 1)))
+    (let ((notification (car got)))
+      (should (equal (plist-get notification :title) "New mail"))
+      (should (equal (plist-get notification :body) "From alice"))
+      (should (equal (plist-get notification :source) "example.org"))
+      (should (equal (plist-get notification :origin) "https://example.org"))
+      (should (eq (plist-get notification :buffer) (current-buffer))))
+    (should (equal (funcall notify "Chromium" 0 "" "More mail" "example.org\n\nFrom bob" nil nil -1)
+                   '(:uint32 2)))
+    (should (equal (funcall notify "Chromium" 1 "" "New mail" "example.org\n\nFrom alice, again"
+                            nil nil -1)
+                   '(:uint32 1)))))
+
+(ert-deftest canvas-browser-a-notification-of-a-site-without-a-page-names-the-site ()
+  ;; GIVEN Emacs as the notification service, AND no page of the site
+  ;;       mail.example open
+  ;; WHEN chromium shows a notification of that site, as a service
+  ;;      worker does after its page was closed
+  ;; THEN the hook gets it with the site as where it comes from, AND
+  ;;      with no page buffer
+  ;; WHEN it is opened
+  ;; THEN the site is opened in a page buffer, since no page of it is
+  ;;      there to show, AND the bus is told of the click
+  (canvas-browser-test--serving
+    (funcall notify "Chromium" 0 "" "New mail" "mail.example\n\nFrom alice" nil nil -1)
+    (should (equal (plist-get (car got) :source) "mail.example"))
+    (should (equal (plist-get (car got) :body) "From alice"))
+    (should-not (plist-get (car got) :buffer))
+    (let ((opened nil) (later nil))
+      (cl-letf (((symbol-function 'canvas-browser) (lambda (url &rest _) (setq opened url)))
+                ((symbol-function 'run-at-time)
+                 (lambda (_seconds _repeat function &rest args)
+                   (setq later (lambda () (apply function args))))))
+        (canvas-browser-notification-open (car got))
+        ;; The site hears of the click first, and may open a page itself.
+        (should (equal (car signals) '(nil "ActionInvoked" (:uint32 1 "default"))))
+        (should-not opened)
+        (funcall later))
+      (should (equal opened "https://mail.example")))))
+
+(ert-deftest canvas-browser-a-site-that-opens-its-own-page-on-a-click-is-not-opened-twice ()
+  ;; GIVEN a notification of a site with no page open, which is opened
+  ;; WHEN the site has opened a page itself by the time canvas-browser
+  ;;      looks, as a mail site opens the mail
+  ;; THEN that page is shown, AND the site is not opened a second time
+  (canvas-browser-test--serving
+    (funcall notify "Chromium" 0 "" "New mail" "mail.example\n\nFrom alice" nil nil -1)
+    (let ((opened nil) (later nil) (shown nil))
+      (cl-letf (((symbol-function 'canvas-browser) (lambda (url &rest _) (setq opened url)))
+                ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (setq shown buffer)))
+                ((symbol-function 'run-at-time)
+                 ;; The page buffer below starts a timer of its own, so
+                 ;; only the first one is the wait of the click.
+                 (lambda (_seconds _repeat function &rest args)
+                   (unless later
+                     (setq later (lambda () (apply function args)))))))
+        (canvas-browser-notification-open (car got))
+        (with-temp-buffer
+          (canvas-browser-mode)
+          (setq canvas-browser--url "https://mail.example/mail/1")
+          (funcall later)
+          (should (eq shown (current-buffer)))))
+      (should-not opened))))
+
+(ert-deftest canvas-browser-a-notification-of-another-program-names-the-program ()
+  ;; GIVEN Emacs as the notification service of the session
+  ;; WHEN a program that is no browser shows a notification
+  ;; THEN the hook gets it with the name of the program as where it
+  ;;      comes from, AND with its words as they are, AND with no page
+  ;; WHEN it is opened
+  ;; THEN no page is opened: the program is no site
+  (canvas-browser-test--serving
+    (funcall notify "backup" 0 "" "Done" "All files are\n\ncopied" nil nil -1)
+    (should (equal (plist-get (car got) :source) "backup"))
+    (should (equal (plist-get (car got) :title) "Done"))
+    (should (equal (plist-get (car got) :body) "All files are\n\ncopied"))
+    (should-not (plist-get (car got) :buffer))
+    (cl-letf (((symbol-function 'canvas-browser) (lambda (&rest _) (error "No page is to open"))))
+      (canvas-browser-notification-open (car got)))))
+
+(ert-deftest canvas-browser-opening-a-notification-of-the-bus-clicks-it-there ()
+  ;; GIVEN a notification that chromium showed through the bus, for a
+  ;;       site whose page is open
+  ;; WHEN it is opened from another buffer
+  ;; THEN the page buffer is shown, AND every program on the bus is told
+  ;;      that the notification was clicked, which chromium hears and
+  ;;      hands to the service worker
+  (canvas-browser-test--serving
+    (funcall notify "Chromium" 0 "" "New mail" "example.org\n\nFrom alice" nil nil -1)
+    (let ((page (current-buffer))
+          (shown nil))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (setq shown buffer))))
+        (with-temp-buffer
+          (canvas-browser-notification-open (car got))))
+      (should (eq shown page))
+      (should (equal (car signals) '(nil "ActionInvoked" (:uint32 1 "default")))))))
+
+(ert-deftest canvas-browser-the-notification-service-answers-what-it-can-do ()
+  ;; GIVEN Emacs as the notification service
+  ;; WHEN a program asks what the service can do, and who it is
+  ;; THEN it says that it takes a text and actions, which is what
+  ;;      chromium needs to hand over a click, AND names itself
+  ;; WHEN a program takes a notification back
+  ;; THEN the programs on the bus are told that it is closed
+  (canvas-browser-test--serving
+    (should (equal (funcall (cdr (assoc "GetCapabilities" registered))) '(("body" "actions"))))
+    (should (equal (car (funcall (cdr (assoc "GetServerInformation" registered))))
+                   "canvas-browser"))
+    (funcall (cdr (assoc "CloseNotification" registered)) 4)
+    (should (equal (car signals) '(nil "NotificationClosed" (:uint32 4 :uint32 3))))))
+

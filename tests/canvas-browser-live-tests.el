@@ -1082,30 +1082,44 @@ is cleared away."
       (canvas-browser-cdp-stop)
       (delete-directory canvas-browser-profile-directory t))))
 
-(defmacro canvas-browser-live-test--in-fixture (name &rest body)
-  "Run BODY in a page buffer of the fixture NAME, once the page is there.
+(defun canvas-browser-live-test--loaded-p (address)
+  "Whether the page of this buffer says that it is at ADDRESS and has loaded."
+  (equal (canvas-browser-live-test--page-says "location.href + ' ' + document.readyState")
+         (concat address " complete")))
+
+(defmacro canvas-browser-live-test--at (url &rest body)
+  "Run BODY in a page buffer at URL, once the page has loaded.
 Chromium has a profile of its own."
   (declare (indent 1))
-  `(let ((buffer nil)
-         (canvas-browser-profile-directory
-          (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
-            (make-temp-file "canvas-browser-live-" t))))
-     (unwind-protect
-         (progn
-           (setq buffer (canvas-browser
-                         (concat "file://" (expand-file-name ,name "tests/fixtures/"))))
-           (with-current-buffer buffer
-             (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
-             ;; A new page stands at about:blank first, with that as its
-             ;; title, so a title alone does not say that the fixture
-             ;; is there.
-             (should (canvas-browser-live-test--wait
-                      30 (lambda () (and canvas-browser--title
-                                         (string-suffix-p ,name canvas-browser--url)))))
-             ,@body))
-       (when (buffer-live-p buffer) (kill-buffer buffer))
-       (canvas-browser-cdp-stop)
-       (delete-directory canvas-browser-profile-directory t))))
+  (let ((address (make-symbol "address")))
+    `(let ((buffer nil)
+           (,address ,url)
+           (canvas-browser-profile-directory
+            (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+              (make-temp-file "canvas-browser-live-" t))))
+       (unwind-protect
+           (progn
+             (setq buffer (canvas-browser ,address))
+             (with-current-buffer buffer
+               (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+               ;; A new page stands at about:blank first, with that as
+               ;; its title.  And the buffer has the address before the
+               ;; page has read its own text.  So the page itself is
+               ;; asked whether it has loaded.
+               (should (canvas-browser-live-test--wait
+                        30 (lambda () (and canvas-browser--title
+                                           (equal canvas-browser--url ,address)
+                                           (canvas-browser-live-test--loaded-p ,address)))))
+               ,@body))
+         (when (buffer-live-p buffer) (kill-buffer buffer))
+         (canvas-browser-cdp-stop)
+         (delete-directory canvas-browser-profile-directory t)))))
+
+(defmacro canvas-browser-live-test--in-fixture (name &rest body)
+  "Run BODY in a page buffer of the fixture NAME, once the page is there."
+  (declare (indent 1))
+  `(canvas-browser-live-test--at (concat "file://" (expand-file-name ,name "tests/fixtures/"))
+     ,@body))
 
 (defun canvas-browser-live-test--pick (selector)
   "Pick the part of this page that SELECTOR matches, as `S\=' and its label do."
@@ -1392,3 +1406,178 @@ Chromium has a profile of its own."
                        (insert-file-contents-literally (expand-file-name "tests/fixtures/plot.png"))
                        (buffer-string))))
       (should (string-prefix-p "\x89PNG" (canvas-browser-picture-bytes made))))))
+
+
+(defun canvas-browser-live-test--answer (file)
+  "What a server answers to a request for FILE, as the text of http."
+  (if (file-regular-p file)
+      (let ((body (with-temp-buffer
+                    (set-buffer-multibyte nil)
+                    (insert-file-contents-literally file)
+                    (buffer-string))))
+        (format "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n%s"
+                (if (string-suffix-p ".js" file) "text/javascript" "text/html")
+                (length body) body))
+    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"))
+
+(defun canvas-browser-live-test--serve (directory)
+  "Serve the files of DIRECTORY over http on a port of this machine; the server.
+A page from a file has no site that chromium can be told about, so a
+test of what goes by site needs a page that a server gave."
+  (make-network-process
+   :name "canvas-browser-live-test" :server t :host "127.0.0.1" :service t :family 'ipv4
+   :coding 'binary :noquery t
+   :filter (lambda (connection request)
+             (when (string-match "\\`GET /\\([^ ?]*\\)" request)
+               (process-send-string
+                connection
+                (canvas-browser-live-test--answer
+                 (expand-file-name (match-string 1 request) directory)))
+               (delete-process connection)))))
+
+(defmacro canvas-browser-live-test--serving (origin &rest body)
+  "Run BODY while the fixtures are served over http, with ORIGIN as their site."
+  (declare (indent 1))
+  (let ((server (make-symbol "server")))
+    `(let* ((,server (canvas-browser-live-test--serve (expand-file-name "tests/fixtures/")))
+            (,origin (format "http://127.0.0.1:%d" (process-contact ,server :service))))
+       (unwind-protect
+           (progn ,@body)
+         (delete-process ,server)))))
+
+(defun canvas-browser-live-test--said-p (words)
+  "Whether the notify fixture has heard WORDS so far, within ten seconds."
+  (canvas-browser-live-test--wait
+   10 (lambda () (equal (canvas-browser-live-test--page-says "said.join(' ')") words))))
+
+(ert-deftest canvas-browser-live-a-notification-of-a-page-reaches-the-hook ()
+  ;; GIVEN the notify fixture, served as a site that is kept as one that
+  ;;       may show notifications
+  ;; WHEN the page asks whether it may show notifications, and shows one
+  ;; THEN the page hears that it may, and that the notification was
+  ;;      shown, AND the hook gets the notification with its title, its
+  ;;      body, its site and the page buffer
+  ;; WHEN the notification is opened
+  ;; THEN the page hears that it was clicked
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--serving origin
+    (let* ((got nil)
+           (canvas-browser-notification-sites (list (cons origin t)))
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (canvas-browser-live-test--at (concat origin "/notify.html")
+        (canvas-browser-live-test--page-says "notify(); true")
+        (should (canvas-browser-live-test--wait 10 (lambda () got)))
+        (should (equal (plist-get got :title) "New mail"))
+        (should (equal (plist-get got :body) "From alice"))
+        (should (equal (plist-get got :tag) "mail-1"))
+        (should (equal (plist-get got :origin) origin))
+        (should (eq (plist-get got :buffer) (current-buffer)))
+        (should (canvas-browser-live-test--said-p "granted shown"))
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (canvas-browser-notification-open got))
+        (should (canvas-browser-live-test--said-p "granted shown clicked"))))))
+
+(ert-deftest canvas-browser-live-a-site-is-left-alone-until-the-reader-allows-it ()
+  ;; GIVEN the notify fixture, served as a site that nothing is kept about
+  ;; THEN the page has the notifications of chromium itself, and no name
+  ;;      to call Emacs by: nothing was put into it
+  ;; WHEN the reader says in the page buffer that the site may show
+  ;;      notifications, and the page then asks and shows one
+  ;; THEN the page hears that it may, AND its notification reaches the
+  ;;      hook, without the page being loaded again
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--serving origin
+    (let* ((got nil)
+           (canvas-browser-notification-sites nil)
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                ((symbol-function 'customize-save-variable) #'ignore))
+        (canvas-browser-live-test--at (concat origin "/notify.html")
+          (should (equal (canvas-browser-live-test--page-says
+                          (concat "[Notification.name, typeof window.canvasBrowserNotify,"
+                                  " typeof window.__canvasBrowserNotifications].join(' ')"))
+                         "Notification undefined undefined"))
+          (canvas-browser-notifications)
+          (should (canvas-browser-live-test--wait
+                   10 (lambda () (equal (canvas-browser-live-test--page-says
+                                         "typeof window.__canvasBrowserNotifications")
+                                        "object"))))
+          (canvas-browser-live-test--page-says "notify(); true")
+          (should (canvas-browser-live-test--said-p "granted shown"))
+          (should (canvas-browser-live-test--wait 10 (lambda () got)))
+          (should (equal (plist-get got :title) "New mail")))))))
+
+(ert-deftest canvas-browser-live-a-page-that-is-put-away-is-looked-at-no-more ()
+  ;; GIVEN the fixture page, which was told that it has the focus
+  ;; THEN the page says that it has the focus and that it is visible
+  ;; WHEN the page was clicked, and no window shows it any more
+  ;; THEN the page says that it has no focus and is hidden, so a site
+  ;;      that holds its notifications back while you look at it lets
+  ;;      them out.  A page that was clicked kept the focus of chromium
+  ;;      when another tab was only put in front of it
+  ;; WHEN the page is looked at again, clicked again and put away again,
+  ;;      now that the empty tab is there already
+  ;; THEN it says the same
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((canvas-browser--rest-target nil))
+    (canvas-browser-live-test--in-fixture "page.html"
+      (canvas-browser-live-test--lay-out 800 600)
+      (let ((says-p (lambda (wanted)
+                      (canvas-browser-live-test--wait
+                       5 (lambda () (equal (canvas-browser-live-test--page-says
+                                            "document.hasFocus() + ' ' + document.visibilityState")
+                                           wanted))))))
+        (dotimes (_ 2)
+          (should (funcall says-p "true visible"))
+          (canvas-browser--click 100 100)
+          (canvas-browser--sleep)
+          (should (funcall says-p "false hidden"))
+          (canvas-browser--wake t))
+        (should (funcall says-p "true visible"))))))
+
+(declare-function dbus-get-name-owner "dbus" (bus service))
+
+(defun canvas-browser-live-test--bus-free-p ()
+  "Whether this Emacs can be the notification service of the session now."
+  (and (featurep 'dbusbind)
+       (require 'dbus nil t)
+       (ignore-errors (not (dbus-get-name-owner :session "org.freedesktop.Notifications")))))
+
+(defun canvas-browser-live-test--wait-on-bus (seconds test)
+  "Wait up to SECONDS until TEST answers, and hear the session bus meanwhile.
+What comes over the bus is an event that Emacs reads as it reads a key."
+  (let ((deadline (+ (float-time) seconds)))
+    (while (and (not (funcall test)) (< (float-time) deadline))
+      (accept-process-output nil 0.05)
+      (read-event nil nil 0.05))
+    (funcall test)))
+
+(ert-deftest canvas-browser-live-a-notification-of-a-service-worker-reaches-the-hook ()
+  ;; GIVEN a session with no notification service, AND the option to be
+  ;;       that service, AND the worker fixture, served as a site that
+  ;;       may show notifications
+  ;; WHEN the service worker of the page shows a notification, which no
+  ;;      script in the page sees
+  ;; THEN chromium hands it to Emacs, AND the hook gets it with its
+  ;;      title, its text, its site and the page buffer of that site
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (skip-unless (canvas-browser-live-test--bus-free-p))
+  (let ((canvas-browser-notification-service t)
+        (canvas-browser--dbus-served nil)
+        (got nil))
+    (unwind-protect
+        (canvas-browser-live-test--serving origin
+          (let ((canvas-browser-notification-sites (list (cons origin t)))
+                (canvas-browser-notification-functions
+                 (list (lambda (notification) (push notification got)))))
+            (canvas-browser-live-test--at (concat origin "/worker.html")
+              (canvas-browser-live-test--page-says "fromWorker(); true")
+              (should (canvas-browser-live-test--wait-on-bus 20 (lambda () got)))
+              (should (equal (plist-get (car got) :title) "New mail"))
+              (should (equal (plist-get (car got) :body) "From alice"))
+              (should (equal (concat "http://" (plist-get (car got) :source)) origin))
+              (should (eq (plist-get (car got) :buffer) (current-buffer))))))
+      (dbus-unregister-service :session "org.freedesktop.Notifications"))))
+

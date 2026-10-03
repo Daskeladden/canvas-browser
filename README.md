@@ -293,6 +293,73 @@ target. `embark-cycle` reaches the targets after the first. On marked
 text, `s` searches for it in a page buffer of its own, and `>` sends it
 to a receiver.
 
+### Notifications
+
+When something comes in, a page such as a mail page shows a
+notification. Chromium shows it in a window of its own, on a display
+that nobody sees. So canvas-browser hands the notification to Emacs.
+
+A site shows notifications only after you allow it. Open a page of the
+site and run `M-x canvas-browser-notifications`. The command asks, and
+keeps the answer in `canvas-browser-notification-sites`. Run it again
+to change the answer. When a page wants to show notifications, chromium
+asks the same question in its own window. Nobody sees that question, so
+the page waits until you run the command.
+
+Each notification goes to the functions of
+`canvas-browser-notification-functions`. A function gets one plist.
+`:title` and `:body` are the text, and `:source` names where it comes
+from, as `example.org`. `:origin` is the site, `:url` and `:page-title`
+are the address and the title of the page, and `:buffer` is the page
+buffer.
+`(canvas-browser-notification-open NOTIFICATION)` shows that page and
+tells it that the notification was clicked. A mail page then opens the
+mail. As the package comes, one function says the notification in the
+echo area. This adds a desktop notification through D-Bus, with a click
+that opens the page:
+
+```elisp
+(require 'notifications)
+(add-hook 'canvas-browser-notification-functions
+          (lambda (notification)
+            (notifications-notify
+             :title (plist-get notification :title)
+             :body (plist-get notification :body)
+             :actions '("default" "Open")
+             :on-action (lambda (&rest _)
+                          (canvas-browser-notification-open notification)))))
+```
+
+canvas-browser puts nothing into the pages of a site that you did not
+allow. A site that you allowed gets a `Notification` that tells Emacs,
+in place of the one of chromium.
+
+A site often has a setting of its own for desktop notifications. That
+setting must be on as well.
+
+A service worker is a script of a site that runs in the background. A
+mail site lets it show the notifications of new mail, which reach it by
+web push. No script in a page sees those. Chromium hands them to the
+notification service of the desktop, over D-Bus. If no other program is
+that service, canvas-browser can be it: set
+`canvas-browser-notification-service`. Those notifications then go to
+the same functions. Chromium looks for the service at its start, so run
+`M-x canvas-browser-restart-chromium` after you set the option.
+
+Emacs is then the notification service for every program of your
+session, not for chromium alone. A desktop with a notification service
+of its own keeps it, and shows the notifications itself.
+
+A service worker needs no page of its site, only a chromium that runs.
+canvas-browser starts chromium with the first page that you open, and
+keeps it after the last page buffer is gone. So the notifications of
+new mail come also while no page of the mail site is open. Such a
+notification has a page buffer only while a page of its site is open.
+To open it shows that page. If no page is open, the site can open one
+itself, as a mail site opens the mail. That page gets a page buffer. If
+the site opens none in two seconds, canvas-browser opens the site.
+Chromium does not always hand the click on to the service worker.
+
 ### Blocking ads
 
 `M-x canvas-browser-install-ublock` downloads the newest uBlock Origin
@@ -569,6 +636,12 @@ opens a tab. When such a window closes itself, as the one to sign in
 does once you have, its buffer goes with it. Chromium tells of every
 page that opens and closes; only a page that one of these buffers
 opened is taken, and a frame or a worker is left alone.
+
+A tab that chromium opens on its own at a web address gets a page
+buffer too. When you open the notification of a mail site, its service
+worker opens such a tab. A tab without a buffer stands in front in
+chromium, where nobody sees it. Its site then takes it that you look at
+the page, and shows no more notifications.
 
 ## The map of canvas-minimap
 

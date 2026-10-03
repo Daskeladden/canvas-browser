@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <title>canvas-browser notify fixture</title>
+    <script>
+      // The page asks whether it may show notifications, and then shows
+      // one.  It keeps what it hears in `said'.
+      const said = [];
+      async function notify() {
+        said.push(await Notification.requestPermission());
+        const shown = new Notification('New mail', {body: 'From alice', tag: 'mail-1'});
+        shown.onshow = () => said.push('shown');
+        shown.onclick = () => said.push('clicked');
+        shown.onerror = () => said.push('error');
+      }
+    </script>
+  </head>
+  <body>
+    <p>A page that shows a notification.</p>
+  </body>
+</html>
