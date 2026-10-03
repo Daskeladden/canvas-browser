@@ -1883,7 +1883,8 @@ says that `?' lists them."
 Before the first letter, a key of ACTIONS picks what the hint does, as
 the dispatch of avy does, and the prompt then names it; ACTION is that
 entry, or nil for none.  `?\=' lists the actions in the prompt, as it
-does in avy.  `ESC\\=' gives nil.  The hints are read while
+does in avy.  `ESC\\=' gives nil, and so does a key that is no
+character, which is then run as the next key.  The hints are read while
 chromium's answer is handled, between two commands, and Emacs counts
 keys read there among the keys of the next one; they are forgotten as
 such once read, and kept in the record of keys that `view-lossage\\='
@@ -1899,6 +1900,12 @@ shows."
                      (setq help t))
                     ((and (string-empty-p typed) (assq key actions))
                      (setq action (assq key actions)))
+                    ;; A key that is no character names no hint: a key
+                    ;; with Control or Meta, or a click.  It ends the
+                    ;; hints, and then does what it does without them.
+                    ((not (characterp key))
+                     (push key unread-command-events)
+                     (throw 'done nil))
                     (t
                      (setq typed (concat typed (char-to-string key)))
                      (when-let* ((place (cl-position typed hints :test #'equal)))
@@ -1906,6 +1913,16 @@ shows."
                      (unless (cl-some (lambda (hint) (string-prefix-p typed hint)) hints)
                        (throw 'done nil)))))))
       (clear-this-command-keys t))))
+
+(defun canvas-browser--take-marks-off ()
+  "Take what was drawn over the page off the canvas again.
+The page is asked for a picture of itself.  The canvas holds the marks
+and not the picture that was painted last, so that picture is forgotten:
+a page that stands still gives the same one again, and it would be
+dropped as a picture the canvas already holds."
+  (setq canvas-browser--hinting nil
+        canvas-browser--painted-mark nil)
+  (canvas-browser--paint-window))
 
 (defun canvas-browser--choose-box (boxes &optional actions)
   "Label BOXES on the canvas; (PLACE . ACTION) of the one named, or nil.
@@ -1917,8 +1934,7 @@ itself afterwards, which takes them off again."
     (setq canvas-browser--hinting t)
     (unwind-protect
         (canvas-browser--read-hint hints actions)
-      (setq canvas-browser--hinting nil)
-      (canvas-browser--paint-window))))
+      (canvas-browser--take-marks-off))))
 
 (defconst canvas-browser--hint-actions
   '((?y "copy address" canvas-browser--copy-address)

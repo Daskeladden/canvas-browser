@@ -1658,6 +1658,25 @@ that moment now."
         (should (= canvas-browser--frames 1))
         (should-not canvas-browser--crisp-timer)))))
 
+(ert-deftest canvas-browser-the-picture-under-the-hints-is-painted-again-after-them ()
+  ;; GIVEN a page that painted the still picture of itself, AND hints
+  ;;       that were drawn over it and given up
+  ;; WHEN chromium sends that very picture again, as a page that stands
+  ;;      still does
+  ;; THEN it is painted: the canvas held the hints, not that picture.
+  ;;      It was dropped as a picture already there, and the hints stayed
+  (canvas-browser-test--in-page
+    (cl-letf (((symbol-function 'canvas-cairo-image) #'ignore)
+              ((symbol-function 'canvas-refresh) #'ignore)
+              ((symbol-function 'canvas-browser--draw-hints) #'ignore)
+              ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) nil)))
+      (let ((still (base64-encode-string (canvas-browser-test--png 800 600))))
+        (canvas-browser--paint still)
+        (should (= canvas-browser--frames 1))
+        (canvas-browser--choose-box '((:x 0 :y 0 :w 10 :h 10)))
+        (canvas-browser--paint still)
+        (should (= canvas-browser--frames 2))))))
+
 (ert-deftest canvas-browser-a-frame-that-differs-is-painted-and-asks-for-a-still ()
   ;; GIVEN a page that has painted a frame
   ;; WHEN a frame of something else arrives
@@ -2326,6 +2345,20 @@ selection at once."
               ((symbol-function 'clear-this-command-keys) (lambda (&rest _) (setq cleared t))))
       (should (equal (canvas-browser--read-hint '("a" "s")) '(0)))
       (should cleared))))
+
+(ert-deftest canvas-browser-a-key-that-is-no-character-ends-the-hints-and-runs-after ()
+  ;; GIVEN a hint being read
+  ;; WHEN a key that is no character comes: a key with Control or Meta
+  ;;      that no character stands for, as C-: and M-w, or a mouse click
+  ;; THEN no hint is named, AND the key is kept as the next key of
+  ;;      Emacs, so that it does what it does without the hints, where it
+  ;;      was an error before
+  (dolist (key (list (aref (kbd "C-:") 0) (aref (kbd "M-w") 0) '(mouse-1 (nil 1 (2 . 3) 0))))
+    (let ((unread-command-events nil))
+      (cl-letf (((symbol-function 'read-key) (lambda (&rest _) key))
+                ((symbol-function 'clear-this-command-keys) #'ignore))
+        (should-not (canvas-browser--read-hint '("a" "s")))
+        (should (equal unread-command-events (list key)))))))
 
 (ert-deftest canvas-browser-tab-goes-from-field-to-field-in-both-states ()
   ;; GIVEN a page buffer, in insert state and in normal state
