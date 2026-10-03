@@ -1050,3 +1050,42 @@ is cleared away."
         (should (equal (canvas-browser-live-test--page-says
                         "document.getElementById('one').files.length")
                        0))))))
+
+(defmacro canvas-browser-live-test--in-fixture (name &rest body)
+  "Run BODY in a page buffer of the fixture NAME, once the page is there.
+Chromium has a profile of its own."
+  (declare (indent 1))
+  `(let ((buffer nil)
+         (canvas-browser-profile-directory
+          (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+            (make-temp-file "canvas-browser-live-" t))))
+     (unwind-protect
+         (progn
+           (setq buffer (canvas-browser
+                         (concat "file://" (expand-file-name ,name "tests/fixtures/"))))
+           (with-current-buffer buffer
+             (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+             ;; A new page stands at about:blank first, with that as its
+             ;; title, so a title alone does not say that the fixture
+             ;; is there.
+             (should (canvas-browser-live-test--wait
+                      30 (lambda () (and canvas-browser--title
+                                         (string-suffix-p ,name canvas-browser--url)))))
+             ,@body))
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (canvas-browser-cdp-stop)
+       (delete-directory canvas-browser-profile-directory t))))
+
+(ert-deftest canvas-browser-live-a-page-that-names-itself-later-gets-that-title ()
+  ;; GIVEN the fixture page, which has loaded and given its title
+  ;; WHEN the page gives itself another title and draws something, as
+  ;;      Reddit names a post while it fills the page
+  ;; THEN the buffer takes the new title once the page is quiet
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "page.html"
+    (should (canvas-browser-live-test--wait
+             10 (lambda () (equal canvas-browser--title "canvas-browser fixture"))))
+    (canvas-browser-live-test--page-says
+     "document.title = 'A later title'; document.body.append('more words'); true")
+    (should (canvas-browser-live-test--wait
+             10 (lambda () (equal canvas-browser--title "A later title"))))))

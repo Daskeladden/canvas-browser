@@ -332,13 +332,16 @@ held up by one, and a page that settles is crisp a moment later."
 (defun canvas-browser--paint-crisp (buffer)
   "Ask BUFFER\'s window for a still picture of itself, which loses nothing.
 What keeps moving on the page is measured with it: between two still
-pictures the frames are drawn into those parts alone."
+pictures the frames are drawn into those parts alone.  The page is
+asked for its title as well.  A page may name itself after it has
+loaded, as Reddit names a post, and chromium tells nobody of that."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq canvas-browser--crisp-timer nil)
       (when (canvas-browser--may-ask-p buffer)
         (setq canvas-browser--crisp-when (float-time))
         (canvas-browser--paint-window)
+        (canvas-browser--read-title)
         (canvas-browser--measure-live)))))
 
 (defcustom canvas-browser-live-share 0.3
@@ -752,9 +755,13 @@ after a restore of the page itself.  A navigation to a new page keeps it."
     (canvas-browser--apply-dark)))
 
 (defun canvas-browser--loaded (_params)
-  "Ask the page that has loaded for its title, for the header line.
+  "Ask the page that has loaded for its title, for the header line."
+  (canvas-browser--read-title))
+
+(defun canvas-browser--read-title ()
+  "Ask the page for its title, and keep it.
 Chromium names a page after its file until the page changes address
-again, whatever the page calls itself."
+again, whatever the page calls itself, so the page is asked."
   (let ((buffer (current-buffer)))
     (canvas-browser--evaluate
      "document.title"

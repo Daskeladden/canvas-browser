@@ -1603,6 +1603,12 @@ is said goes to `said'."
         (funcall later)
         (should (= (canvas-browser-test--count "Page.startScreencast") 1))))))
 
+(defun canvas-browser-test--scripts ()
+  "The scripts that were sent to the page, newest first."
+  (cl-loop for (method . params) in canvas-browser-test--commands
+           when (equal method "Runtime.evaluate")
+           collect (plist-get params :expression)))
+
 (ert-deftest canvas-browser-forgets-a-part-that-is-gone ()
   ;; GIVEN a page whose picked part has gone, after a click or a new page
   ;; WHEN a line is scrolled
@@ -3080,6 +3086,25 @@ The window manager says so on the root window, where Emacs reads it."
     (should (equal (buffer-name) "*canvas-browser: https://example.org/next*"))
     (should (equal canvas-browser--url "https://example.org/next"))
     (should (equal canvas-browser--title "The next page"))))
+
+(ert-deftest canvas-browser-a-page-that-names-itself-later-gets-that-title ()
+  ;; GIVEN a page buffer with the title that its page had when it loaded
+  ;; WHEN the page has gone quiet after it moved, which is when the
+  ;;      still picture of it is asked for
+  ;; THEN the page is asked for its title again, AND the buffer takes
+  ;;      it: a page may name itself after it has loaded, as Reddit names
+  ;;      a post, and chromium tells nobody of that
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "Reddit - The heart of the internet")
+    (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) 'a-window))
+              ((symbol-function 'canvas-browser-cdp-send)
+               (lambda (method params &optional answer _session &rest _)
+                 (push (cons method params) canvas-browser-test--commands)
+                 (when (and answer (equal (plist-get params :expression) "document.title"))
+                   (funcall answer '(:result (:value "A post : r/emacs")))))))
+      (canvas-browser--paint-crisp (current-buffer)))
+    (should (member "document.title" (canvas-browser-test--scripts)))
+    (should (equal canvas-browser--title "A post : r/emacs"))))
 
 (ert-deftest canvas-browser-an-embedded-page-keeps-its-name ()
   ;; GIVEN a page embedded in another buffer, whose name its host chose
