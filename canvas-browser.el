@@ -550,15 +550,52 @@ one to show."
   (when (canvas-browser--host-of (current-buffer))
     (canvas-browser--show-in-host)))
 
-(defun canvas-browser--tell (method params &optional answer)
+(defun canvas-browser--tell (method params &optional answer refused)
   "Send METHOD with PARAMS in the session of this buffer.
-ANSWER, when given, is called with chromium's answer.  A chromium that
-died is started again, and a page that chromium has let go of is opened
+ANSWER, when given, is called with chromium's answer, and REFUSED with
+what chromium says when it refuses the command.  A chromium that died
+is started again, and a page that chromium has let go of is opened
 afresh; a command without a session reaches no page."
   (if (or canvas-browser--restarting
           (and (canvas-browser-cdp-running-p) canvas-browser--session))
-      (canvas-browser-cdp-send method params answer canvas-browser--session)
+      (canvas-browser-cdp-send method params answer canvas-browser--session refused)
     (canvas-browser--restart)))
+
+(defconst canvas-browser--not-active "Not attached to an active page"
+  "What chromium says when it refuses a command because of where the page is.
+A page is not the active one of its tab for a moment while it opens,
+and while it moves to a page of another kind, as a sign-in does.")
+
+(defconst canvas-browser--retries 20
+  "How many times a command that chromium refuses for a moment is sent again.")
+
+(defconst canvas-browser--retry-interval 0.25
+  "Seconds before a command that chromium refused for a moment is sent again.")
+
+(defun canvas-browser--tell-again (method params &optional wanted left)
+  "Send METHOD with PARAMS in this page, and again while chromium refuses it.
+It is sent again only for the refusal of `canvas-browser--not-active\=',
+which passes: a moment later, as long as WANTED still holds, in the
+same session, and LEFT times at most, which is
+`canvas-browser--retries\=' at the start.  WANTED is a function called
+in this buffer, or nil for a command that is always wanted.  Any other
+refusal, and the last of these, is said to the reader."
+  (let ((buffer (current-buffer))
+        (session canvas-browser--session)
+        (left (or left canvas-browser--retries)))
+    (canvas-browser--tell
+     method params nil
+     (lambda (says)
+       (if (and (equal says canvas-browser--not-active) (> left 0))
+           (run-with-timer
+            canvas-browser--retry-interval nil
+            (lambda ()
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (when (and (equal session canvas-browser--session)
+                             (or (null wanted) (funcall wanted)))
+                    (canvas-browser--tell-again method params wanted (1- left)))))))
+         (message "canvas-browser: chromium refused %s: %s" method says))))))
 
 (defun canvas-browser--resize (width height &optional then)
   "Lay the page out for WIDTH by HEIGHT pixels, at the zoom of this buffer.
@@ -605,7 +642,7 @@ chromium sends the keys and the wheel to none of them."
     (setq canvas-browser--focused (and focus t))
     (canvas-browser--tell "Emulation.setFocusEmulationEnabled"
                           (list :enabled (if focus t :json-false))))
-  (canvas-browser--tell "Page.setWebLifecycleState" (list :state "active")))
+  (canvas-browser--tell-again "Page.setWebLifecycleState" (list :state "active")))
 
 (defun canvas-browser--wake (focus)
   "Draw this page again: it is shown once more.
@@ -668,11 +705,14 @@ are killed, and a window change is no reason to start a browser."
 A screencast that runs is stopped first, because chromium answers a
 second one with an error that it is active already."
   (canvas-browser--stop-screencast)
-  (canvas-browser--tell "Page.startScreencast"
-                        (list :format "jpeg" :quality canvas-browser-quality
-                              :maxWidth (car canvas-browser--size)
-                              :maxHeight (cdr canvas-browser--size)))
-  (setq canvas-browser--screencast t))
+  (setq canvas-browser--screencast t)
+  ;; Chromium refuses a screencast for a page that is not the active
+  ;; one of its tab, and a page that is refused gets no frame at all.
+  (canvas-browser--tell-again "Page.startScreencast"
+                              (list :format "jpeg" :quality canvas-browser-quality
+                                    :maxWidth (car canvas-browser--size)
+                                    :maxHeight (cdr canvas-browser--size))
+                              (lambda () canvas-browser--screencast)))
 
 (defun canvas-browser--listen ()
   "Take the events of this buffer's session."

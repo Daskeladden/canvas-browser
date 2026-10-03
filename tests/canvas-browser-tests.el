@@ -31,7 +31,7 @@
                   (push (cons (cons session method) function) canvas-browser-test--listeners)))
                ((symbol-function 'canvas-browser-cdp-forget) #'ignore)
                ((symbol-function 'canvas-browser-cdp-send)
-                (lambda (method params &optional answer _session)
+                (lambda (method params &optional answer _session &rest _)
                   (push (cons method params) canvas-browser-test--commands)
                   (when answer (funcall answer '(:targetId "T1" :sessionId "S1"))))))
        ,@body)))
@@ -296,7 +296,7 @@ that moment now."
   ;; THEN a buffer of its own holds that text, with point at its start
   (canvas-browser-test--in-page
     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-               (lambda (_method _params &optional answer _session)
+               (lambda (_method _params &optional answer _session &rest _)
                  (when answer (funcall answer '(:result (:value "one\ntwo"))))))
               ((symbol-function 'display-buffer) #'ignore))
       (canvas-browser-text))
@@ -708,7 +708,7 @@ that moment now."
   (canvas-browser-test--in-page
     (let ((said nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                 (lambda (_method _params &optional answer _session)
+                 (lambda (_method _params &optional answer _session &rest _)
                    (when answer (funcall answer '(:result (:value (:count 0 :index 0)))))))
                 ((symbol-function 'message)
                  (lambda (format &rest args) (setq said (apply #'format format args)))))
@@ -845,7 +845,7 @@ that moment now."
   ;;      without pressing a key to say so first
   (canvas-browser-test--in-page
     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-               (lambda (method params &optional answer _session)
+               (lambda (method params &optional answer _session &rest _)
                  (push (cons method params) canvas-browser-test--commands)
                  (when answer
                    (funcall answer '(:result (:value (:typing t :box (10 20 30 40)))))))))
@@ -859,7 +859,7 @@ that moment now."
   ;; THEN the keys are Emacs's again
   (canvas-browser-test--in-page
     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-               (lambda (method params &optional answer _session)
+               (lambda (method params &optional answer _session &rest _)
                  (push (cons method params) canvas-browser-test--commands)
                  (when answer
                    (funcall answer '(:result (:value (:typing :false :box :null))))))))
@@ -1504,6 +1504,105 @@ that moment now."
       (should (string-search (format "(1, 'by', %d)" canvas-browser-line-height) expression))
       (should-not (string-search "window.scrollBy" expression)))))
 
+;;;; A command that chromium refuses for a moment
+
+(defmacro canvas-browser-test--refusing (method times text &rest body)
+  "Run BODY in a page whose chromium refuses METHOD the first TIMES with TEXT.
+Every other command is taken, and METHOD after those times.  A timer
+runs at once, so a command that is sent again is sent within BODY.  What
+is said goes to `said'."
+  (declare (indent 3))
+  `(let ((left ,times) (said nil))
+     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                (lambda (method params &optional answer _session refused)
+                  (push (cons method params) canvas-browser-test--commands)
+                  (if (and (equal method ,method) (> left 0))
+                      (progn (setq left (1- left))
+                             (if refused
+                                 (funcall refused ,text)
+                               (push (format "refused %s" method) said)))
+                    (when answer (funcall answer nil)))))
+               ((symbol-function 'run-with-timer)
+                (lambda (_seconds _repeat function &rest args) (apply function args)))
+               ((symbol-function 'message)
+                (lambda (format &rest args) (push (apply #'format format args) said))))
+       ,@body)))
+
+(defun canvas-browser-test--count (method)
+  "How many times METHOD was sent."
+  (cl-count method canvas-browser-test--commands :key #'car :test #'equal))
+
+(ert-deftest canvas-browser-a-screencast-that-is-refused-for-a-moment-is-asked-for-again ()
+  ;; GIVEN a page that chromium does not count as active for a moment, as
+  ;;       while it moves to another site, so that it refuses the
+  ;;       screencast twice
+  ;; WHEN the screencast is started
+  ;; THEN it is asked for again until chromium takes it, where the page
+  ;;      was left without frames, AND nothing is said to the reader
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--refusing "Page.startScreencast" 2 "Not attached to an active page"
+      (canvas-browser--start-screencast)
+      (should (= (canvas-browser-test--count "Page.startScreencast") 3))
+      (should canvas-browser--screencast)
+      (should-not said))))
+
+(ert-deftest canvas-browser-a-page-is-told-again-that-it-is-active ()
+  ;; GIVEN a page that chromium does not count as active for a moment
+  ;; WHEN the page is told that it is the one in front
+  ;; THEN it is told again until chromium takes it
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--refusing "Page.setWebLifecycleState" 1 "Not attached to an active page"
+      (canvas-browser--awaken t)
+      (should (= (canvas-browser-test--count "Page.setWebLifecycleState") 2))
+      (should-not said))))
+
+(ert-deftest canvas-browser-a-command-refused-again-and-again-is-given-up ()
+  ;; GIVEN a page that chromium never counts as active
+  ;; WHEN the screencast is started
+  ;; THEN it is asked for a bounded number of times, AND the reader is
+  ;;      told once that chromium refused it, with what chromium says
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--refusing "Page.startScreencast" 1000 "Not attached to an active page"
+      (canvas-browser--start-screencast)
+      (should (= (canvas-browser-test--count "Page.startScreencast")
+                 (1+ canvas-browser--retries)))
+      (should (= (length said) 1))
+      (should (string-search "Page.startScreencast" (car said)))
+      (should (string-search "Not attached to an active page" (car said))))))
+
+(ert-deftest canvas-browser-another-refusal-is-said-and-not-asked-again ()
+  ;; GIVEN a page whose chromium refuses the screencast for another reason
+  ;; WHEN the screencast is started
+  ;; THEN it is asked for once, AND the reader is told what chromium says
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--refusing "Page.startScreencast" 1 "Invalid parameters"
+      (canvas-browser--start-screencast)
+      (should (= (canvas-browser-test--count "Page.startScreencast") 1))
+      (should (= (length said) 1))
+      (should (string-search "Invalid parameters" (car said))))))
+
+(ert-deftest canvas-browser-a-page-put-to-sleep-is-not-asked-for-frames-again ()
+  ;; GIVEN a page whose screencast chromium refused, AND that no window
+  ;;       shows any more by the time it is asked for again
+  ;; WHEN the moment to ask again comes
+  ;; THEN the screencast is not asked for: a page that nobody sees is
+  ;;      left to chromium
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (let ((later nil))
+      (canvas-browser-test--refusing "Page.startScreencast" 1 "Not attached to an active page"
+        (cl-letf (((symbol-function 'run-with-timer)
+                   (lambda (_seconds _repeat function &rest args)
+                     (setq later (lambda () (apply function args))))))
+          (canvas-browser--start-screencast))
+        (canvas-browser--sleep)
+        (funcall later)
+        (should (= (canvas-browser-test--count "Page.startScreencast") 1))))))
+
 (ert-deftest canvas-browser-forgets-a-part-that-is-gone ()
   ;; GIVEN a page whose picked part has gone, after a click or a new page
   ;; WHEN a line is scrolled
@@ -1513,7 +1612,7 @@ that moment now."
     (setq canvas-browser--scroller 1)
     (let ((said nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                 (lambda (method params &optional answer _session)
+                 (lambda (method params &optional answer _session &rest _)
                    (push (cons method params) canvas-browser-test--commands)
                    (when answer (funcall answer '(:result (:value :false))))))
                 ((symbol-function 'message)
@@ -2092,7 +2191,7 @@ the second those drawn into the moving parts alone."
   (canvas-browser-test--in-page
     (let ((sent nil) (waiting nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                 (lambda (method params &optional answer _session)
+                 (lambda (method params &optional answer _session &rest _)
                    (push (cons method params) sent)
                    (when answer (push answer waiting)))))
         (canvas-browser--click 40 90)
@@ -2211,7 +2310,7 @@ the second those drawn into the moving parts alone."
     (canvas-browser-insert-mode)
     (let ((told nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                 (lambda (method params &optional answer _session)
+                 (lambda (method params &optional answer _session &rest _)
                    (push (cons method params) canvas-browser-test--commands)
                    (cond ((plist-get params :awaitPromise) (setq told answer))
                          ((equal method "Runtime.evaluate")
@@ -2233,7 +2332,7 @@ selection at once."
   (declare (indent 2))
   `(let ((lengths ,lengths))
      (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                (lambda (method params &optional answer _session)
+                (lambda (method params &optional answer _session &rest _)
                   (push (cons method params) canvas-browser-test--commands)
                   (when answer
                     (funcall answer
@@ -2399,7 +2498,7 @@ selection at once."
   (canvas-browser-test--in-page
     (let ((sent nil) (waiting nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                 (lambda (method params &optional answer _session)
+                 (lambda (method params &optional answer _session &rest _)
                    (push (cons method params) sent)
                    (when answer (push answer waiting)))))
         (canvas-browser-next-field)
@@ -2541,7 +2640,7 @@ selection at once."
   "Run BODY in a page whose chromium answers every script with VALUE."
   (declare (indent 1))
   `(cl-letf (((symbol-function 'canvas-browser-cdp-send)
-              (lambda (method params &optional answer _session)
+              (lambda (method params &optional answer _session &rest _)
                 (push (cons method params) canvas-browser-test--commands)
                 (when answer
                   (funcall answer (if (equal method "Runtime.evaluate")
@@ -3113,7 +3212,7 @@ The window manager says so on the root window, where Emacs reads it."
   (canvas-browser-test--in-page
     (let ((answer nil) (cut nil) (copied nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                 (lambda (method params &optional then _session)
+                 (lambda (method params &optional then _session &rest _)
                    (push (cons method params) canvas-browser-test--commands)
                    (when then (setq answer then))))
                 ((symbol-function 'canvas-browser--picture-size) (lambda (_png) '(1600 . 1000)))
@@ -3571,7 +3670,7 @@ With OFF-THE-PAGE, the position is in the window and not on the page."
 TYPING says whether the focus of the page takes typing after the drag."
   (declare (indent 2))
   `(cl-letf (((symbol-function 'canvas-browser-cdp-send)
-              (lambda (method params &optional answer _session)
+              (lambda (method params &optional answer _session &rest _)
                 (push (cons method params) canvas-browser-test--commands)
                 (when answer
                   (funcall
@@ -3763,7 +3862,7 @@ TYPING says whether the focus of the page takes typing after the drag."
              ((symbol-function 'canvas-browser--paint-window) #'ignore)
              ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) ,chosen))
              ((symbol-function 'canvas-browser-cdp-send)
-              (lambda (method params &optional answer _session)
+              (lambda (method params &optional answer _session &rest _)
                 (push (cons method params) canvas-browser-test--commands)
                 (when answer
                   (let ((expression (or (plist-get params :expression) "")))
@@ -4202,7 +4301,7 @@ Return the dired buffer in which they are picked."
   ;;      file dialog is closed, AND the keys of the choice are gone
   (canvas-browser-test--attaching directory
     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-               (lambda (method params &optional answer _session)
+               (lambda (method params &optional answer _session &rest _)
                  (push (cons method params) canvas-browser-test--commands)
                  (when answer
                    (funcall answer (when (equal method "DOM.resolveNode")

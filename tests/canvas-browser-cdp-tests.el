@@ -107,6 +107,47 @@
       (should (string-search "Cannot navigate" said))
       (should-not answered))))
 
+(ert-deftest canvas-browser-cdp-an-error-names-the-command-that-was-refused ()
+  ;; GIVEN a command that nobody waits for, which chromium refuses
+  ;; WHEN its answer arrives
+  ;; THEN the message names the command with what chromium says, so that
+  ;;      the reader knows what did not happen, AND the command is
+  ;;      forgotten after
+  (canvas-browser-test--with-stub
+    (let ((said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (canvas-browser-cdp-send "Page.captureScreenshot" nil nil "S1")
+        (let ((id (plist-get (car canvas-browser-test--sent) :id)))
+          (canvas-browser-cdp--receive
+           (json-encode `(:id ,id :error (:code -32000
+                                          :message "Not attached to an active page"))))
+          (should (equal said (concat "canvas-browser: chromium refused Page.captureScreenshot:"
+                                      " Not attached to an active page")))
+          (should-not (gethash id canvas-browser-cdp--methods)))))))
+
+(ert-deftest canvas-browser-cdp-a-refusal-reaches-the-one-who-asked-to-hear-of-it ()
+  ;; GIVEN a command sent with a function that wants to hear of a refusal
+  ;; WHEN chromium refuses the command
+  ;; THEN that function gets what chromium says, AND nothing is said to
+  ;;      the reader, since the caller now decides what the refusal
+  ;;      means, AND the function that waits for the answer gets nothing,
+  ;;      as for any refused command
+  (canvas-browser-test--with-stub
+    (let ((said nil) (answered 'nothing) (refused nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (canvas-browser-cdp-send "Page.startScreencast" nil
+                                 (lambda (result) (setq answered result)) "S1"
+                                 (lambda (text) (setq refused text)))
+        (let ((id (plist-get (car canvas-browser-test--sent) :id)))
+          (canvas-browser-cdp--receive
+           (json-encode `(:id ,id :error (:code -32000
+                                          :message "Not attached to an active page"))))))
+      (should (equal refused "Not attached to an active page"))
+      (should-not said)
+      (should-not answered))))
+
 (ert-deftest canvas-browser-cdp-events-reach-the-session-that-listens ()
   ;; GIVEN two sessions, each listening for a method
   ;; WHEN an event of one session arrives

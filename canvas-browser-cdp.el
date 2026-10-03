@@ -160,12 +160,22 @@ uses the profile, and that one alone listens."
 (defvar canvas-browser-cdp--waiting (make-hash-table :test #'eql)
   "The function that waits for the answer of each command id.")
 
+(defvar canvas-browser-cdp--methods (make-hash-table :test #'eql)
+  "The method of each command id that chromium has not answered yet.
+A command that chromium refuses is named by it.")
+
+(defvar canvas-browser-cdp--refusals (make-hash-table :test #'eql)
+  "The function that hears of a refusal, for each command id that has one.")
+
 (defvar canvas-browser-cdp--listeners (make-hash-table :test #'equal)
   "The functions that wait for an event, keyed by (SESSION . METHOD).")
 
-(defun canvas-browser-cdp-send (method params &optional answer session)
+(defun canvas-browser-cdp-send (method params &optional answer session refused)
   "Send METHOD with PARAMS to chromium, in SESSION when there is one.
-ANSWER, a function of one plist, has the result when it arrives."
+ANSWER, a function of one plist, has the result when it arrives.  A
+command that chromium refuses is said to the reader, unless REFUSED is
+given: that function is then called with what chromium says, and
+decides what the refusal means."
   (unless (canvas-browser-cdp-running-p)
     (user-error "canvas-browser: chromium is not connected"))
   (let* ((id (cl-incf canvas-browser-cdp--id))
@@ -173,6 +183,8 @@ ANSWER, a function of one plist, has the result when it arrives."
                           (when params (list :params params))
                           (when session (list :sessionId session)))))
     (when answer (puthash id answer canvas-browser-cdp--waiting))
+    (puthash id method canvas-browser-cdp--methods)
+    (when refused (puthash id refused canvas-browser-cdp--refusals))
     (websocket-send-text canvas-browser-cdp--socket (json-encode command))
     id))
 
@@ -198,10 +210,16 @@ ANSWER, a function of one plist, has the result when it arrives."
 (defun canvas-browser-cdp--answer (id message)
   "Give MESSAGE, the answer of the command ID, to the function that waits."
   (let ((answer (gethash id canvas-browser-cdp--waiting))
+        (method (gethash id canvas-browser-cdp--methods))
+        (refused (gethash id canvas-browser-cdp--refusals))
         (failure (plist-get message :error)))
     (remhash id canvas-browser-cdp--waiting)
-    (when failure
-      (message "canvas-browser: chromium says: %s" (plist-get failure :message)))
+    (remhash id canvas-browser-cdp--methods)
+    (remhash id canvas-browser-cdp--refusals)
+    (cond ((not failure) nil)
+          (refused (funcall refused (plist-get failure :message)))
+          (t (message "canvas-browser: chromium refused %s: %s"
+                      (or method "a command") (plist-get failure :message))))
     (when answer
       ;; A refused command answers with nothing, so that a caller which
       ;; put something aside while it waited can put it back.
@@ -377,6 +395,8 @@ A command sent while it connects reaches nobody."
     (delete-process canvas-browser-cdp--process)
     (setq canvas-browser-cdp--process nil))
   (clrhash canvas-browser-cdp--waiting)
+  (clrhash canvas-browser-cdp--methods)
+  (clrhash canvas-browser-cdp--refusals)
   (clrhash canvas-browser-cdp--listeners))
 
 (provide 'canvas-browser-cdp)
