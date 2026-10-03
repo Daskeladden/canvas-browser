@@ -1460,50 +1460,6 @@ that moment now."
       (canvas-browser--keep-fresh (current-buffer))
       (should-not canvas-browser-test--commands))))
 
-;;;; The part of the page that scrolls on its own
-
-(ert-deftest canvas-browser-asks-the-page-which-parts-scroll-themselves ()
-  ;; GIVEN a page buffer
-  ;; WHEN the parts that scroll on their own are asked for
-  ;; THEN the script looks for what overflows its own box, keeps those
-  ;;      elements in the page so that a later scroll finds them again,
-  ;;      AND their boxes come back
-  (canvas-browser-test--in-page
-    (let ((boxes 'none))
-      (cl-letf (((symbol-function 'canvas-browser-cdp-send)
-                 (lambda (method params &optional answer _session)
-                   (push (cons method params) canvas-browser-test--commands)
-                   (when answer
-                     (funcall answer '(:result (:value ((:x 1 :y 2 :w 3 :h 4)))))))))
-        (canvas-browser--scrollers (lambda (found) (setq boxes found))))
-      (let ((sent (canvas-browser-test--params "Runtime.evaluate")))
-        (should (string-search "scrollHeight" (plist-get sent :expression)))
-        (should (string-search "__canvasBrowserScrollers" (plist-get sent :expression)))
-        (should (eq (plist-get sent :returnByValue) t)))
-      (should (equal boxes '((:x 1 :y 2 :w 3 :h 4)))))))
-
-(ert-deftest canvas-browser-picking-a-part-sends-the-scroll-keys-to-it ()
-  ;; GIVEN a page with two parts that scroll on their own
-  ;; WHEN the second one is picked, and then a line is scrolled
-  ;; THEN the line goes to that part, by the place it was given, and not
-  ;;      to the window
-  (canvas-browser-test--in-page
-    (cl-letf (((symbol-function 'canvas-browser--scrollers)
-               (lambda (answer) (funcall answer '((:x 0 :y 0 :w 200 :h 400)
-                                                  (:x 300 :y 0 :w 200 :h 400)))))
-              ((symbol-function 'canvas-browser--draw-hints) #'ignore)
-              ;; The whole page takes the first letter, so the second part
-              ;; is the third label.
-              ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) (list 2))))
-      (canvas-browser-pick-scroller))
-    (should (equal canvas-browser--scroller 1))
-    (canvas-browser-scroll-line-up)
-    (let ((expression (plist-get (canvas-browser-test--params "Runtime.evaluate")
-                                 :expression)))
-      (should (string-search "__canvasBrowserScrollers" expression))
-      (should (string-search (format "(1, 'by', %d)" canvas-browser-line-height) expression))
-      (should-not (string-search "window.scrollBy" expression)))))
-
 ;;;; A command that chromium refuses for a moment
 
 (defmacro canvas-browser-test--refusing (method times text &rest body)
@@ -1603,11 +1559,186 @@ is said goes to `said'."
         (funcall later)
         (should (= (canvas-browser-test--count "Page.startScreencast") 1))))))
 
+;;;; The part of the page that is picked
+
+(defconst canvas-browser-test--two-parts
+  '((:x 0 :y 0 :w 200 :h 400 :scrolls :false)
+    (:x 300 :y 0 :w 200 :h 400 :scrolls t))
+  "The boxes of two parts of a page: one that the page marks, which does
+not scroll on its own, and one that does.")
+
+(defmacro canvas-browser-test--picking (boxes chosen &rest body)
+  "Run BODY in a page whose parts have BOXES, where the hint names CHOSEN.
+CHOSEN is the place of a label, where the whole page has the first, or
+nil for ESC.  What is drawn goes to `canvas-browser-test--drawn'."
+  (declare (indent 2))
+  `(let ((canvas-browser-test--drawn nil))
+     (cl-letf (((symbol-function 'canvas-browser--parts)
+                (lambda (answer) (funcall answer ,boxes)))
+               ((symbol-function 'canvas-browser--draw-hints)
+                (lambda (boxes _hints) (push (cons 'hints boxes) canvas-browser-test--drawn)))
+               ((symbol-function 'canvas-browser--draw-outline)
+                (lambda (box) (push (cons 'outline box) canvas-browser-test--drawn)))
+               ((symbol-function 'canvas-browser--read-hint)
+                (lambda (&rest _) (and ,chosen (list ,chosen)))))
+       ,@body)))
+
+(defvar canvas-browser-test--drawn nil
+  "What was drawn over the page, newest first.
+Each is (outline . BOX), (tint . BOX), (hints . BOXES), or the symbol
+`repaint' for a new picture of the page, which takes the marks off.")
+
 (defun canvas-browser-test--scripts ()
   "The scripts that were sent to the page, newest first."
   (cl-loop for (method . params) in canvas-browser-test--commands
            when (equal method "Runtime.evaluate")
            collect (plist-get params :expression)))
+
+(ert-deftest canvas-browser-asks-the-page-for-its-parts ()
+  ;; GIVEN a page buffer
+  ;; WHEN the parts of the page are asked for
+  ;; THEN the script looks for what overflows its own box and for what
+  ;;      the page marks as a part, keeps those elements in the page so
+  ;;      that a later key finds them again, AND their boxes come back
+  (canvas-browser-test--in-page
+    (let ((boxes 'none))
+      (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                 (lambda (method params &optional answer _session &rest _)
+                   (push (cons method params) canvas-browser-test--commands)
+                   (when answer
+                     (funcall answer '(:result (:value ((:x 1 :y 2 :w 3 :h 4)))))))))
+        (canvas-browser--parts (lambda (found) (setq boxes found))))
+      (let ((sent (canvas-browser-test--params "Runtime.evaluate")))
+        (should (string-search "scrollHeight" (plist-get sent :expression)))
+        (should (string-search "main,aside" (plist-get sent :expression)))
+        (should (string-search "__canvasBrowserParts" (plist-get sent :expression)))
+        (should (eq (plist-get sent :returnByValue) t)))
+      (should (equal boxes '((:x 1 :y 2 :w 3 :h 4)))))))
+
+(ert-deftest canvas-browser-picking-a-part-that-scrolls-sends-the-scroll-keys-to-it ()
+  ;; GIVEN a page with two parts, of which the second scrolls on its own
+  ;; WHEN the second one is picked, and then a line is scrolled
+  ;; THEN the line goes to that part, by the place it was given, and not
+  ;;      to the window
+  (canvas-browser-test--in-page
+    ;; The whole page takes the first letter, so the second part is the
+    ;; third label.
+    (canvas-browser-test--picking canvas-browser-test--two-parts 2
+      (canvas-browser-pick-part))
+    (should (equal canvas-browser--part '(:place 1 :scrolls t)))
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-scroll-line-up)
+    ;; The chromium of the tests answers no scroll with true, so the
+    ;; part is forgotten after, and the scroll is the script before that.
+    (let ((expression (car (last (canvas-browser-test--scripts)))))
+      (should (string-search (format "__canvasBrowserParts[1]), 'by', %d)"
+                                     canvas-browser-line-height)
+                             expression))
+      (should-not (string-search "window.scrollBy" expression)))))
+
+(ert-deftest canvas-browser-a-part-that-does-not-scroll-leaves-the-scroll-keys-to-the-page ()
+  ;; GIVEN a page with two parts, of which the first does not scroll on
+  ;;       its own
+  ;; WHEN the first one is picked, and then a line is scrolled
+  ;; THEN the part is the one picked, AND the line moves the whole page
+  (canvas-browser-test--in-page
+    (canvas-browser-test--picking canvas-browser-test--two-parts 1
+      (canvas-browser-pick-part))
+    (should (equal canvas-browser--part '(:place 0 :scrolls nil)))
+    (canvas-browser-scroll-line-up)
+    (should (string-search "window.scrollBy"
+                           (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                      :expression)))))
+
+(ert-deftest canvas-browser-the-parts-are-outlined-while-one-is-picked ()
+  ;; GIVEN a page with two parts
+  ;; WHEN the parts are labelled
+  ;; THEN each part gets an outline before the labels are drawn, so that
+  ;;      its size shows, AND the whole page gets a label and no outline
+  (canvas-browser-test--in-page
+    (canvas-browser-test--picking canvas-browser-test--two-parts 1
+      (canvas-browser-pick-part)
+      (let ((drawn (reverse canvas-browser-test--drawn)))
+        (should (equal (seq-take drawn 2)
+                       `((outline . ,(nth 0 canvas-browser-test--two-parts))
+                         (outline . ,(nth 1 canvas-browser-test--two-parts)))))
+        (should (eq (car (nth 2 drawn)) 'hints))
+        (should (= (length (cdr (nth 2 drawn))) 3))))))
+
+(ert-deftest canvas-browser-the-part-that-is-picked-keeps-a-mark-in-the-page ()
+  ;; GIVEN a page with two parts
+  ;; WHEN the first one is picked
+  ;; THEN the page is told to draw an outline on that part, in the
+  ;;      colour of a hint, which stays while the part is picked, AND
+  ;;      that counts as a command, so that a still picture asked for
+  ;;      before it, without the outline, is dropped
+  (canvas-browser-test--in-page
+    (let ((commands canvas-browser--commands))
+      (canvas-browser-test--picking canvas-browser-test--two-parts 1
+        (canvas-browser-pick-part))
+      (let ((script (car (canvas-browser-test--scripts))))
+        (should (string-search "__canvasBrowserMark" script))
+        (should (string-search "solid #FFD633" script))
+        (should (string-suffix-p
+                 "((window.__canvasBrowserParts && window.__canvasBrowserParts[0]))"
+                 script)))
+      (should (> canvas-browser--commands commands)))))
+
+(ert-deftest canvas-browser-picking-the-part-that-is-picked-leaves-the-page-alone ()
+  ;; GIVEN a page where the first part is picked
+  ;; WHEN that same part is picked again
+  ;; THEN the page is not told to move its mark, AND it counts as no
+  ;;      command: the picture asked for after the labels is then
+  ;;      painted, which takes the labels off.  A mark put where one was
+  ;;      changes nothing that chromium would send a frame for
+  (canvas-browser-test--in-page
+    (canvas-browser-test--picking canvas-browser-test--two-parts 1
+      (canvas-browser-pick-part)
+      (setq canvas-browser-test--commands nil)
+      (let ((commands canvas-browser--commands))
+        (canvas-browser-pick-part)
+        (should (= canvas-browser--commands commands))))
+    (should (equal canvas-browser--part '(:place 0 :scrolls nil)))
+    (should-not (cl-some (lambda (script) (string-search "__canvasBrowserMark" script))
+                         (canvas-browser-test--scripts)))))
+
+(ert-deftest canvas-browser-the-mark-goes-when-the-whole-page-is-picked ()
+  ;; GIVEN a page buffer where a part was picked
+  ;; WHEN the whole page is picked again
+  ;; THEN the page is told to take the outline off, with no part to put
+  ;;      one on
+  (canvas-browser-test--in-page
+    (setq canvas-browser--part '(:place 1 :scrolls t))
+    (canvas-browser-test--picking canvas-browser-test--two-parts 0
+      (canvas-browser-pick-part))
+    (let ((script (car (canvas-browser-test--scripts))))
+      (should (string-search "__canvasBrowserMark" script))
+      (should (string-suffix-p "(null)" script)))))
+
+(ert-deftest canvas-browser-the-mark-goes-with-a-part-that-is-forgotten ()
+  ;; GIVEN a page buffer where a part was picked
+  ;; WHEN the page goes to another address
+  ;; THEN the page is told to take the outline off, since a page that
+  ;;      draws itself anew under another address may keep the element
+  (canvas-browser-test--in-page
+    (setq canvas-browser--part '(:place 1 :scrolls t))
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser--target-changed
+     (list :targetInfo (list :targetId canvas-browser--target :type "page"
+                             :url "https://example.org/next" :title "The next page")))
+    (should (string-suffix-p "(null)" (car (canvas-browser-test--scripts))))))
+
+(ert-deftest canvas-browser-a-new-address-without-a-part-takes-no-mark-off ()
+  ;; GIVEN a page buffer where no part is picked
+  ;; WHEN the page goes to another address
+  ;; THEN the page is not asked to take an outline off
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser--target-changed
+     (list :targetInfo (list :targetId canvas-browser--target :type "page"
+                             :url "https://example.org/next" :title "The next page")))
+    (should-not (cl-some (lambda (script) (string-search "__canvasBrowserMark" script))
+                         (canvas-browser-test--scripts)))))
 
 (ert-deftest canvas-browser-forgets-a-part-that-is-gone ()
   ;; GIVEN a page whose picked part has gone, after a click or a new page
@@ -1615,7 +1746,7 @@ is said goes to `said'."
   ;; THEN the page answers that it is gone, the reader is told, AND the
   ;;      next scroll moves the whole page again
   (canvas-browser-test--in-page
-    (setq canvas-browser--scroller 1)
+    (setq canvas-browser--part '(:place 1 :scrolls t))
     (let ((said nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
                  (lambda (method params &optional answer _session &rest _)
@@ -1624,67 +1755,117 @@ is said goes to `said'."
                 ((symbol-function 'message)
                  (lambda (format &rest args) (setq said (apply #'format format args)))))
         (canvas-browser-scroll-line-up)
-        (should-not canvas-browser--scroller)
+        (should-not canvas-browser--part)
         (should (string-search "the whole page" said))))
     (canvas-browser-scroll-line-up)
     (should (string-search "window.scrollBy"
                            (plist-get (canvas-browser-test--params "Runtime.evaluate")
                                       :expression)))))
 
-(ert-deftest canvas-browser-escape-gives-the-keys-back-to-the-whole-page ()
+(ert-deftest canvas-browser-a-new-address-forgets-the-part ()
   ;; GIVEN a page buffer where a part was picked
-  ;; WHEN the parts are labelled again and ESC is pressed
-  ;; THEN the whole page scrolls again, which is the way back
+  ;; WHEN the page goes to another address
+  ;; THEN no part is picked, since the part belonged to the page before
   (canvas-browser-test--in-page
-    (setq canvas-browser--scroller 1)
-    (cl-letf (((symbol-function 'canvas-browser--scrollers)
-               (lambda (answer) (funcall answer '((:x 0 :y 0 :w 200 :h 400)))))
-              ((symbol-function 'canvas-browser--draw-hints) #'ignore)
-              ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) nil)))
-      (canvas-browser-pick-scroller))
-    (should-not canvas-browser--scroller)))
+    (setq canvas-browser--part '(:place 1 :scrolls t))
+    (canvas-browser--target-changed
+     (list :targetInfo (list :targetId canvas-browser--target :type "page"
+                             :url "https://example.org/next" :title "The next page")))
+    (should-not canvas-browser--part)))
 
-(ert-deftest canvas-browser-says-when-nothing-scrolls-on-its-own ()
+(ert-deftest canvas-browser-a-choice-that-is-given-up-keeps-the-part-that-was-picked ()
+  ;; GIVEN a page buffer where a part was picked
+  ;; WHEN the parts are labelled again, and no label is named: ESC, or a
+  ;;      key that is no label
+  ;; THEN the part that was picked is still picked, AND the page is not
+  ;;      told to move its mark
+  (canvas-browser-test--in-page
+    (setq canvas-browser--part '(:place 1 :scrolls t))
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--picking canvas-browser-test--two-parts nil
+      (canvas-browser-pick-part))
+    (should (equal canvas-browser--part '(:place 1 :scrolls t)))
+    (should-not (cl-some (lambda (script) (string-search "__canvasBrowserMark" script))
+                         (canvas-browser-test--scripts)))))
+
+(ert-deftest canvas-browser-c-g-gives-the-keys-back-to-the-whole-page ()
+  ;; GIVEN a page buffer in normal state where a part is picked
+  ;; WHEN C-g is pressed
+  ;; THEN no part is picked, AND the page is told to take the mark off,
+  ;;      AND a message says that the keys act on the whole page
+  (canvas-browser-test--in-page
+    (setq canvas-browser--part '(:place 1 :scrolls t))
+    (setq canvas-browser-test--commands nil)
+    (let ((said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (should (eq (key-binding (kbd "C-g")) #'canvas-browser-quit))
+        (canvas-browser-test--press "C-g"))
+      (should (string-search "the whole page" said)))
+    (should-not canvas-browser--part)
+    (should (string-suffix-p "(null)" (car (canvas-browser-test--scripts))))))
+
+(ert-deftest canvas-browser-c-g-quits-as-ever-when-no-part-is-picked ()
+  ;; GIVEN a page buffer in normal state where no part is picked
+  ;; WHEN C-g is pressed
+  ;; THEN it quits, as it does in any buffer, AND the page is told nothing
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    ;; A quit is no error, so `should-error' does not see it.
+    (should (eq 'quit (condition-case nil
+                          (canvas-browser-test--press "C-g")
+                        (quit 'quit))))
+    (should-not (canvas-browser-test--scripts))))
+
+(ert-deftest canvas-browser-says-when-a-page-has-no-parts ()
   ;; GIVEN a page of one piece
-  ;; WHEN the parts that scroll are asked for
-  ;; THEN the reader is told, and nothing is picked
+  ;; WHEN the parts are asked for
+  ;; THEN the reader is told, and nothing is picked or drawn
   (canvas-browser-test--in-page
     (let ((said nil))
-      (cl-letf (((symbol-function 'canvas-browser--scrollers)
-                 (lambda (answer) (funcall answer nil)))
-                ((symbol-function 'message)
-                 (lambda (format &rest args) (setq said (apply #'format format args)))))
-        (canvas-browser-pick-scroller)
-        (should (string-search "scrolls on its own" said))
-        (should-not canvas-browser--scroller)))))
+      (canvas-browser-test--picking nil nil
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format &rest args) (setq said (apply #'format format args)))))
+          (canvas-browser-pick-part))
+        (should-not canvas-browser-test--drawn))
+      (should (string-search "no parts" said))
+      (should-not canvas-browser--part))))
 
 (ert-deftest canvas-browser-the-key-for-picking-a-part-is-bound ()
   ;; GIVEN a page buffer in normal state
   ;; WHEN `S\=' is looked up
-  ;; THEN it labels the parts that scroll, as ace-window labels windows
+  ;; THEN it labels the parts of the page, as ace-window labels windows,
+  ;;      AND the name the command had before still runs it
   (canvas-browser-test--in-page
-    (should (eq (key-binding (kbd "S")) #'canvas-browser-pick-scroller))))
+    (should (eq (key-binding (kbd "S")) #'canvas-browser-pick-part))
+    (should (eq (indirect-function 'canvas-browser-pick-scroller)
+                (indirect-function 'canvas-browser-pick-part)))))
 
 (ert-deftest canvas-browser-the-whole-page-carries-a-letter-too ()
-  ;; GIVEN a page with two parts that scroll on their own
+  ;; GIVEN a page with two parts
   ;; WHEN the parts are labelled
   ;; THEN the whole page is labelled first, in the top corner, where a
-  ;;      part is unlikely to begin, AND naming it sends the keys back to
-  ;;      the whole page, as `ESC\=' does
+  ;;      part is unlikely to begin, AND naming it gives the keys back to
+  ;;      the whole page
   (canvas-browser-test--in-page
-    (let ((labelled nil))
-      (cl-letf (((symbol-function 'canvas-browser--scrollers)
-                 (lambda (answer) (funcall answer '((:x 0 :y 0 :w 200 :h 400)
-                                                    (:x 300 :y 0 :w 200 :h 400)))))
-                ((symbol-function 'canvas-browser--draw-hints)
-                 (lambda (boxes _hints) (setq labelled boxes)))
-                ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) (list 0))))
-        (setq canvas-browser--scroller 1)
-        (canvas-browser-pick-scroller)
+    (setq canvas-browser--part '(:place 1 :scrolls t))
+    (canvas-browser-test--picking canvas-browser-test--two-parts 0
+      (canvas-browser-pick-part)
+      (let ((labelled (cdr (assq 'hints canvas-browser-test--drawn))))
         (should (equal (length labelled) 3))
         (should (> (plist-get (car labelled) :x) 600))
-        (should (equal (plist-get (car labelled) :y) 0))
-        (should-not canvas-browser--scroller)))))
+        (should (equal (plist-get (car labelled) :y) 0))))
+    (should-not canvas-browser--part)))
+
+(ert-deftest canvas-browser-the-header-says-that-a-part-is-picked ()
+  ;; GIVEN a page buffer
+  ;; WHEN a part is picked
+  ;; THEN the header line says so, AND it did not before
+  (canvas-browser-test--in-page
+    (should-not (string-search "part" (canvas-browser--header)))
+    (canvas-browser-test--picking canvas-browser-test--two-parts 1
+      (canvas-browser-pick-part))
+    (should (string-search " · part" (canvas-browser--header)))))
 
 ;;;; A crisp picture once the page is quiet
 
@@ -1779,6 +1960,22 @@ is said goes to `said'."
         (canvas-browser--paint still)
         (should (= canvas-browser--frames 1))
         (canvas-browser--choose-box '((:x 0 :y 0 :w 10 :h 10)))
+        (canvas-browser--paint still)
+        (should (= canvas-browser--frames 2))))))
+
+(ert-deftest canvas-browser-the-picture-under-the-tint-is-painted-again-after-it ()
+  ;; GIVEN a page that painted the still picture of itself, AND a tint
+  ;;       that was drawn over a part of it while a receiver was asked for
+  ;; WHEN chromium sends that very picture again
+  ;; THEN it is painted, and takes the tint off
+  (canvas-browser-test--in-page
+    (cl-letf (((symbol-function 'canvas-cairo-image) #'ignore)
+              ((symbol-function 'canvas-refresh) #'ignore)
+              ((symbol-function 'canvas-browser--draw-tint) #'ignore)
+              ((symbol-function 'completing-read) (lambda (&rest _) "buffer")))
+      (let ((still (base64-encode-string (canvas-browser-test--png 800 600))))
+        (canvas-browser--paint still)
+        (canvas-browser--read-receiver-over '(:x 0 :y 0 :w 10 :h 10))
         (canvas-browser--paint still)
         (should (= canvas-browser--frames 2))))))
 
@@ -4391,6 +4588,16 @@ Return the dired buffer in which they are picked."
                    '((canvas-browser-text . " words")
                      (canvas-browser-page . "https://example.org"))))))
 
+(ert-deftest canvas-browser-embark-acts-on-the-part-that-is-picked-before-the-page ()
+  ;; GIVEN a page where a part is picked
+  ;; WHEN embark asks for its targets
+  ;; THEN the part comes before the page, both named by the address
+  (canvas-browser-test--in-page
+    (setq canvas-browser--part '(:place 1 :scrolls nil))
+    (should (equal (canvas-browser-embark-target)
+                   '((canvas-browser-part . "https://example.org")
+                     (canvas-browser-page . "https://example.org"))))))
+
 (ert-deftest canvas-browser-embark-forgets-the-region-with-the-caret ()
   ;; GIVEN a page whose caret marked text, AND the caret left since
   ;; WHEN embark asks for its targets
@@ -4464,7 +4671,9 @@ Return the dired buffer in which they are picked."
         (embark-general-map (make-sparse-keymap)))
     (canvas-browser--embark-setup)
     (should (equal (alist-get 'canvas-browser-page embark-keymap-alist)
-                   '(canvas-browser-embark-page-map embark-url-map)))))
+                   '(canvas-browser-embark-page-map embark-url-map)))
+    (should (equal (alist-get 'canvas-browser-part embark-keymap-alist)
+                   '(canvas-browser-embark-part-map embark-url-map)))))
 
 (ert-deftest canvas-browser-embark-sends-the-target-to-a-receiver ()
   ;; GIVEN embark with no keymaps of its own
@@ -4480,6 +4689,10 @@ Return the dired buffer in which they are picked."
                 #'canvas-browser-send-to))
     (should (eq (keymap-lookup canvas-browser-embark-page-map ">")
                 #'canvas-browser-send-page-to))
+    (should (eq (keymap-lookup canvas-browser-embark-part-map ">")
+                #'canvas-browser-send-part-to))
+    (should (equal (alist-get 'canvas-browser-send-part-to embark-target-injection-hooks)
+                   '(embark--ignore-target)))
     (should (equal (alist-get 'canvas-browser-send-to embark-target-injection-hooks)
                    '(embark--ignore-target)))
     (should (equal (alist-get 'canvas-browser-send-page-to embark-target-injection-hooks)
@@ -4661,6 +4874,131 @@ The question of which receiver is answered with that one."
     (should (eq (plist-get canvas-browser-test--received :kind) 'page))
     (should (equal (plist-get canvas-browser-test--received :text) "one\ntwo"))))
 
+(defmacro canvas-browser-test--with-part (box text &rest body)
+  "Run BODY in a page where the second part is picked.
+The page gives BOX as the box of the part in the window and TEXT as its
+text; nil for either is the null of JSON, which the page gives for a
+part that has gone, and for a box out of the window.  The text of the
+whole page is \"all of it\".  What is drawn goes to
+`canvas-browser-test--drawn', and the drawing itself is left out."
+  (declare (indent 2))
+  `(let ((canvas-browser-test--drawn nil))
+     (setq canvas-browser--part '(:place 1 :scrolls nil))
+     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                (lambda (method params &optional answer _session &rest _)
+                  (push (cons method params) canvas-browser-test--commands)
+                  (when answer
+                    (let ((script (or (plist-get params :expression) "")))
+                      (funcall answer
+                               (list :result
+                                     (list :value
+                                           (cond ((string-search "shown(part)" script)
+                                                  (or ,box :null))
+                                                 ((string-search "__canvasBrowserParts[1]" script)
+                                                  (or ,text :null))
+                                                 (t "all of it")))))))))
+               ((symbol-function 'canvas-browser--draw-tint)
+                (lambda (box) (push (cons 'tint box) canvas-browser-test--drawn)))
+               ((symbol-function 'canvas-browser--paint-window)
+                (lambda () (push 'repaint canvas-browser-test--drawn))))
+       ,@body)))
+
+(ert-deftest canvas-browser-send-to-gives-the-part-that-is-picked ()
+  ;; GIVEN a page where a part is picked, and nothing is marked
+  ;; WHEN the page is sent to a receiver
+  ;; THEN the receiver gets the text of that part, not of the whole page
+  (canvas-browser-test--sending
+    (canvas-browser-test--with-part '(:x 0 :y 40 :w 600 :h 500) "the part"
+      (canvas-browser-send-to))
+    (should (equal canvas-browser-test--received
+                   '(:kind part :text "the part"
+                     :url "https://example.org" :title "A page")))))
+
+(ert-deftest canvas-browser-marked-text-goes-before-the-part-that-is-picked ()
+  ;; GIVEN a page where a part is picked, AND a caret that marks text
+  ;; WHEN the page is sent to a receiver
+  ;; THEN the receiver gets the marked text
+  (canvas-browser-test--sending
+    (canvas-browser-test--mark-words)
+    (canvas-browser-test--with-part '(:x 0 :y 40 :w 600 :h 500) "the part"
+      (canvas-browser-send-to))
+    (should (eq (plist-get canvas-browser-test--received :kind) 'text))))
+
+(ert-deftest canvas-browser-the-part-is-tinted-while-the-receiver-is-asked-for ()
+  ;; GIVEN a page where a part is picked, which the window shows
+  ;; WHEN the part is sent to a receiver
+  ;; THEN the part is tinted when the receiver is asked for, so that what
+  ;;      goes there shows, AND the receiver runs after a new picture of
+  ;;      the page took the tint off
+  (canvas-browser-test--sending
+    (let* ((at-the-question nil)
+           (at-the-receiver nil)
+           (canvas-browser-receivers
+            (list (cons "test" (lambda (_content)
+                                 (setq at-the-receiver
+                                       (list canvas-browser--hinting
+                                             (car canvas-browser-test--drawn))))))))
+      (canvas-browser-test--with-part '(:x 0 :y 40 :w 600 :h 500) "the part"
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _)
+                     (setq at-the-question (list canvas-browser--hinting
+                                                 (car canvas-browser-test--drawn)))
+                     "test")))
+          (canvas-browser-send-part-to)))
+      (should (equal at-the-question '(t (tint :x 0 :y 40 :w 600 :h 500))))
+      (should (equal at-the-receiver '(nil repaint))))))
+
+(ert-deftest canvas-browser-a-part-out-of-the-window-is-sent-without-a-tint ()
+  ;; GIVEN a page where a part is picked, which is scrolled out of view
+  ;; WHEN the part is sent to a receiver
+  ;; THEN nothing is drawn, AND the receiver gets its text all the same
+  (canvas-browser-test--sending
+    (canvas-browser-test--with-part '(:x 0 :y 0 :w 600 :h -20) "the part"
+      (canvas-browser-send-part-to)
+      (should-not canvas-browser-test--drawn))
+    (should (equal (plist-get canvas-browser-test--received :text) "the part"))))
+
+(ert-deftest canvas-browser-a-part-that-has-gone-is-not-sent ()
+  ;; GIVEN a page where a part was picked, which the page has thrown away
+  ;; WHEN the part is sent to a receiver
+  ;; THEN an error says that the part has gone, AND nothing is sent, AND
+  ;;      no part is picked any more
+  (canvas-browser-test--sending
+    (canvas-browser-test--with-part nil nil
+      (should (string-search "has gone"
+                             (cadr (should-error (canvas-browser-send-part-to)
+                                                 :type 'user-error)))))
+    (should-not canvas-browser-test--received)
+    (should-not canvas-browser--part)))
+
+(ert-deftest canvas-browser-text-shows-the-part-that-is-picked ()
+  ;; GIVEN a page where a part is picked
+  ;; WHEN the text of the page is asked for
+  ;; THEN the buffer holds the text of that part, not of the whole page,
+  ;;      as what is sent to a receiver is
+  (canvas-browser-test--in-page
+    (cl-letf (((symbol-function 'display-buffer) #'ignore))
+      (canvas-browser-test--with-part '(:x 0 :y 40 :w 600 :h 500) "the part"
+        (canvas-browser-text)))
+    (let ((text-buffer (canvas-browser--text-buffer)))
+      (unwind-protect
+          (with-current-buffer text-buffer
+            (should (equal (buffer-string) "the part")))
+        (kill-buffer text-buffer)))))
+
+(ert-deftest canvas-browser-text-of-a-part-that-has-gone-says-so ()
+  ;; GIVEN a page where a part was picked, which the page has thrown away
+  ;; WHEN the text of the page is asked for
+  ;; THEN an error says that the part has gone, AND no part is picked
+  ;;      any more, so that the next time shows the whole page
+  (canvas-browser-test--in-page
+    (cl-letf (((symbol-function 'display-buffer) #'ignore))
+      (canvas-browser-test--with-part nil nil
+        (should (string-search "has gone"
+                               (cadr (should-error (canvas-browser-text)
+                                                   :type 'user-error))))))
+    (should-not canvas-browser--part)))
+
 (defmacro canvas-browser-test--asked-scripts (answer &rest body)
   "Run BODY in a page that answers every script with ANSWER.
 Return the scripts that BODY had the page run, oldest first."
@@ -4675,25 +5013,38 @@ Return the scripts that BODY had the page run, oldest first."
      (reverse (canvas-browser-test--scripts))))
 
 (ert-deftest canvas-browser-the-text-that-is-sent-is-read-by-one-script ()
-  ;; GIVEN a page
+  ;; GIVEN a page, first with no part picked and then with one
   ;; WHEN the text to send is read
   ;; THEN the script that reads the text of an element is run on the body
-  ;;      of the page, AND what it gives comes back as it is
+  ;;      of the page, and then on the part, AND what it gives comes back
+  ;;      as it is
   (canvas-browser-test--in-page
     (should (equal (canvas-browser-test--asked-scripts "words"
                      (should (equal (canvas-browser--page-text) "words")))
-                   (list (concat canvas-browser--text-js "(document.body)"))))))
+                   (list (concat canvas-browser--text-js "(document.body)"))))
+    (setq canvas-browser--part '(:place 1 :scrolls nil))
+    (let ((scripts (canvas-browser-test--asked-scripts "words"
+                     (should (equal (canvas-browser--part-text) "words")))))
+      (should (= (length scripts) 1))
+      (should (string-search canvas-browser--text-js (car scripts)))
+      (should (string-search "__canvasBrowserParts[1]" (car scripts))))))
 
 (ert-deftest canvas-browser-the-html-of-what-is-sent-comes-from-the-page-as-it-is ()
-  ;; GIVEN a page, and what a receiver was given of it: a whole page, and
-  ;;       marked text
+  ;; GIVEN a page with a part picked, and what a receiver was given of
+  ;;       it: a whole page, a part, and marked text
   ;; WHEN a receiver asks for the HTML of each
-  ;; THEN the page is asked for its own HTML, and the selection for the
-  ;;      HTML that it covers, AND each comes back as the page gave it
+  ;; THEN the page is asked for its own HTML, the part for its own, and
+  ;;      the selection for the HTML that it covers, AND each comes back
+  ;;      as the page gave it
   (canvas-browser-test--in-page
+    (setq canvas-browser--part '(:place 1 :scrolls nil))
     (should (equal (canvas-browser-test--asked-scripts "<p>x</p>"
                      (should (equal (canvas-browser-content-html '(:kind page)) "<p>x</p>")))
                    (list (concat canvas-browser--html-js "(document.body)"))))
+    (let ((scripts (canvas-browser-test--asked-scripts "<p>x</p>"
+                     (should (equal (canvas-browser-content-html '(:kind part)) "<p>x</p>")))))
+      (should (string-search canvas-browser--html-js (car scripts)))
+      (should (string-search "__canvasBrowserParts[1]" (car scripts))))
     (let ((scripts (canvas-browser-test--asked-scripts "<p>x</p>"
                      (should (equal (canvas-browser-content-html '(:kind text)) "<p>x</p>")))))
       (should (string-search "getSelection()" (car scripts)))
@@ -4706,6 +5057,15 @@ Return the scripts that BODY had the page run, oldest first."
   (canvas-browser-test--in-page
     (canvas-browser-test--asked-scripts :null
       (should-not (canvas-browser-content-html '(:kind text))))))
+
+(ert-deftest canvas-browser-sending-a-part-needs-a-part ()
+  ;; GIVEN a page where no part is picked
+  ;; WHEN a part is sent
+  ;; THEN an error says how a part is picked
+  (canvas-browser-test--sending
+    (should (string-search "no part of the page is picked"
+                           (cadr (should-error (canvas-browser-send-part-to)
+                                               :type 'user-error))))))
 
 (ert-deftest canvas-browser-send-to-calls-the-receiver-in-the-page-buffer ()
   ;; GIVEN a page and a receiver that notes the buffer it runs in

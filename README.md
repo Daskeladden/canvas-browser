@@ -151,6 +151,17 @@ leaves out of its own text of a page. canvas-browser reads nothing into
 the text: what is made of it is the business of the receiver. `t` shows the
 same text.
 
+To send one part of the page and not the rest, pick the part first
+with `S`. `S` outlines and labels the parts that the window shows: the
+main content, a sidebar, a header, an article, and every part that
+scrolls on its own. Name the part you want. That part keeps an outline
+while it is picked, and the header line says `part`. `>` then sends
+that part: it is tinted while you choose the receiver, and its whole
+text goes, also what is out of the window. So the main content goes
+without the sidebars and the footer. The part stays picked until you
+pick another, or the page goes to another address. `C-g` goes back to the whole page, and so do `S` and the first
+label. `S` and `ESC` change nothing.
+
 Three receivers come with canvas-browser:
 
 - `buffer` pastes the text into a buffer you name, at its cursor, as
@@ -166,8 +177,8 @@ Three receivers come with canvas-browser:
   is the text.
 
 A receiver is a function with a name in `canvas-browser-receivers`. It
-runs in the page buffer and gets one plist: `:kind` is `text` or
-`page`, and `:text`, `:url` and `:title` are the text, the address
+runs in the page buffer and gets one plist: `:kind` is `text`, `page`
+or `part`, and `:text`, `:url` and `:title` are the text, the address
 and the title. A receiver that wants more than the text calls
 `(canvas-browser-content-html CONTENT)`, which gives the HTML of the
 same thing as the page has it. The HTML still holds what lies inside
@@ -185,10 +196,12 @@ receiver that copies the text:
 
 `embark-act` in a page buffer acts on the page. It has the actions of
 any URL, so you can open the address in another browser or in eww, copy
-it, or download it. `>` sends the page to a receiver. While the caret
-marks text, the text is the first target, and `embark-cycle` reaches
-the page. On marked text, `s` searches for it in a page buffer of its
-own, and `>` sends it to a receiver.
+it, or download it. `>` sends the page to a receiver. When a part of
+the page is picked with `S`, that part is a target before the page, and
+`>` sends the part. While the caret marks text, the text is the first
+target. `embark-cycle` reaches the targets after the first. On marked
+text, `s` searches for it in a page buffer of its own, and `>` sends it
+to a receiver.
 
 ### Blocking ads
 
@@ -219,7 +232,7 @@ Normal state keeps the keys of Emacs:
 | `o` | opens a URL in this buffer, or searches for the words you type |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
 | `y` | copies the address of this page, as `f y` copies the address of a link |
-| `>` | sends the marked text to a receiver you name, or else the text of the page |
+| `>` | sends the marked text to a receiver you name, or else the part picked with `S`, or else the text of the page |
 | `O` | the same in a page buffer of its own, as the `O` of Vimium and qutebrowser opens a tab |
 | `g` | reads the page again |
 | `M-p`, `M-n` | go back and forward in the history |
@@ -229,14 +242,14 @@ Normal state keeps the keys of Emacs:
 | `<home>`, `<end>`, `C-<home>`, `C-<end>`, `M-<`, `M->` | go to the top and the foot of the page |
 | `f` | labels what a click can reach, fields inside web components included, and clicks the one you name; the labels stay until you name one or press `ESC` |
 | `M-w` | labels the blocks of the page, and copies the picture of the one you name; `C-u M-w` copies the whole window |
-| `S` | labels the parts of the page that scroll on their own, and sends the scroll keys to the one you name |
+| `S` | outlines and labels the parts of the page, and picks the one you name: `>` sends its text, and the scroll keys move a part that scrolls on its own |
 | `v` | moves a caret through the text of the page with the motions of Emacs |
 | `M-j` | puts the caret on text you type, as `avy-goto-char-timer` puts point |
 | `TAB`, `S-TAB` | go to the next and the previous field, and type there |
 | `C-s`, `C-r` | search the page, and step to the next hit and the one before |
 | `d` | turns dark mode on or off, for this page and the next ones |
 | `i` | sends the keys to the page, as a click in a field does |
-| `t` | puts the text of the page in an ordinary buffer |
+| `t` | puts the text of the page, or of the part picked with `S`, in an ordinary buffer |
 | `M-s M-l` | searches that text with `consult-line` |
 | `e` | opens the same URL in eww |
 | a click | clicks the page at that pixel, and types there if it is a field |

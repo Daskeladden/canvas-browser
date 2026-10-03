@@ -1107,6 +1107,51 @@ Chromium has a profile of its own."
        (canvas-browser-cdp-stop)
        (delete-directory canvas-browser-profile-directory t))))
 
+(defun canvas-browser-live-test--pick (selector)
+  "Pick the part of this page that SELECTOR matches, as `S\=' and its label do."
+  (cl-letf (((symbol-function 'canvas-browser--draw-hints) #'ignore)
+            ((symbol-function 'canvas-browser--draw-outline) #'ignore)
+            ((symbol-function 'canvas-browser--read-hint)
+             (lambda (&rest _)
+               ;; The whole page has the first label.
+               (list (1+ (canvas-browser-live-test--page-says
+                          (format "window.__canvasBrowserParts.findIndex(e => e.matches('%s'))"
+                                  selector)))))))
+    (setq canvas-browser--part nil)
+    (canvas-browser-pick-part)
+    (should (canvas-browser-live-test--wait 10 (lambda () canvas-browser--part)))))
+
+(ert-deftest canvas-browser-live-a-part-of-a-page-is-sent-without-the-rest ()
+  ;; GIVEN the thread fixture, whose main part holds the post and its
+  ;;       comments, with a sidebar and a heading outside it
+  ;; WHEN the main part is picked, and the page is sent to a receiver
+  ;;      that asks for the HTML as well
+  ;; THEN the receiver gets the text of the main part, from its first
+  ;;      line to its last, AND its HTML as the page has it, with one
+  ;;      comment inside the other, AND neither holds the sidebar
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "thread.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser-live-test--pick "main")
+    (should-not (plist-get canvas-browser--part :scrolls))
+    (let* ((received nil)
+           (html nil)
+           (canvas-browser-receivers
+            (list (cons "test" (lambda (content)
+                                 (setq received content
+                                       html (canvas-browser-content-html content)))))))
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "test"))
+                ((symbol-function 'canvas-browser--draw-tint) #'ignore))
+        (canvas-browser-send-to))
+      (should (eq (plist-get received :kind) 'part))
+      (should (string-match-p "\\`A post\n\\(.\\|\n\\)*bob 3h ago\n\\(.\\|\n\\)*under top\\'"
+                              (plist-get received :text)))
+      (should-not (string-search "sidebar" (plist-get received :text)))
+      (should (string-prefix-p "<main>" html))
+      (should (string-match-p "<x-comment id=\"c1\">\\(.\\|\n\\)*<x-comment id=\"c2\" slot=\"children\">"
+                              html))
+      (should-not (string-search "sidebar" html)))))
+
 (ert-deftest canvas-browser-live-the-html-of-marked-text-is-what-the-mark-covers ()
   ;; GIVEN the thread fixture, where the selection of the page covers
   ;;       one comment
@@ -1121,6 +1166,119 @@ Chromium has a profile of its own."
       (should (string-search "<div slot=\"meta\"><b>alice</b>" html))
       (should (string-search "I see." html))
       (should-not (string-search "carol" html)))))
+
+(ert-deftest canvas-browser-live-the-parts-of-a-page-are-what-scrolls-and-what-it-marks ()
+  ;; GIVEN the parts fixture: a main part, a list that scrolls on its
+  ;;       own, and a sidebar
+  ;; WHEN the parts of the page are asked for
+  ;; THEN all three are parts, AND only the list is said to scroll
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "parts.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (let ((boxes 'waiting))
+      (canvas-browser--parts (lambda (answer) (setq boxes answer)))
+      (should (canvas-browser-live-test--wait 10 (lambda () (not (eq boxes 'waiting)))))
+      (should (equal (mapcar (lambda (box) (eq (plist-get box :scrolls) t)) boxes)
+                     '(nil t nil)))
+      (should (equal (canvas-browser-live-test--page-says
+                      "window.__canvasBrowserParts.map(e => e.tagName)")
+                     '("MAIN" "DIV" "ASIDE"))))))
+
+(ert-deftest canvas-browser-live-the-scroll-keys-move-the-part-that-is-picked ()
+  ;; GIVEN the parts fixture, where the list that scrolls is picked
+  ;; WHEN a line is scrolled
+  ;; THEN the list has moved, AND the page has not
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "parts.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser-live-test--pick "#list")
+    (should (plist-get canvas-browser--part :scrolls))
+    (canvas-browser-scroll-line-up)
+    (should (canvas-browser-live-test--wait
+             10 (lambda ()
+                  (> (canvas-browser-live-test--page-says
+                      "document.getElementById('list').scrollTop")
+                     0))))
+    (should (equal (canvas-browser-live-test--page-says "window.scrollY") 0))))
+
+(defun canvas-browser-live-test--box-of (selector)
+  "The box of the element that SELECTOR matches, as (LEFT TOP WIDTH HEIGHT)."
+  (canvas-browser-live-test--page-says
+   (format "(e => { if (!e) return null; const r = e.getBoundingClientRect();
+                    return [r.left, r.top, r.width, r.height].map(Math.round); })(document.querySelector('%s'))"
+           selector)))
+
+(defun canvas-browser-live-test--marked-p (selector)
+  "Whether the mark of the part that is picked lies on what SELECTOR matches."
+  (canvas-browser-live-test--wait
+   10 (lambda ()
+        (let ((mark (canvas-browser-live-test--box-of "#canvas-browser-mark")))
+          (and mark (equal mark (canvas-browser-live-test--box-of selector)))))))
+
+(ert-deftest canvas-browser-live-the-part-that-is-picked-has-a-mark-over-the-page ()
+  ;; GIVEN the parts fixture
+  ;; WHEN the main part is picked, then the sidebar, then the whole page
+  ;; THEN a mark lies on the part that is picked, over the page and not
+  ;;      in the part, so that nothing inside the part covers it, AND the
+  ;;      part itself is left as it was, AND the mark is gone with the
+  ;;      whole page picked
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "parts.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser-live-test--pick "main")
+    (should (canvas-browser-live-test--marked-p "main"))
+    (should (equal (canvas-browser-live-test--page-says
+                    "document.getElementById('canvas-browser-mark').parentNode === document.documentElement")
+                   t))
+    (should (equal (canvas-browser-live-test--page-says
+                    "document.querySelector('main').style.outline")
+                   ""))
+    (canvas-browser-live-test--pick "aside")
+    (should (canvas-browser-live-test--marked-p "aside"))
+    (should (equal (canvas-browser-live-test--page-says
+                    "document.querySelectorAll('#canvas-browser-mark').length")
+                   1))
+    (cl-letf (((symbol-function 'canvas-browser--draw-hints) #'ignore)
+              ((symbol-function 'canvas-browser--draw-outline) #'ignore)
+              ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) (list 0))))
+      (canvas-browser-pick-part)
+      (should (canvas-browser-live-test--wait 10 (lambda () (null canvas-browser--part)))))
+    (should (canvas-browser-live-test--wait
+             ;; The null of JSON comes as `:null'.
+             10 (lambda () (eq :null (canvas-browser-live-test--box-of "#canvas-browser-mark")))))))
+
+(ert-deftest canvas-browser-live-the-mark-follows-its-part-when-the-page-scrolls ()
+  ;; GIVEN the thread fixture in a low window, with its main part picked
+  ;; WHEN the page scrolls
+  ;; THEN the part has moved, AND the mark lies on it again
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "thread.html"
+    (canvas-browser-live-test--lay-out 800 300)
+    (canvas-browser-live-test--pick "main")
+    (should (canvas-browser-live-test--marked-p "main"))
+    (let ((before (canvas-browser-live-test--box-of "main")))
+      (canvas-browser-scroll-line-up)
+      (should (canvas-browser-live-test--wait
+               10 (lambda () (not (equal before (canvas-browser-live-test--box-of "main"))))))
+      (should (canvas-browser-live-test--marked-p "main")))))
+
+(ert-deftest canvas-browser-live-the-mark-sends-no-frames-while-the-page-stands-still ()
+  ;; GIVEN the parts fixture, with its main part picked and the page at rest
+  ;; WHEN two seconds pass
+  ;; THEN chromium sent no frame: the mark watches its part without
+  ;;      drawing anything while the part stays where it is
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "parts.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser-live-test--pick "main")
+    (should (canvas-browser-live-test--marked-p "main"))
+    (let ((arrived 0))
+      (canvas-browser-live-test--wait 2 (lambda () nil))
+      (cl-letf* ((frame (symbol-function 'canvas-browser--frame))
+                 ((symbol-function 'canvas-browser--frame)
+                  (lambda (params) (cl-incf arrived) (funcall frame params))))
+        (canvas-browser-live-test--wait 2 (lambda () nil)))
+      (should (= arrived 0)))))
 
 (ert-deftest canvas-browser-live-the-text-of-a-page-without-components-is-as-chromium-gives-it ()
   ;; GIVEN the fixture page, which has no web component
@@ -1155,6 +1313,27 @@ Chromium has a profile of its own."
                                   ""
                                   "After the panel.")
                                 "\n")))))
+
+(ert-deftest canvas-browser-live-the-html-of-a-page-holds-what-its-components-draw ()
+  ;; GIVEN the components fixture, with its panel picked
+  ;; WHEN a receiver asks for the HTML of the part
+  ;; THEN it gets the panel itself, with the children that the page gave
+  ;;      it, AND what the panel draws of its own, as HTML writes that: in
+  ;;      a template that says it is the inside of a component
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "components.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser-live-test--page-says
+     "window.__canvasBrowserParts = [document.getElementById('panel')]; true")
+    (setq canvas-browser--part '(:place 0 :scrolls nil))
+    (let ((html (canvas-browser-content-html '(:kind part))))
+      (should (string-prefix-p "<x-panel id=\"panel\">" html))
+      (should (string-suffix-p "</x-panel>" html))
+      (should (string-search "<span slot=\"title\">Communities</span>" html))
+      (should (string-search "<template shadowrootmode=\"open\">" html))
+      (should (string-match-p "<x-row><template shadowrootmode=\"open\">.*</template>Home</x-row>"
+                              html)))
+    (setq canvas-browser--part nil)))
 
 (ert-deftest canvas-browser-live-a-page-that-names-itself-later-gets-that-title ()
   ;; GIVEN the fixture page, which has loaded and given its title

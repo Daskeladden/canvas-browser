@@ -37,6 +37,12 @@ this does not reach it."
 (defvar-local canvas-browser--size nil "(W . H) of the canvas, in pixels.")
 (defvar-local canvas-browser--url nil "The URL of this buffer's page.")
 (defvar-local canvas-browser--title nil "The title of this buffer's page.")
+(defvar-local canvas-browser--part nil
+  "The part of the page that is picked, or nil for the whole page.
+It is a plist.  `:place' is the place of the part among the parts that
+the page holds in an array of its own.  `:scrolls' says whether the
+part scrolls on its own, and then the scroll keys move it.")
+
 (defvar-local canvas-browser--host nil
   "The buffer this page's picture is embedded in, or nil for a page of its own.")
 (defvar-local canvas-browser--frames 0 "How many frames this buffer painted.")
@@ -848,6 +854,8 @@ it, since the host finds it by that name."
         ;; its title stands only for a new address, until the page has
         ;; loaded and given its own.
         (unless (equal url canvas-browser--url)
+          ;; The part that was picked belonged to the page before.
+          (canvas-browser--set-part nil)
           (setq canvas-browser--url url
                 canvas-browser--title (and (stringp title) (not (string-empty-p title)) title)))
         (unless canvas-browser--host
@@ -1300,11 +1308,6 @@ the page that scrolls on its own scrolls when the pointer is over it."
   (canvas-browser--tell "Input.dispatchMouseEvent"
                         (list :type "mouseWheel" :x x :y y :deltaX 0 :deltaY delta)))
 
-(defvar-local canvas-browser--scroller nil
-  "The place of the part of the page the scroll keys move, or nil for all of it.
-The page holds the parts themselves in an array of its own, and this is
-the place of one of them there.")
-
 (defun canvas-browser--scroll (mode value expression)
   "Scroll the picked part of the page, or all of it.
 MODE and VALUE say how the part moves, and EXPRESSION is the JavaScript
@@ -1312,7 +1315,7 @@ that moves the whole page instead, when no part is picked.  The page
 scrolls itself: chromium animates a wheel event and swallows a small one,
 and a key that does nothing for a second reads as a key that does nothing
 at all."
-  (if canvas-browser--scroller
+  (if (plist-get canvas-browser--part :scrolls)
       (canvas-browser--scroll-part mode value)
     (canvas-browser--tell "Runtime.evaluate" (list :expression expression))))
 
@@ -2204,42 +2207,64 @@ copies something else of it, such as its text with `w\'.  This is what
        (when-let* ((chosen (canvas-browser--choose-box boxes canvas-browser--hint-actions)))
          (canvas-browser--act chosen boxes #'canvas-browser--copy-picture))))))
 
-;;;; The part of the page that scrolls on its own
+;;;; The part of the page that is picked
 
-(defconst canvas-browser--scrollers-script
-  "(function () {
-     const parts = Array.from(document.querySelectorAll('*')).filter(e => {
+(defconst canvas-browser--parts-script
+  (concat "(function () {" canvas-browser--reach-js "
+     const marked = 'main,aside,nav,header,footer,article,section,dialog,' +
+       '[role=main],[role=complementary],[role=navigation],[role=banner],' +
+       '[role=contentinfo],[role=region],[role=feed],[role=dialog],[role=article]';
+     const scrolls = e => {
        if (e.scrollHeight <= e.clientHeight + 4) return false;
        const overflow = getComputedStyle(e).overflowY;
-       if (overflow !== 'auto' && overflow !== 'scroll') return false;
-       const r = e.getBoundingClientRect();
-       return r.width > 40 && r.height > 40 && r.top < innerHeight && r.bottom > 0;
+       return overflow === 'auto' || overflow === 'scroll';
+     };
+     const inside = (outer, e) => { for (let n = e; n; n = up(n)) if (n === outer) return true; return false; };
+     const same = (a, b) => Math.abs(a.x - b.x) < 3 && Math.abs(a.y - b.y) < 3 &&
+                            Math.abs(a.w - b.w) < 3 && Math.abs(a.h - b.h) < 3;
+     const parts = [], boxes = [];
+     walk(document, '*', e => {
+       const moves = scrolls(e);
+       if (!moves && !e.matches(marked)) return;
+       const box = shown(e);
+       if (box.w < 40 || box.h < 40) return;
+       if (!moves) {
+         const [x, y] = middle(box);
+         const h = hit(x, y);
+         if (!h || !inside(e, h)) return;
+       }
+       box.scrolls = moves;
+       const twin = boxes.findIndex(other => same(other, box));
+       if (twin < 0) { parts.push(e); boxes.push(box); }
+       else if (moves && !boxes[twin].scrolls) { parts[twin] = e; boxes[twin] = box; }
      });
-     window.__canvasBrowserScrollers = parts;
-     return parts.map(e => {
-       const r = e.getBoundingClientRect();
-       return {x: Math.round(Math.max(r.x, 0)), y: Math.round(Math.max(r.y, 0)),
-               w: Math.round(r.width), h: Math.round(r.height)};
-     });
-   })()"
-  "The JavaScript that gives the boxes of the parts that scroll on their own.
-It keeps the parts in the page as well, so that a scroll key can move one
-of them by the place it has there.")
+     window.__canvasBrowserParts = parts;
+     return boxes;
+   })()")
+  "The JavaScript that gives the boxes of the parts of a page, to pick one.
+A part is what scrolls on its own, or what the page itself marks as a
+part: its main content, a sidebar, a header, an article.  A box says
+whether its part scrolls.  Of two parts with one box, the one that
+scrolls is kept.  The parts are kept in the page as well, so that a
+later key finds one of them by the place it has there.")
 
-(defun canvas-browser--scrollers (answer)
-  "Call ANSWER with the boxes of the parts that scroll on their own."
-  (canvas-browser--evaluate canvas-browser--scrollers-script answer))
+(defun canvas-browser--parts (answer)
+  "Call ANSWER with the boxes of the parts of the page."
+  (canvas-browser--evaluate canvas-browser--parts-script answer))
+
+(defun canvas-browser--part-js ()
+  "The JavaScript that names the part that is picked, in the page."
+  (format "(window.__canvasBrowserParts && window.__canvasBrowserParts[%d])"
+          (plist-get canvas-browser--part :place)))
 
 (defconst canvas-browser--scroll-part-script
-  "(function (i, mode, value) {
-     const parts = window.__canvasBrowserScrollers;
-     const part = parts && parts[i];
-     if (!part || !document.contains(part)) return false;
+  "(function (part, mode, value) {
+     if (!part || !part.isConnected) return false;
      if (mode === 'by') part.scrollBy(0, value);
      else if (mode === 'end') part.scrollTo(0, part.scrollHeight);
      else part.scrollTo(0, value);
      return true;
-   })(%d, '%s', %d)"
+   })(%s, '%s', %d)"
   "The JavaScript that scrolls the part picked.
 It answers false when that part has gone, which a new page or a page that
 drew itself again both do.")
@@ -2250,23 +2275,87 @@ A part the page has thrown away is forgotten, and the keys go back to the
 whole page: a key that silently does nothing reads as a broken key."
   (let ((buffer (current-buffer)))
     (canvas-browser--evaluate
-     (format canvas-browser--scroll-part-script canvas-browser--scroller mode value)
+     (format canvas-browser--scroll-part-script (canvas-browser--part-js) mode value)
      (lambda (there)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
-           (unless (eq there t) (canvas-browser--forget-scroller))))))))
+           (unless (eq there t) (canvas-browser--forget-part))))))))
 
-(defun canvas-browser--forget-scroller ()
-  "Scroll the whole page again, and say why."
-  (setq canvas-browser--scroller nil)
-  (message "canvas-browser: that part has gone; the keys scroll the whole page again"))
+(defconst canvas-browser--mark-part-js
+  (format "(function (part) {
+     const old = window.__canvasBrowserMark;
+     if (old) { cancelAnimationFrame(old.frame); old.box.remove(); }
+     window.__canvasBrowserMark = null;
+     if (!part || !part.isConnected) return false;
+     const box = document.createElement('div');
+     box.id = 'canvas-browser-mark';
+     box.style.cssText = 'position:fixed;box-sizing:border-box;pointer-events:none;' +
+       'z-index:2147483647;margin:0;padding:0;background:none;border:2px solid #%06X';
+     document.documentElement.appendChild(box);
+     const mark = {part, box, frame: 0, at: ''};
+     const place = () => {
+       if (!part.isConnected) { box.remove(); window.__canvasBrowserMark = null; return; }
+       const r = part.getBoundingClientRect();
+       const at = [r.left, r.top, r.width, r.height].join(' ');
+       if (at !== mark.at) {
+         mark.at = at;
+         box.style.left = r.left + 'px';
+         box.style.top = r.top + 'px';
+         box.style.width = r.width + 'px';
+         box.style.height = r.height + 'px';
+       }
+       mark.frame = requestAnimationFrame(place);
+     };
+     window.__canvasBrowserMark = mark;
+     place();
+     return true;
+   })"
+          (logand canvas-browser--hint-colour #xFFFFFF))
+  "The JavaScript function that marks one element as the part that is picked.
+The mark is a box of its own over the page, with a border in the colour
+of a hint, at the place of the part.  It is no outline of the part
+itself: what lies inside a part can cover such an outline, as the
+replies of a thread on Reddit do.  The page looks where the part is
+before each of its frames, and moves the box only when the part has
+moved, so a page that stands still draws nothing for it.  A click goes
+through the box.  The mark that was there before is taken away.
+Called with null, the function takes the mark off.")
 
-(defun canvas-browser--took-scroller (place)
-  "Send the scroll keys to the part at PLACE, or to the whole page for nil."
-  (setq canvas-browser--scroller place)
-  (message (if place
-               "canvas-browser: the scroll keys move that part of the page"
-             "canvas-browser: the scroll keys move the whole page")))
+(defun canvas-browser--mark-part ()
+  "Have the page outline the part that is picked, or no part when none is.
+The page changes with it, as with any command, so a still picture that
+was asked for before is dropped, and the frame that the change brings
+is painted."
+  (canvas-browser--forget-live)
+  (canvas-browser--tell
+   "Runtime.evaluate"
+   (list :expression (concat canvas-browser--mark-part-js "("
+                             (if canvas-browser--part (canvas-browser--part-js) "null")
+                             ")"))))
+
+(defun canvas-browser--set-part (part)
+  "Make PART the part of this page that is picked, nil for the whole page.
+The mark in the page and the header line follow.  The part that is
+picked already is left as it is: a mark put where one was changes
+nothing in the page, so no frame would come to paint."
+  (unless (equal part canvas-browser--part)
+    (setq canvas-browser--part part)
+    (canvas-browser--mark-part)
+    (force-mode-line-update)))
+
+(defun canvas-browser--forget-part ()
+  "Give the keys back to the whole page, and say why."
+  (canvas-browser--set-part nil)
+  (message "canvas-browser: that part has gone; the keys act on the whole page again"))
+
+(defun canvas-browser--took-part (place boxes)
+  "Pick the part at PLACE of BOXES, or the whole page for nil."
+  (let ((scrolls (and place (eq (plist-get (nth place boxes) :scrolls) t))))
+    (canvas-browser--set-part (and place (list :place place :scrolls scrolls)))
+    (message
+     (cond ((null place) "canvas-browser: no part is picked, the keys act on the whole page")
+           (scrolls "canvas-browser: part picked: > sends it, and the scroll keys move it")
+           (t "canvas-browser: part picked: > sends it; the scroll keys still move the whole page")))))
 
 (defun canvas-browser--page-box ()
   "A box for the whole page, in the top corner, where few parts begin.
@@ -2275,20 +2364,51 @@ by a letter as well, the way every window `ace-window\=' labels carries
 one, whether the keys are in it or not."
   (list :x (max 0 (- (car canvas-browser--size) 30)) :y 0 :w 30 :h 24))
 
-(defun canvas-browser-pick-scroller ()
-  "Label the parts of the page that scroll on their own, and pick one.
-The scroll keys then move the part you name, the way `ace-window\=' hands
-the keys to the window you name.  The whole page carries the first letter,
-and `ESC\=' gives the keys back to it as well.  The wheel needs none of
-this: it scrolls whatever the pointer is over."
+(defun canvas-browser--box-path (box)
+  "Make BOX, a plist of x, y, w and h, the path of the canvas of this buffer."
+  (canvas-cairo-rectangle canvas-browser--context
+                          (plist-get box :x) (plist-get box :y)
+                          (plist-get box :w) (plist-get box :h)))
+
+(defun canvas-browser--draw-outline (box)
+  "Draw the outline of BOX on the canvas, in the colour of a hint."
+  (canvas-browser--set-colour canvas-browser--context canvas-browser--hint-colour)
+  (canvas-cairo-set-line-width canvas-browser--context 2)
+  (canvas-browser--box-path box)
+  (canvas-cairo-stroke canvas-browser--context))
+
+(defun canvas-browser-pick-part ()
+  "Outline and label the parts of the page, and pick the one you name.
+A part is what scrolls on its own, or what the page marks as a part: its
+main content, a sidebar, a header, an article.  The keys then act on
+that part, the way `ace-window\=' hands the keys to the window you
+name.  The part keeps an outline while it is picked.  The scroll keys
+move it when it scrolls on its own, and `>\=' sends its text and not
+that of the whole page.  The whole page carries the first letter, which
+is the way back to it, and so is `C-g\=' once a part is picked.
+`ESC\=' names nothing, and leaves what was picked as it was.  The wheel
+needs none of this: it scrolls whatever the pointer is over."
   (interactive)
-  (canvas-browser--scrollers
+  (canvas-browser--parts
    (lambda (boxes)
      (if (null boxes)
-         (message "canvas-browser: nothing here scrolls on its own")
-       (let ((place (car (canvas-browser--choose-box
-                          (cons (canvas-browser--page-box) boxes)))))
-         (canvas-browser--took-scroller (and place (> place 0) (1- place))))))))
+         (message "canvas-browser: this page has no parts to pick")
+       (mapc #'canvas-browser--draw-outline boxes)
+       ;; A choice that is given up changes nothing.
+       (when-let* ((place (car (canvas-browser--choose-box
+                                (cons (canvas-browser--page-box) boxes)))))
+         (canvas-browser--took-part (and (> place 0) (1- place)) boxes))))))
+
+(defun canvas-browser-quit ()
+  "Give the keys back to the whole page when a part of it is picked.
+With no part picked, quit as `C-g\=' does in any buffer."
+  (interactive)
+  (if canvas-browser--part
+      (canvas-browser--took-part nil nil)
+    (keyboard-quit)))
+
+(define-obsolete-function-alias 'canvas-browser-pick-scroller
+  #'canvas-browser-pick-part "0.2.0")
 
 ;;;; Find in page, and the text of a page
 
@@ -2510,9 +2630,12 @@ script failed in the page."
 
 (defun canvas-browser-text ()
   "Put the text of the page in a buffer, where the keys of Emacs work.
-It is the text that `>\=' sends."
+When a part of the page is picked, with `S\=', it is the text of that
+part.  It is the text that `>\=' sends."
   (interactive)
-  (let ((text (canvas-browser--page-text))
+  (let ((text (if canvas-browser--part
+                  (canvas-browser--part-text)
+                (canvas-browser--page-text)))
         (target (canvas-browser--text-buffer)))
     (with-current-buffer target
       (let ((inhibit-read-only t))
@@ -2694,9 +2817,9 @@ and the settings.  The widths line the columns of the two rows up."
     :description (lambda () (canvas-keys-setting "typing" 'canvas-browser--insert)))
    ("v" canvas-browser-caret-mode
     :description (lambda () (canvas-keys-setting "caret" 'canvas-browser--caret)))
-   ("S" canvas-browser-pick-scroller
+   ("S" canvas-browser-pick-part
     :description (lambda ()
-                   (canvas-keys-describe "scroll" (if canvas-browser--scroller "part" "page"))))])
+                   (canvas-keys-describe "keys" (if canvas-browser--part "part" "page"))))])
 
 (defvar canvas-browser-mode-map
   (define-keymap :parent (make-composed-keymap canvas-keys-mode-map special-mode-map))
@@ -2724,7 +2847,8 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "<remap> <avy-goto-char-timer>" #'canvas-browser-caret-jump
   "i" #'canvas-browser-insert-mode
   "f" #'canvas-browser-hints
-  "S" #'canvas-browser-pick-scroller
+  "S" #'canvas-browser-pick-part
+  "C-g" #'canvas-browser-quit
   "TAB" #'canvas-browser-next-field
   "<backtab>" #'canvas-browser-previous-field
   "C-s" #'canvas-browser-find
@@ -3297,11 +3421,13 @@ An embedded page whose host no longer holds its picture goes instead."
                                     (window-body-height window t))))
 
 (defun canvas-browser--header ()
-  "The header line: the title, the URL, and the state of the keyboard."
+  "The header line: the title, the URL, the state of the keyboard, and
+whether a part of the page is picked."
   (string-join (delq nil (list (or canvas-browser--title "…")
                                canvas-browser--url
                                (when canvas-browser--insert "insert")
-                               (when canvas-browser--caret "caret")))
+                               (when canvas-browser--caret "caret")
+                               (when canvas-browser--part "part")))
                " · "))
 
 (defvar canvas-browser-insert-map (make-sparse-keymap)
@@ -3651,11 +3777,12 @@ is closed."
     ("org-roam node" . canvas-browser-send-to-org-roam))
   "Where `canvas-browser-send-to\=' can send a page, each (NAME . FUNCTION).
 FUNCTION is called in the page buffer with one argument, a plist.  Its
-`:kind' is `text' for the text that the caret marks, and `page' for the
-text of the whole page.  The text is all that the page shows there, and
-nothing is read into it on the way: what is made of it is the business
-of FUNCTION, which gets the HTML from `canvas-browser-content-html\='
-when it wants what the text has lost.  Its `:text' is that text, and its
+`:kind' is `text' for the text that the caret marks, `page' for the
+text of the whole page, and `part' for the text of the part of it that
+is picked.  The text is all that the page shows there, and nothing is
+read into it on the way: what is made of it is the business of
+FUNCTION, which gets the HTML from `canvas-browser-content-html\=' when
+it wants what the text has lost.  Its `:text' is that text, and its
 `:url' and `:title' are the address and the title of the page.  Another
 package adds a receiver of its own with `add-to-list\='."
   :type '(alist :key-type string :value-type function)
@@ -3698,6 +3825,20 @@ With AWAIT, the value of the promise that SCRIPT gives.  See
   "The text of this page."
   (or (canvas-browser--value-now canvas-browser--text-script) ""))
 
+(defun canvas-browser--part-script (function)
+  "The JavaScript that gives what FUNCTION gives of the part that is picked.
+FUNCTION is JavaScript, a function of one element.  The script gives
+null for a part that the page has thrown away."
+  (concat "(part => part && part.isConnected ? " function "(part) : null)"
+          (canvas-browser--part-js)))
+
+(defun canvas-browser--part-text ()
+  "The text of the part of this page that is picked.
+A part that the page has thrown away is forgotten, with an error."
+  (or (canvas-browser--value-now (canvas-browser--part-script canvas-browser--text-js))
+      (progn (canvas-browser--forget-part)
+             (user-error "canvas-browser: that part has gone; pick one again with `S'"))))
+
 (defconst canvas-browser--selection-html-script
   "(() => {
      const selection = getSelection();
@@ -3719,13 +3860,23 @@ it here."
   (canvas-browser--value-now
    (pcase-exhaustive (plist-get content :kind)
      ('page (concat canvas-browser--html-js "(document.body)"))
+     ('part (canvas-browser--part-script canvas-browser--html-js))
      ('text canvas-browser--selection-html-script))))
+
+(defun canvas-browser--part-box ()
+  "The box of the part that is picked, as far as the window shows it.
+It is nil for a part that has gone, or that is out of the window."
+  (let ((box (canvas-browser--value-now
+              (concat "(part => {" canvas-browser--reach-js
+                      " return part && part.isConnected ? shown(part) : null; })"
+                      (canvas-browser--part-js)))))
+    (and box (> (plist-get box :w) 0) (> (plist-get box :h) 0) box)))
 
 (defun canvas-browser--content (kind text)
   "What a receiver gets of this page: TEXT of KIND, its address and title.
-KIND is `text' for the text that the caret marks, and `page' for the
-text of the whole page.  A page without a title is named by its
-address."
+KIND is `text' for the text that the caret marks, `page' for the text
+of the whole page, and `part' for that of one part of it.  A page
+without a title is named by its address."
   (list :kind kind :text text
         :url canvas-browser--url
         :title (or canvas-browser--title canvas-browser--url)))
@@ -3747,18 +3898,56 @@ first, so that a page is not read for nothing."
 
 (defun canvas-browser-send-to ()
   "Send the text that the caret marks to a receiver.
-With nothing marked, send the whole page.  The receivers are those of
-`canvas-browser-receivers\='."
+With nothing marked, send the part of the page that is picked, and with
+no part picked, the whole page.  `S\=' picks a part.  The receivers are
+those of `canvas-browser-receivers\='."
   (interactive)
-  (if (canvas-browser--marked-text)
-      (canvas-browser--send 'text #'canvas-browser--marked-text)
-    (canvas-browser-send-page-to)))
+  (cond ((canvas-browser--marked-text)
+         (canvas-browser--send 'text #'canvas-browser--marked-text))
+        (canvas-browser--part (canvas-browser-send-part-to))
+        (t (canvas-browser-send-page-to))))
 
 (defun canvas-browser-send-page-to ()
   "Send the text of the whole page to a receiver.
-It does so whatever the caret marks."
+It does so whatever the caret marks, and whatever part is picked."
   (interactive)
   (canvas-browser--send 'page #'canvas-browser--page-text))
+
+(defconst canvas-browser--tint-colour #x40FFD633
+  "The colour laid over the part of a page that is sent, as ARGB32.
+It is the colour of a hint, and the page shows through it.")
+
+(defun canvas-browser--draw-tint (box)
+  "Lay the colour of a hint over BOX on the canvas, and show it."
+  (canvas-browser--set-colour canvas-browser--context canvas-browser--tint-colour)
+  (canvas-browser--box-path box)
+  (canvas-cairo-fill canvas-browser--context)
+  (canvas-refresh canvas-browser--canvas)
+  (force-window-update (current-buffer)))
+
+(defun canvas-browser--read-receiver-over (box)
+  "Ask which receiver gets the part of the page in BOX, with BOX tinted.
+The tint shows what goes to the receiver.  A new picture of the page
+takes it off again."
+  (setq canvas-browser--hinting t)
+  (unwind-protect
+      (progn (canvas-browser--draw-tint box)
+             (canvas-browser--read-receiver))
+    (canvas-browser--take-marks-off)))
+
+(defun canvas-browser-send-part-to ()
+  "Send the text of the part of the page that is picked to a receiver.
+`S\=' picks a part.  The part is tinted while the receiver is asked
+for, when the window shows it.  All of its text is sent, also what is
+out of the window."
+  (interactive)
+  (unless canvas-browser--part
+    (user-error "canvas-browser: no part of the page is picked; `S' picks one"))
+  (let* ((box (canvas-browser--part-box))
+         (receiver (if box
+                       (canvas-browser--read-receiver-over box)
+                     (canvas-browser--read-receiver))))
+    (funcall receiver (canvas-browser--content 'part (canvas-browser--part-text)))))
 
 (defun canvas-browser--paste (text)
   "Paste TEXT into this buffer with the command it has for `yank\='.
@@ -3861,12 +4050,14 @@ says nothing."
 
 (defun canvas-browser-embark-target ()
   "The targets of embark in a page buffer.
-The text that the caret marks comes first, and the page after it,
-named by its address.  Embark acts on the first, and cycles to the
-other."
+The text that the caret marks comes first, then the part of the page
+that is picked, and then the page.  The last two are named by the
+address.  Embark acts on the first, and cycles to the others."
   (when (derived-mode-p 'canvas-browser-mode)
     (append (when-let* ((text (canvas-browser--marked-text)))
               (list (cons 'canvas-browser-text text)))
+            (when (and canvas-browser--url canvas-browser--part)
+              (list (cons 'canvas-browser-part canvas-browser--url)))
             (when canvas-browser--url
               (list (cons 'canvas-browser-page canvas-browser--url))))))
 
@@ -3883,6 +4074,12 @@ Its parent holds the actions that embark has for any target.")
   "The actions of embark on a page, beside those embark has for any URL.")
 
 (keymap-set canvas-browser-embark-page-map ">" #'canvas-browser-send-page-to)
+
+(defvar canvas-browser-embark-part-map (make-sparse-keymap)
+  "The actions of embark on the part of a page that is picked.
+Those embark has for any URL come beside them, as for the page.")
+
+(keymap-set canvas-browser-embark-part-map ">" #'canvas-browser-send-part-to)
 
 (defvar embark-target-finders)
 (defvar embark-keymap-alist)
@@ -3906,9 +4103,12 @@ sends the target to a receiver.  A page has the actions of a URL too."
         '(canvas-browser-embark-text-map))
   (setf (alist-get 'canvas-browser-page embark-keymap-alist)
         '(canvas-browser-embark-page-map embark-url-map))
+  (setf (alist-get 'canvas-browser-part embark-keymap-alist)
+        '(canvas-browser-embark-part-map embark-url-map))
   ;; Embark answers the first question of an action with the target and
   ;; presses RET.  These actions ask which receiver, not for the target.
-  (dolist (command '(canvas-browser-send-to canvas-browser-send-page-to))
+  (dolist (command '(canvas-browser-send-to canvas-browser-send-page-to
+                     canvas-browser-send-part-to))
     (setf (alist-get command embark-target-injection-hooks) '(embark--ignore-target)))
   (dolist (buffer (buffer-list))
     (with-current-buffer buffer
