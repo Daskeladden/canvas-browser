@@ -172,7 +172,13 @@ Three receivers come with canvas-browser:
 - `org-roam node` asks for a node, one that exists or a new one with
   the title that you type. What is sent gets a heading of its own in
   that note, which links to the page. Under it stands a thread from a
-  translator as an org list, and other text as a quote. A
+  translator as an org list, and other text as a quote. The pictures
+  of a thread are fetched from the page and kept among the attachments
+  of the node, as org-attach keeps them. The list links to them where
+  they stood. The heading names the directory of the attachments in
+  its `DIR` property. org-attach does not look above a heading for the
+  id of the note. Chromium gives a picture that it loaded, so a picture
+  behind a sign-in comes too. A
   node that holds the thread already gets only what is new: a new
   message where it belongs, and a changed message as a new version
   under the old one, marked as edited. Your own text stays as it is.
@@ -237,7 +243,9 @@ How well does it work?
 ```
 
 In the text, a picture stands as its description in brackets, such as
-`[image]`, and an emoji as itself.
+`[image]`, and an emoji as itself. The brackets carry the address of
+the picture, so a receiver can fetch it with
+`canvas-browser-picture-bytes`.
 
 A thread translator also gives the thread as Lisp data: a list of
 items, each a plist with `:title`, `:author`, `:time`, `:text` and

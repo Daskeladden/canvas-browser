@@ -326,6 +326,22 @@ a picture inside the first, and an item that is only a day.")
                     (libxml-parse-html-region (point-min) (point-max)))
                    "Thanks 🙂 and [A plot] and [image] and [image] and ."))))
 
+(ert-deftest canvas-browser-a-picture-in-the-text-keeps-its-address ()
+  ;; GIVEN parsed HTML with a picture that has an address, and an emoji
+  ;; WHEN its text is read
+  ;; THEN the brackets that stand for the picture carry its address, so
+  ;;      that a receiver can fetch the picture, AND the emoji carries none
+  (skip-unless (libxml-available-p))
+  (with-temp-buffer
+    ;; Words between the pictures: libxml drops white space alone there.
+    (insert "<p>See <img alt=\"A plot\" src=\"plot.png\"> and <img alt=\"🙂\" src=\"smile.png\"></p>")
+    (let* ((text (canvas-browser-dom-text (libxml-parse-html-region (point-min) (point-max))))
+           (at (string-search "[A plot]" text)))
+      (should (equal text "See [A plot] and 🙂"))
+      (should (equal (get-text-property at 'canvas-browser-picture text) "plot.png"))
+      (should (equal (get-text-property (+ at 7) 'canvas-browser-picture text) "plot.png"))
+      (should-not (get-text-property (string-search "🙂" text) 'canvas-browser-picture text)))))
+
 (ert-deftest canvas-browser-the-text-of-html-leaves-out-what-the-html-hides ()
   ;; GIVEN parsed HTML where one element has the attribute hidden, and
   ;;       one says in its own style that it is not shown

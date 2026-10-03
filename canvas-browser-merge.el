@@ -246,6 +246,14 @@ the heads of the whole thread, SEEN counts the heads so far, COUNTS is
                                        keys seen counts now))
         (setq previous (cons key n))))))
 
+(defun canvas-browser-org-thread-start (thread)
+  "Where the first message of THREAD starts in the org note in this buffer.
+It is nil when the note holds no message of THREAD."
+  (let ((keys (canvas-browser--thread-keys thread)))
+    (plist-get (cl-find-if (lambda (entry) (member (plist-get entry :key) keys))
+                           (canvas-browser--org-entries))
+               :start)))
+
 (defun canvas-browser-org-merge (thread &optional now)
   "Merge THREAD, as a translator gives it, into the org note in this buffer.
 See the commentary of canvas-browser-merge.el for how.  NOW is the time

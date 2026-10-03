@@ -97,12 +97,41 @@ What a style sheet hides is not known here: the HTML does not say."
 A picture for the look alone, with an empty description or the role
 presentation, stands for nothing.  An emoji stands as itself, a
 description or a label in brackets, and a picture with neither as
-[image]."
+[image].  The brackets carry the address of the picture as the text
+property `canvas-browser-picture\=', so that a receiver can fetch it."
   (let ((alt (dom-attr node 'alt))
         (label (dom-attr node 'aria-label)))
     (cond ((or (equal alt "") (equal (dom-attr node 'role) "presentation")) nil)
           ((and alt (not (string-match-p "[[:alnum:]]" alt))) alt)
-          (t (format "[%s]" (or alt label "image"))))))
+          (t (let ((text (format "[%s]" (or alt label "image"))))
+               (if-let* ((address (dom-attr node 'src)))
+                   (propertize text 'canvas-browser-picture address)
+                 text))))))
+
+(defun canvas-browser-text-pictures (text)
+  "The pictures in TEXT, each (START END ADDRESS), in their order.
+They are the brackets that `canvas-browser-dom-text\=' put for a
+picture, with its address."
+  (let ((start 0) (pictures nil))
+    (while (setq start (text-property-not-all start (length text)
+                                              'canvas-browser-picture nil text))
+      (let ((end (next-single-property-change start 'canvas-browser-picture text (length text))))
+        (push (list start end (get-text-property start 'canvas-browser-picture text)) pictures)
+        (setq start end)))
+    (nreverse pictures)))
+
+(defun canvas-browser-thread-map-text (function thread)
+  "THREAD with the text of each item, replies among them, as FUNCTION gives it.
+FUNCTION is called with the text of an item and returns its new text."
+  (mapcar (lambda (item)
+            (let ((item (copy-sequence item)))
+              (when (plist-get item :text)
+                (setq item (plist-put item :text (funcall function (plist-get item :text)))))
+              (when (plist-get item :replies)
+                (setq item (plist-put item :replies (canvas-browser-thread-map-text
+                                                     function (plist-get item :replies)))))
+              item))
+          thread))
 
 (defun canvas-browser--dom-pieces (node)
   "The text of NODE as a list of strings, with `line' and `paragraph' between.
@@ -125,7 +154,11 @@ The white space of TEXT, a non-breaking space among it, is one space,
 and none at the start of a line."
   ;; A paragraph of a non-breaking space alone is how a chat writes an
   ;; empty line, so it counts as white space too.
-  (let ((text (replace-regexp-in-string "[ \t\n\r\u00a0]+" " " text t t)))
+  (let ((text (replace-regexp-in-string
+               "[ \t\n\r\u00a0]+"
+               ;; One space stays itself, with the text properties it has.
+               (lambda (white) (if (equal white " ") white " "))
+               text t t)))
     (when (or break (bobp))
       (setq text (string-trim-left text)))
     (unless (string-empty-p text)

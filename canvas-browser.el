@@ -20,6 +20,7 @@
 (require 'canvas-keys)
 (require 'transient)
 (require 'url-util)
+(require 'url-expand)
 (require 'canvas-browser-cdp)
 (require 'canvas-browser-translate)
 (require 'canvas-browser-merge)
@@ -3828,6 +3829,47 @@ With AWAIT, the value of the promise that SCRIPT gives.  See
     "Runtime.evaluate"
     (append (list :expression script :returnByValue t) (and await (list :awaitPromise t))))))
 
+(defun canvas-browser--main-frame ()
+  "The id of the frame of this page itself, or nil."
+  (plist-get (plist-get (plist-get (canvas-browser--answer-now "Page.getFrameTree" nil)
+                                   :frameTree)
+                        :frame)
+             :id))
+
+(defun canvas-browser--loaded-bytes (url)
+  "The bytes of URL as this page loaded it, or nil when it has not.
+Chromium keeps what a page loaded, so nothing is fetched again, and a
+picture that needs a sign-in comes all the same."
+  (when-let* ((frame (canvas-browser--main-frame))
+              (answer (canvas-browser--answer-now
+                       "Page.getResourceContent" (list :frameId frame :url url) #'ignore))
+              (content (plist-get answer :content)))
+    (if (eq (plist-get answer :base64Encoded) t)
+        (base64-decode-string content)
+      (encode-coding-string content 'utf-8))))
+
+(defconst canvas-browser--fetch-script
+  "fetch(%s).then(r => r.blob()).then(b => new Promise(done => {
+     const reader = new FileReader();
+     reader.onload = () => done(reader.result);
+     reader.readAsDataURL(b);
+   }))"
+  "The JavaScript that fetches an address in the page, as a data URL.")
+
+(defun canvas-browser--fetched-bytes (url)
+  "The bytes of URL as the page fetches it, or nil when it cannot."
+  (when-let* ((data (ignore-errors
+                      (canvas-browser--value-now
+                       (format canvas-browser--fetch-script (json-encode url)) t)))
+              ((string-match "\\`data:[^,]*;base64,\\(.*\\)\\'" data)))
+    (base64-decode-string (match-string 1 data))))
+
+(defun canvas-browser-picture-bytes (url)
+  "The bytes of the picture at URL in this page, or nil when it has none.
+It is what the page loaded, or else what the page fetches now: an
+address that a page makes for a picture of its own works only there."
+  (or (canvas-browser--loaded-bytes url) (canvas-browser--fetched-bytes url)))
+
 (defun canvas-browser--page-text ()
   "The text of this page."
   (or (canvas-browser--value-now canvas-browser--text-script) ""))
@@ -4062,19 +4104,126 @@ the web-server package has."
 (declare-function org-roam-node-read "org-roam-node"
                   (&optional initial-input filter-fn sort-fn require-match prompt))
 
+(defun canvas-browser--picture-name (bytes)
+  "A name for the file of a picture of BYTES: the same bytes, the same name."
+  (format "picture-%s.%s" (substring (md5 bytes) 0 10)
+          (cond ((string-prefix-p "\x89PNG" bytes) "png")
+                ((string-prefix-p "\xff\xd8" bytes) "jpg")
+                ((string-prefix-p "GIF8" bytes) "gif")
+                ((and (string-prefix-p "RIFF" bytes) (string-search "WEBP" (substring bytes 0 16))) "webp")
+                ((string-match-p "\\`[ \t\n]*<\\(?:\\?xml\\|svg\\)" bytes) "svg")
+                (t "bin"))))
+
+(defun canvas-browser--attach-picture (address directory)
+  "Put the picture at ADDRESS of this page in DIRECTORY; the name of its file.
+It is nil when the page cannot give the picture."
+  (when-let* ((bytes (canvas-browser-picture-bytes
+                      (url-expand-file-name address canvas-browser--url))))
+    (let ((name (canvas-browser--picture-name bytes)))
+      (make-directory directory t)
+      (let ((coding-system-for-write 'binary))
+        (with-temp-file (expand-file-name name directory)
+          (set-buffer-multibyte nil)
+          (insert bytes)))
+      name)))
+
+(defun canvas-browser--attach-pictures-in (text directory)
+  "TEXT with each picture in it put in DIRECTORY and linked as an attachment.
+A picture that the page cannot give stays as its name in brackets."
+  (let ((pieces nil) (from 0))
+    (pcase-dolist (`(,start ,end ,address) (canvas-browser-text-pictures text))
+      (push (substring text from start) pieces)
+      (push (if-let* ((name (canvas-browser--attach-picture address directory)))
+                (format "[[attachment:%s]]" name)
+              (substring text start end))
+            pieces)
+      (setq from end))
+    (apply #'concat (nreverse (cons (substring text from) pieces)))))
+
+(declare-function org-attach-dir-from-id "org-attach" (id &optional existing))
+(declare-function org-roam-node-id "org-roam-node" (node))
 (declare-function org-roam-node-title "org-roam-node" (node))
+(declare-function org-roam-node-create "org-roam-node")
+(declare-function org-id-new "org-id" (&optional prefix))
 (declare-function org-roam-node-file "org-roam-node" (node))
+(defvar org-roam-directory)
+
+(defun canvas-browser--node-with-id (node)
+  "NODE, an org-roam node, with an id: a new node is given one here.
+org-roam keeps that id when it makes the note."
+  (if (org-roam-node-id node)
+      node
+    (org-roam-node-create :title (org-roam-node-title node) :id (org-id-new))))
+
+(defun canvas-browser--node-directory (node)
+  "The directory of the note of NODE, which a new node gets from org-roam."
+  (file-name-as-directory (if (org-roam-node-file node)
+                              (file-name-directory (org-roam-node-file node))
+                            org-roam-directory)))
+
+(defun canvas-browser--node-attach-dir (node)
+  "The directory that org-attach keeps the attachments of NODE in.
+NODE has an id."
+  (let ((default-directory (canvas-browser--node-directory node)))
+    (org-attach-dir-from-id (org-roam-node-id node))))
+
+(defun canvas-browser--attach-property (node)
+  "The directory of the attachments of NODE, as a heading of its note names it.
+It is nil while NODE has no attachment.  org-attach finds the
+attachments of a note by the id of the note, but it does not look above
+a heading for that id.  So a heading that holds links to attachments
+names their directory itself, in its property DIR."
+  (let ((directory (canvas-browser--node-attach-dir node)))
+    (and (file-directory-p directory)
+         (file-relative-name directory (canvas-browser--node-directory node)))))
 
 (defun canvas-browser--org-section (content)
   "What a send of CONTENT writes into a note: a heading of its own.
 The heading links to the page.  Under it comes a thread as an org list,
-or other text as a quote."
+or other text as a quote.
+
+The heading does not name the directory of the attachments here.  org
+fills a capture template in a buffer without a file, and org-attach
+takes no relative directory in such a buffer: where org shows the
+pictures of a note at startup, the capture stopped with an error.
+`canvas-browser--name-attachments\=' names the directory when the text
+is in the note."
   (concat "* From "
           (org-link-make-string (plist-get content :url) (plist-get content :title))
           "\n\n"
           (canvas-browser--org-text content t)))
 
+(defun canvas-browser--with-attached-pictures (content node)
+  "CONTENT with the pictures of its thread attached to NODE, an org-roam node.
+The text of each item links to its pictures as attachments.  Content
+without a thread stays as it is."
+  (if-let* ((thread (plist-get content :thread)))
+      (let ((directory (canvas-browser--node-attach-dir node)))
+        (plist-put (copy-sequence content) :thread
+                   (canvas-browser-thread-map-text
+                    (lambda (text) (canvas-browser--attach-pictures-in text directory))
+                    thread)))
+    content))
+
 (declare-function org-roam-db-update-file "org-roam-db" (&optional file-path no-require))
+
+(declare-function org-before-first-heading-p "org" ())
+(declare-function org-back-to-heading "org" (&optional invisible-ok))
+(declare-function org-entry-get "org" (epom property &optional inherit literal-nil))
+(declare-function org-entry-put "org" (epom property value))
+
+(defun canvas-browser--name-attachments (thread node)
+  "Have the heading that holds THREAD in this note name the attachments of NODE.
+See `canvas-browser--attach-property\='.  A thread above the first
+heading needs nothing, and a heading that names a directory keeps it."
+  (when-let* ((directory (canvas-browser--attach-property node))
+              (start (canvas-browser-org-thread-start thread)))
+    (save-excursion
+      (goto-char start)
+      (unless (org-before-first-heading-p)
+        (org-back-to-heading t)
+        (unless (org-entry-get nil "DIR")
+          (org-entry-put nil "DIR" directory))))))
 
 (defun canvas-browser--merge-into-node (node content)
   "Merge the thread of CONTENT into the note of NODE, if it holds the thread.
@@ -4085,6 +4234,7 @@ its messages are left to the capture."
               (file (org-roam-node-file node)))
     (with-current-buffer (find-file-noselect file)
       (when-let* ((counts (canvas-browser-org-merge thread)))
+        (canvas-browser--name-attachments thread node)
         (save-buffer)
         (org-roam-db-update-file file)
         (message "canvas-browser: %s: %s"
@@ -4094,10 +4244,18 @@ its messages are left to the capture."
                    (format "%d new, %d edited" (car counts) (cdr counts))))
         t))))
 
+(defvar org-capture-mode-hook)
+
 (defun canvas-browser--capture-in-node (node content)
-  "Capture CONTENT in the note of NODE, under a heading of its own."
+  "Capture CONTENT in the note of NODE, under a heading of its own.
+The heading names the attachments of NODE as soon as org has put the
+text in the note: see `canvas-browser--org-section\='."
   (canvas-browser--store-org-link content (canvas-browser--org-section content))
-  (let ((org-capture-link-is-already-stored t))
+  (let ((org-capture-link-is-already-stored t)
+        (org-capture-mode-hook
+         (cons (lambda ()
+                 (canvas-browser--name-attachments (plist-get content :thread) node))
+               org-capture-mode-hook)))
     (org-roam-capture- :node node :templates canvas-browser-org-roam-templates)))
 
 (defun canvas-browser-send-to-org-roam (content)
@@ -4112,11 +4270,19 @@ title.  Many a page has one address and one title for all that it
 shows, so every note from it would land in one node with a title that
 says nothing.
 
+The pictures of a thread are fetched from the page and kept among the
+attachments of the node, as org-attach keeps them, and the note links
+to them where they stood.
+
 A node that holds the thread already is not given it a second time:
 the new messages are merged into it, as `canvas-browser-org-merge\='
 does."
   (require 'org-roam)
-  (let ((node (org-roam-node-read nil nil nil nil "Capture in node: ")))
+  (require 'org-attach)
+  (require 'org-id)
+  (let* ((node (canvas-browser--node-with-id
+                (org-roam-node-read nil nil nil nil "Capture in node: ")))
+         (content (canvas-browser--with-attached-pictures content node)))
     (unless (canvas-browser--merge-into-node node content)
       (canvas-browser--capture-in-node node content))))
 

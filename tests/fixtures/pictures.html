@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+  <head><title>canvas-browser pictures fixture</title></head>
+  <body>
+    <div class="message"><p>A plot:</p><img id="file" alt="A plot" src="plot.png"></div>
+    <div class="message"><p>A picture made in the page:</p><img id="blob" aria-label="image"></div>
+    <script>
+      // A picture that only the page has: its address is made by the page.
+      const pixels = Uint8Array.from(atob(
+        'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGNgYGD4z8DAwMAAAA0EAQBFH5uKAAAAAElFTkSuQmCC'),
+        c => c.charCodeAt(0));
+      document.getElementById('blob').src =
+        URL.createObjectURL(new Blob([pixels], {type: 'image/png'}));
+    </script>
+  </body>
+</html>

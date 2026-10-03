@@ -1373,3 +1373,22 @@ Chromium has a profile of its own."
                                     "    alice" "" "    I see." ""
                                     "carol" "" "Nice.")
                                   "\n"))))))
+
+(ert-deftest canvas-browser-live-the-page-gives-the-bytes-of-its-pictures ()
+  ;; GIVEN the pictures fixture: a picture from a file, and one whose
+  ;;       address the page made itself
+  ;; WHEN the page is asked for the bytes of each
+  ;; THEN the first is the file to the byte, AND the second is a picture
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "pictures.html"
+    (should (canvas-browser-live-test--wait
+             10 (lambda () (string-prefix-p "blob:" (canvas-browser-live-test--page-says
+                                                     "document.getElementById('blob').src")))))
+    (let ((file (canvas-browser-live-test--page-says "document.getElementById('file').src"))
+          (made (canvas-browser-live-test--page-says "document.getElementById('blob').src")))
+      (should (equal (canvas-browser-picture-bytes file)
+                     (with-temp-buffer
+                       (set-buffer-multibyte nil)
+                       (insert-file-contents-literally (expand-file-name "tests/fixtures/plot.png"))
+                       (buffer-string))))
+      (should (string-prefix-p "\x89PNG" (canvas-browser-picture-bytes made))))))

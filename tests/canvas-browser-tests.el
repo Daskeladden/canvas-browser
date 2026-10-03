@@ -5403,6 +5403,168 @@ file of ids of the user."
                  note))
         (should-not (string-search "#+begin_quote" note))))))
 
+(defconst canvas-browser-test--png
+  (base64-decode-string
+   "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGNgYGD4z8DAwMAAAA0EAQBFH5uKAAAAAElFTkSuQmCC")
+  "The bytes of a small picture.")
+
+(defun canvas-browser-test--thread-with-picture (alt)
+  "A thread of one item whose text holds a picture at plot.png, named ALT."
+  (list (list :author "alice"
+              :text (concat "Look: " (propertize (format "[%s]" alt)
+                                                 'canvas-browser-picture "plot.png")))))
+
+(ert-deftest canvas-browser-the-org-roam-receiver-attaches-the-pictures-of-a-thread ()
+  ;; GIVEN a thread from a translator whose text holds a picture, AND a
+  ;;       page that has that picture loaded
+  ;; WHEN it is sent to a new org-roam node
+  ;; THEN the picture is a file among the attachments of the node, as
+  ;;      org-attach keeps them, AND the note links to it where the
+  ;;      picture stood, so that org shows it there
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (canvas-browser-test--in-page
+    (let (asked)
+      (canvas-browser-test--with-roam directory
+        (cl-letf (((symbol-function 'org-roam-node-read)
+                   (lambda (&rest _) (org-roam-node-create :title "Plots")))
+                  ((symbol-function 'canvas-browser-picture-bytes)
+                   (lambda (url) (setq asked url) canvas-browser-test--png)))
+          (canvas-browser-send-to-org-roam
+           (list :kind 'page :text "alice\n\nLook: [A plot]"
+                 :thread (canvas-browser-test--thread-with-picture "A plot")
+                 :url "https://example.org/a" :title "A page")))
+        (should (equal asked "https://example.org/plot.png"))
+        (let* ((note (canvas-browser-test--note (expand-file-name "plots.org" directory)))
+               (id (and (string-match ":ID: +\\([^ \n]+\\)" note) (match-string 1 note)))
+               (file (and (string-match "\\[\\[attachment:\\([^]]+\\)\\]\\]" note)
+                          (match-string 1 note))))
+          (should (string-search "Look: [[attachment:" note))
+          (should file)
+          (let ((default-directory directory))
+            (should (equal (with-temp-buffer
+                             (set-buffer-multibyte nil)
+                             (insert-file-contents-literally
+                              (expand-file-name file (org-attach-dir-from-id id)))
+                             (buffer-string))
+                           canvas-browser-test--png))))))))
+
+(defun canvas-browser-test--picture-at-link (file)
+  "The file that the first attachment link of the note FILE leads to, or nil.
+It is found as org finds it, from where the link stands."
+  (with-current-buffer (find-file-noselect file)
+    (org-mode)
+    (goto-char (point-min))
+    (when (re-search-forward "\\[\\[attachment:\\([^]]+\\)\\]\\]" nil t)
+      (let ((picture (ignore-errors (org-attach-expand (match-string 1)))))
+        (and picture (file-exists-p picture) picture)))))
+
+(ert-deftest canvas-browser-a-picture-under-the-heading-of-a-send-is-found-by-org ()
+  ;; GIVEN a thread with a picture, sent to a new org-roam node
+  ;; WHEN org looks for the picture from where its link stands, under the
+  ;;      heading of the send
+  ;; THEN it finds the file: the heading names the directory of the
+  ;;      attachments, since org-attach does not look above a heading
+  ;;      for the id of the note
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (require 'org-attach)
+  (canvas-browser-test--in-page
+    (canvas-browser-test--with-roam directory
+      (cl-letf (((symbol-function 'org-roam-node-read)
+                 (lambda (&rest _) (org-roam-node-create :title "Plots")))
+                ((symbol-function 'canvas-browser-picture-bytes)
+                 (lambda (_url) canvas-browser-test--png)))
+        (canvas-browser-send-to-org-roam
+         (list :kind 'page :text "alice\n\nLook: [A plot]"
+               :thread (canvas-browser-test--thread-with-picture "A plot")
+               :url "https://example.org/a" :title "A page")))
+      (let ((file (expand-file-name "plots.org" directory)))
+        (should (string-match-p "^\\* From .*\n:PROPERTIES:\n:DIR: +data/"
+                                (canvas-browser-test--note file)))
+        (should (canvas-browser-test--picture-at-link file))))))
+
+;; `org-startup-with-link-previews' is the name since org 9.8.
+(defvar org-startup-with-link-previews)
+
+(ert-deftest canvas-browser-a-send-with-a-picture-works-where-org-shows-pictures-at-once ()
+  ;; GIVEN an org that shows the pictures of a note as soon as it opens
+  ;;       one
+  ;; WHEN a thread with a picture is sent to a new org-roam node
+  ;; THEN the note holds the picture under a heading that names the
+  ;;      directory of the attachments, where the capture stopped with
+  ;;      "Need absolute `org-attach-id-dir'": org fills a template in a
+  ;;      buffer without a file, shows the pictures there too, and
+  ;;      org-attach takes no directory that is relative in such a buffer
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (require 'org-attach)
+  (skip-unless (boundp 'org-startup-with-link-previews))
+  (canvas-browser-test--in-page
+    (canvas-browser-test--with-roam directory
+      (let ((org-startup-with-link-previews t))
+        (cl-letf (((symbol-function 'org-roam-node-read)
+                   (lambda (&rest _) (org-roam-node-create :title "Plots")))
+                  ((symbol-function 'canvas-browser-picture-bytes)
+                   (lambda (_url) canvas-browser-test--png)))
+          (canvas-browser-send-to-org-roam
+           (list :kind 'page :text "alice\n\nLook: [A plot]"
+                 :thread (canvas-browser-test--thread-with-picture "A plot")
+                 :url "https://example.org/a" :title "A page"))))
+      (let ((file (expand-file-name "plots.org" directory)))
+        (should (string-match-p "^\\* From .*\n:PROPERTIES:\n:DIR: +data/"
+                                (canvas-browser-test--note file)))
+        (should (canvas-browser-test--picture-at-link file))))))
+
+(ert-deftest canvas-browser-a-merge-that-brings-a-picture-names-the-attachments ()
+  ;; GIVEN a node whose heading holds a thread without a picture
+  ;; WHEN the thread is sent again with a new message that has a picture
+  ;; THEN the picture is attached, AND the heading of the thread names
+  ;;      the directory of the attachments, so that org finds the picture
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (require 'org-attach)
+  (canvas-browser-test--in-page
+    (canvas-browser-test--with-roam directory
+      (cl-letf (((symbol-function 'org-roam-node-read)
+                 (lambda (&rest _) (org-roam-node-create :title "Plots")))
+                ((symbol-function 'canvas-browser-picture-bytes)
+                 (lambda (_url) canvas-browser-test--png)))
+        (canvas-browser-send-to-org-roam
+         (list :kind 'page :text "bob\n\nNo picture."
+               :thread (list (list :author "bob" :text "No picture."))
+               :url "https://example.org/a" :title "A page"))
+        (org-roam-db-sync)
+        (cl-letf (((symbol-function 'org-roam-node-read)
+                   (lambda (&rest _) (org-roam-node-from-title-or-alias "Plots"))))
+          (canvas-browser-send-to-org-roam
+           (list :kind 'page :text "bob\n\nNo picture.\n\nalice\n\nLook: [A plot]"
+                 :thread (append (list (list :author "bob" :text "No picture."))
+                                 (canvas-browser-test--thread-with-picture "A plot"))
+                 :url "https://example.org/a" :title "A page"))))
+      (let ((file (expand-file-name "plots.org" directory)))
+        (should (canvas-browser-test--picture-at-link file))))))
+
+(ert-deftest canvas-browser-a-picture-the-page-cannot-give-stays-as-its-name ()
+  ;; GIVEN a thread whose text holds a picture that the page cannot give
+  ;; WHEN it is sent to an org-roam node
+  ;; THEN the note keeps the picture by its name, in brackets, AND no
+  ;;      file is attached
+  (skip-unless (locate-library "org-roam"))
+  (require 'org-roam)
+  (canvas-browser-test--in-page
+    (canvas-browser-test--with-roam directory
+      (cl-letf (((symbol-function 'org-roam-node-read)
+                 (lambda (&rest _) (org-roam-node-create :title "Plots")))
+                ((symbol-function 'canvas-browser-picture-bytes) #'ignore))
+        (canvas-browser-send-to-org-roam
+         (list :kind 'page :text "alice\n\nLook: [A plot]"
+               :thread (canvas-browser-test--thread-with-picture "A plot")
+               :url "https://example.org/a" :title "A page")))
+      (should (string-search "Look: [A plot]"
+                             (canvas-browser-test--note (expand-file-name "plots.org" directory))))
+      (should-not (file-exists-p (expand-file-name "data" directory))))))
+
 (ert-deftest canvas-browser-a-second-send-to-a-node-merges-the-thread ()
   ;; GIVEN a node that holds a thread from a first send
   ;; WHEN the thread is sent to that node again, with a new message and
