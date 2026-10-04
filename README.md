@@ -302,9 +302,11 @@ that nobody sees. So canvas-browser hands the notification to Emacs.
 A site shows notifications only after you allow it. Open a page of the
 site and run `M-x canvas-browser-notifications`. The command asks, and
 keeps the answer in `canvas-browser-notification-sites`. Run it again
-to change the answer. When a page wants to show notifications, chromium
-asks the same question in its own window. Nobody sees that question, so
-the page waits until you run the command.
+to change the answer. The menu of the page has a switch for the same,
+`SPC N`. It reads `notify on` or `notify off` for the site of the page.
+When a page wants to show notifications, chromium asks the same question
+in its own window. Nobody sees that question, so the page waits until
+you run the command or use the switch.
 
 Each notification goes to the functions of
 `canvas-browser-notification-functions`. A function gets one plist.

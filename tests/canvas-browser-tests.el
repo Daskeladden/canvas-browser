@@ -5980,6 +5980,60 @@ The question goes to `asked', and what is kept to `saved'."
                              (plist-get (canvas-browser-test--params "Runtime.evaluate")
                                         :expression))))))
 
+(defun canvas-browser-test--notify-entry ()
+  "What the entry for notifications in the page menu reads as."
+  (string-trim (funcall (plist-get (canvas-browser-test--menu-entry "N") :description))))
+
+(ert-deftest canvas-browser-the-menu-says-whether-the-site-may-notify ()
+  ;; GIVEN a page of a site that nothing is kept about
+  ;; WHEN the entry for notifications in the menu is read
+  ;; THEN it says off
+  ;; GIVEN the site is kept as one that may show notifications
+  ;; THEN it says on
+  (canvas-browser-test--in-page
+    (let ((canvas-browser-notification-sites nil))
+      (should (string-match-p "\\`notify +off\\'" (canvas-browser-test--notify-entry))))
+    (let ((canvas-browser-notification-sites '(("https://example.org" . t))))
+      (should (string-match-p "\\`notify +on\\'" (canvas-browser-test--notify-entry))))))
+
+(ert-deftest canvas-browser-the-menu-entry-lets-the-site-notify-and-stops-it ()
+  ;; GIVEN a page of a site that nothing is kept about
+  ;; WHEN the entry for notifications in the menu is taken
+  ;; THEN the site is kept as one that may, with no question, AND chromium
+  ;;      is told that it may, AND the page is given the script
+  ;; WHEN the entry is taken again
+  ;; THEN the site is kept as one that may not, AND chromium is told so
+  (canvas-browser-test--in-page
+    (let ((canvas-browser-notification-sites nil)
+          (command (plist-get (canvas-browser-test--menu-entry "N") :command)))
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-test--deciding (error "The menu entry asks no question")
+        (funcall command)
+        (should-not asked)
+        (should (equal saved '(canvas-browser-notification-sites
+                               (("https://example.org" . t)))))
+        (should (equal (plist-get (canvas-browser-test--params "Browser.setPermission") :setting)
+                       "granted"))
+        (should (string-search "canvasBrowserNotify"
+                               (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                          :expression)))
+        (setq canvas-browser-test--commands nil)
+        (funcall command)
+        (should (equal saved '(canvas-browser-notification-sites (("https://example.org")))))
+        (should (equal (plist-get (canvas-browser-test--params "Browser.setPermission") :setting)
+                       "denied"))))))
+
+(ert-deftest canvas-browser-the-menu-entry-needs-a-page ()
+  ;; GIVEN a page buffer that holds no page yet
+  ;; WHEN the entry for notifications in the menu is taken
+  ;; THEN it is an error that says so, AND nothing is kept
+  (with-temp-buffer
+    (canvas-browser-mode)
+    (let ((canvas-browser-notification-sites nil))
+      (canvas-browser-test--deciding t
+        (should-error (canvas-browser-toggle-notifications) :type 'user-error)
+        (should-not saved)))))
+
 (ert-deftest canvas-browser-a-site-that-is-refused-gets-nothing ()
   ;; GIVEN a page of a site that may show notifications
   ;; WHEN the reader says in its buffer that the site may not

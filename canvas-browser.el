@@ -2930,7 +2930,9 @@ and the settings.  The widths line the columns of the two rows up."
     :description (lambda () (canvas-keys-setting "caret" 'canvas-browser--caret)))
    ("S" canvas-browser-pick-part
     :description (lambda ()
-                   (canvas-keys-describe "keys" (if canvas-browser--part "part" "page"))))])
+                   (canvas-keys-describe "keys" (if canvas-browser--part "part" "page"))))
+   ("N" canvas-browser-toggle-notifications :transient t
+    :description canvas-browser--notify-description)])
 
 (defvar canvas-browser-mode-map
   (define-keymap :parent (make-composed-keymap canvas-keys-mode-map special-mode-map))
@@ -4937,11 +4939,32 @@ Chromium asks this in its own window when a page wants to show
 notifications, where nobody sees the question.  So a page waits for an
 answer that does not come until this command gives one."
   (interactive nil canvas-browser-mode)
-  (unless canvas-browser--url
-    (user-error "canvas-browser: no page here"))
-  (let ((origin (canvas-browser--site-of canvas-browser--url)))
+  (let ((origin (canvas-browser--this-site)))
     (canvas-browser--decide-notifications
      origin (y-or-n-p (format "Let %s show notifications? " origin)))))
+
+(defun canvas-browser--this-site ()
+  "The site of the page that this buffer holds.  An error when it holds none."
+  (unless canvas-browser--url
+    (user-error "canvas-browser: no page here"))
+  (canvas-browser--site-of canvas-browser--url))
+
+(defun canvas-browser--notify-description ()
+  "The entry of the menu that says whether the site of this page may notify."
+  (canvas-keys-describe
+   "notify"
+   (if (and canvas-browser--url (canvas-browser--may-notify-p canvas-browser--url))
+       "on"
+     "off")))
+
+(defun canvas-browser-toggle-notifications ()
+  "Let the site of this page show notifications, or stop it.
+The menu of the page says which of the two holds.  This is the answer
+that `canvas-browser-notifications\=' asks for, given without a question."
+  (interactive nil canvas-browser-mode)
+  (let ((origin (canvas-browser--this-site)))
+    (canvas-browser--decide-notifications
+     origin (not (canvas-browser--may-notify-p canvas-browser--url)))))
 
 (defun canvas-browser--watch-notifications ()
   "Take the notifications of the pages of this buffer.
