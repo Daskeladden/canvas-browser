@@ -5551,6 +5551,462 @@ Return the dired buffer in which they are picked."
               (should (file-exists-p sent))))
         (delete-directory snap-home t)))))
 
+;;;; A field of the page in a buffer
+
+(defvar canvas-browser-test--field-timers nil
+  "The timers of fields that a test holds back: each a function and its arguments.")
+
+(defun canvas-browser-test--hold-field-timer (real)
+  "A stand-in for REAL, which sets a timer: it holds back the timers of fields."
+  (lambda (seconds repeat function &rest arguments)
+    (if (memq function '(canvas-browser--field-push canvas-browser--field-read
+                         canvas-browser--field-hide))
+        (progn (push (cons function arguments) canvas-browser-test--field-timers)
+               (timer-create))
+      (apply real seconds repeat function arguments))))
+
+(defun canvas-browser-test--fire-field-timers ()
+  "Run what the timers of fields were set for, the oldest first."
+  (let ((timers (reverse canvas-browser-test--field-timers)))
+    (setq canvas-browser-test--field-timers nil)
+    (dolist (timer timers)
+      (apply (car timer) (cdr timer)))))
+
+(defvar canvas-browser-test--shown nil
+  "The buffer that the code under test last asked to show.")
+
+(defun canvas-browser-test--field-buffers ()
+  "The buffers that hold the text of a field of a page."
+  (seq-filter (lambda (buffer) (buffer-local-value 'canvas-browser-edit-field-mode buffer))
+              (buffer-list)))
+
+(defun canvas-browser-test--mark-script-p (expression)
+  "Whether EXPRESSION is the script that marks all of a field."
+  (string-prefix-p (car (split-string canvas-browser--field-mark-script "(%s)" t))
+                   expression))
+
+(defmacro canvas-browser-test--with-page-field (field marked &rest body)
+  "Run BODY in a page whose field with the focus is FIELD.
+FIELD is what the page answers each time it is asked for the field: a
+plist with its id and its text, or nil when no field has the focus.
+MARKED is what the page answers when it is asked to mark all of a
+field: t, or nil for a field that is gone.  What is said goes to the
+variable `said\='.  A buffer that is shown goes to
+`canvas-browser-test--shown\=', and no window is changed.  The timers of
+fields wait for `canvas-browser-test--fire-field-timers\='.  The buffers
+of fields are killed afterwards."
+  (declare (indent 2))
+  `(let ((said nil)
+         (canvas-browser-test--shown nil)
+         (canvas-browser-test--field-timers nil))
+     (ignore said)
+     (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                ;; A test may call its own variable `answer'.
+                (lambda (method params &optional reply _session &rest _)
+                  (push (cons method params) canvas-browser-test--commands)
+                  (when reply
+                    (funcall reply
+                             (when (equal method "Runtime.evaluate")
+                               (list :result
+                                     (list :value
+                                           (let ((script (plist-get params :expression)))
+                                             (cond ((equal script canvas-browser--field-read-script)
+                                                    ,field)
+                                                   ((canvas-browser-test--mark-script-p script)
+                                                    ,marked))))))))))
+               ((symbol-function 'run-with-timer)
+                (canvas-browser-test--hold-field-timer (symbol-function 'run-with-timer)))
+               ((symbol-function 'run-with-idle-timer)
+                (canvas-browser-test--hold-field-timer (symbol-function 'run-with-idle-timer)))
+               ((symbol-function 'pop-to-buffer)
+                (lambda (buffer &rest _) (setq canvas-browser-test--shown buffer)))
+               ((symbol-function 'message)
+                (lambda (format &rest args) (setq said (apply #'format format args)))))
+       (unwind-protect (progn ,@body)
+         (mapc #'kill-buffer (canvas-browser-test--field-buffers))))))
+
+(defun canvas-browser-test--edit-field ()
+  "Press the key that opens the field of this page in a buffer; give the buffer.
+It is nil when no buffer was shown."
+  (setq canvas-browser-test--shown nil)
+  (canvas-browser-test--press "C-c '")
+  canvas-browser-test--shown)
+
+(defun canvas-browser-test--undo-in (buffer &optional again)
+  "Take back one step in BUFFER, as `C-/\=' does there.
+With AGAIN, the step follows an undo, as a second `C-/\=' does."
+  (with-current-buffer buffer
+    (let ((last-command (and again 'undo)) (this-command nil))
+      (undo))))
+
+(ert-deftest canvas-browser-the-field-with-the-focus-opens-in-a-buffer ()
+  ;; GIVEN a page whose field with the focus holds two lines
+  ;; WHEN C-c ' is pressed while the keys go to the page
+  ;; THEN a buffer opens that holds the two lines, with point after
+  ;;      them, as the next word is written there, AND it is a buffer
+  ;;      for text that can be changed, AND its header names the keys
+  ;;      that end the edit, AND the text of the field is where its
+  ;;      history starts: there is no step to take back
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--with-page-field '(:id "k-1" :text "one\ntwo") t
+      (let ((field (canvas-browser-test--edit-field)))
+        (should (memq field (canvas-browser-test--field-buffers)))
+        (with-current-buffer field
+          (should (equal (buffer-string) "one\ntwo"))
+          (should (eobp))
+          (should (derived-mode-p 'text-mode))
+          (should-not buffer-read-only)
+          (should-not buffer-undo-list)
+          (should (string-search "C-c C-c" header-line-format))
+          (should (string-search "C-c C-k" header-line-format)))))))
+
+(ert-deftest canvas-browser-the-keys-of-the-field-buffer-are-there-in-both-states ()
+  ;; GIVEN a page buffer
+  ;; THEN C-c ' opens the field in a buffer while the keys are those of
+  ;;      Emacs, AND while they go to the page, AND so does C-x u for
+  ;;      the history of the field, AND the menu has the edit
+  (dolist (typing '(nil t))
+    (canvas-browser-test--in-page
+      (when typing (canvas-browser-insert-mode))
+      (should (eq (key-binding (kbd "C-c '")) #'canvas-browser-edit-field))
+      (should (eq (key-binding (kbd "C-x u")) #'canvas-browser-field-history))))
+  (should (eq (plist-get (canvas-browser-test--menu-entry "E") :command)
+              #'canvas-browser-edit-field)))
+
+(ert-deftest canvas-browser-c-c-c-c-types-the-text-into-the-field ()
+  ;; GIVEN the buffer of a field, with its text changed to two lines
+  ;; WHEN C-c C-c is pressed
+  ;; THEN the page is asked to mark all of that field, AND after that
+  ;;      the text of the buffer is typed, which takes the place of what
+  ;;      is marked, AND no key goes to the page, so nothing is sent
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+      (let ((field (canvas-browser-test--edit-field)))
+        (with-current-buffer field
+          (erase-buffer)
+          (insert "new\ntext")
+          (canvas-browser-test--press "C-c C-c"))
+        (let ((typed (cl-position "Input.insertText" canvas-browser-test--commands
+                                  :key #'car :test #'equal))
+              (marked (cl-position-if
+                       (lambda (command)
+                         (let ((script (plist-get (cdr command) :expression)))
+                           (and script (canvas-browser-test--mark-script-p script)
+                                (string-suffix-p "(\"k-1\")" script))))
+                       canvas-browser-test--commands)))
+          ;; The newest command comes first.
+          (should (and typed marked (< typed marked))))
+        (should (equal (plist-get (canvas-browser-test--params "Input.insertText") :text)
+                       "new\ntext"))
+        (should-not (canvas-browser-test--keys-sent))))))
+
+(ert-deftest canvas-browser-c-c-c-k-leaves-the-field-as-it-is ()
+  ;; GIVEN the buffer of a field, with its text changed
+  ;; WHEN C-c C-k is pressed
+  ;; THEN nothing is typed into the page
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+      (let ((field (canvas-browser-test--edit-field)))
+        (with-current-buffer field
+          (insert " more")
+          (canvas-browser-test--press "C-c C-k"))
+        (canvas-browser-test--fire-field-timers)
+        (should-not (canvas-browser-test--sent-p "Input.insertText"))))))
+
+(ert-deftest canvas-browser-the-buffer-of-a-field-keeps-its-history ()
+  ;; GIVEN a field that was edited in its buffer, from one to one two
+  ;; WHEN more is typed in the page, and the field is opened again
+  ;; THEN the same buffer opens, with the text that the field has now,
+  ;;      AND what the page added is one step to take back, AND the
+  ;;      edit before it is the next
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (let ((answer '(:id "k-1" :text "one")))
+      (canvas-browser-test--with-page-field answer t
+        (let ((field (canvas-browser-test--edit-field)))
+          (with-current-buffer field
+            (insert " two")
+            (canvas-browser-test--press "C-c C-c"))
+          (should (buffer-live-p field))
+          (setq answer '(:id "k-1" :text "one two three"))
+          (should (eq (canvas-browser-test--edit-field) field))
+          (should (equal (with-current-buffer field (buffer-string)) "one two three"))
+          (canvas-browser-test--undo-in field)
+          (should (equal (with-current-buffer field (buffer-string)) "one two"))
+          (canvas-browser-test--undo-in field t)
+          (should (equal (with-current-buffer field (buffer-string)) "one")))))))
+
+(ert-deftest canvas-browser-each-field-has-a-buffer-of-its-own ()
+  ;; GIVEN a page with two fields
+  ;; WHEN each is opened in a buffer
+  ;; THEN they are two buffers, each with the text of its field
+  (canvas-browser-test--in-page
+    (let ((answer '(:id "k-1" :text "one")))
+      (canvas-browser-test--with-page-field answer t
+        (let ((first (canvas-browser-test--edit-field)))
+          (with-current-buffer first (canvas-browser-test--press "C-c C-k"))
+          (setq answer '(:id "k-2" :text "other"))
+          (let ((second (canvas-browser-test--edit-field)))
+            (should-not (eq first second))
+            (should (equal (with-current-buffer first (buffer-string)) "one"))
+            (should (equal (with-current-buffer second (buffer-string)) "other"))))))))
+
+(ert-deftest canvas-browser-a-field-that-is-gone-keeps-its-buffer ()
+  ;; GIVEN the buffer of a field, AND a page that no longer has the
+  ;;       field
+  ;; WHEN C-c C-c is pressed
+  ;; THEN nothing is typed into the page, AND the buffer stays with its
+  ;;      text, AND the reader is told why
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--with-page-field '(:id "k-1" :text "one") nil
+      (let ((field (canvas-browser-test--edit-field)))
+        (with-current-buffer field
+          (insert " more")
+          (canvas-browser-test--press "C-c C-c"))
+        (should-not (canvas-browser-test--sent-p "Input.insertText"))
+        (should (equal (with-current-buffer field (buffer-string)) "one more"))
+        (should (string-search "no longer has" said))))))
+
+(ert-deftest canvas-browser-a-page-that-is-gone-keeps-the-buffer-of-its-field ()
+  ;; GIVEN the buffer of a field that is being edited, AND its page
+  ;;       buffer killed
+  ;; WHEN C-c C-c is pressed
+  ;; THEN an error says that the page is gone, AND the buffer stays with
+  ;;      its text
+  (canvas-browser-test--with-chromium
+    (let ((page (generate-new-buffer " *canvas-browser-test-page*")))
+      (unwind-protect
+          (with-current-buffer page
+            (canvas-browser-mode)
+            (canvas-browser--open "https://example.org" 800 600)
+            (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+              (let ((field (canvas-browser-test--edit-field)))
+                (kill-buffer page)
+                (should (buffer-live-p field))
+                (with-current-buffer field
+                  (should (string-search
+                           "gone"
+                           (error-message-string
+                            (should-error (canvas-browser-test--press "C-c C-c")
+                                          :type 'user-error))))
+                  (should (equal (buffer-string) "one"))))))
+        (when (buffer-live-p page) (kill-buffer page))))))
+
+(ert-deftest canvas-browser-without-a-field-with-the-focus-no-buffer-opens ()
+  ;; GIVEN a page where no field has the focus
+  ;; WHEN C-c ' is pressed
+  ;; THEN no buffer opens, AND the reader is told why
+  (canvas-browser-test--in-page
+    (canvas-browser-test--with-page-field nil t
+      (should-not (canvas-browser-test--edit-field))
+      (should-not (canvas-browser-test--field-buffers))
+      (should (string-search "no field" said)))))
+
+(ert-deftest canvas-browser-a-password-is-not-kept-in-a-buffer ()
+  ;; GIVEN a page whose field with the focus is one for a password
+  ;; WHEN C-c ' is pressed
+  ;; THEN no buffer opens, which would show the password as it is, AND
+  ;;      the reader is told why
+  ;; WHEN the keys pause after typing there
+  ;; THEN no buffer is made for the field either
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--with-page-field '(:password t) t
+      (should-not (canvas-browser-test--edit-field))
+      (should (string-search "password" said))
+      (run-hooks 'post-command-hook)
+      (canvas-browser-test--fire-field-timers)
+      (should-not (canvas-browser-test--field-buffers)))))
+
+(ert-deftest canvas-browser-the-field-is-read-when-the-keys-pause ()
+  ;; GIVEN a page buffer where the keys go to the page
+  ;; WHEN a command has run, and the keys pause
+  ;; THEN the page is asked for its field, AND the text of the field is
+  ;;      in a buffer that is not shown
+  ;; WHEN the field holds more after the next pause
+  ;; THEN the buffer holds that, AND the pause is one step to take back
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (let ((answer '(:id "k-1" :text "one")))
+      (canvas-browser-test--with-page-field answer t
+        (run-hooks 'post-command-hook)
+        (canvas-browser-test--fire-field-timers)
+        (let ((field (car (canvas-browser-test--field-buffers))))
+          (should field)
+          (should-not canvas-browser-test--shown)
+          (should (equal (with-current-buffer field (buffer-string)) "one"))
+          (setq answer '(:id "k-1" :text "one two"))
+          (run-hooks 'post-command-hook)
+          (canvas-browser-test--fire-field-timers)
+          (should (equal (canvas-browser-test--field-buffers) (list field)))
+          (should (equal (with-current-buffer field (buffer-string)) "one two"))
+          (canvas-browser-test--undo-in field)
+          (should (equal (with-current-buffer field (buffer-string)) "one")))))))
+
+(ert-deftest canvas-browser-no-field-is-read-where-none-is-typed-in ()
+  ;; GIVEN a page buffer whose keys are those of Emacs, AND one where
+  ;;       the keys go to the page but the history of fields is off
+  ;; WHEN a command has run
+  ;; THEN no timer waits to read the field
+  (canvas-browser-test--in-page
+    (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+      (run-hooks 'post-command-hook)
+      (should-not canvas-browser-test--field-timers)
+      (canvas-browser-insert-mode)
+      (let ((canvas-browser-field-history-delay nil))
+        (run-hooks 'post-command-hook)
+        (should-not canvas-browser-test--field-timers)))))
+
+(ert-deftest canvas-browser-a-buffer-that-is-edited-is-not-read-over ()
+  ;; GIVEN the buffer of a field, open with a change that is not in the
+  ;;       field yet
+  ;; WHEN the keys of the page pause, and the field is read
+  ;; THEN the buffer keeps its text: what is written there is not lost
+  ;;      to what the field holds
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+      (let ((field (canvas-browser-test--edit-field)))
+        (with-current-buffer field (insert " more"))
+        (run-hooks 'post-command-hook)
+        (canvas-browser-test--fire-field-timers)
+        (should (equal (with-current-buffer field (buffer-string)) "one more"))))))
+
+(defvar canvas-browser-test--viewed nil
+  "The buffer in which the stand-in for a view of the undo history ran.")
+
+(defun canvas-browser-test--view-history ()
+  "Stand in for a command that shows the undo history of a buffer."
+  (interactive)
+  (setq canvas-browser-test--viewed (current-buffer)))
+
+(defmacro canvas-browser-test--with-history-view (&rest body)
+  "Run BODY with C-x u, in a buffer for text, as a view of the undo history.
+A package that shows the history of a buffer binds that key so."
+  (declare (indent 0))
+  `(let ((canvas-browser-test--viewed nil)
+         (before (lookup-key text-mode-map (kbd "C-x u"))))
+     (unwind-protect
+         (progn (define-key text-mode-map (kbd "C-x u") #'canvas-browser-test--view-history)
+                ,@body)
+       (define-key text-mode-map (kbd "C-x u") (and (not (numberp before)) before)))))
+
+(ert-deftest canvas-browser-c-x-u-opens-the-history-of-the-field ()
+  ;; GIVEN a package that shows the undo history of a buffer on C-x u,
+  ;;       AND a page with a field, in normal state and in insert state
+  ;; WHEN C-x u is pressed in the page buffer
+  ;; THEN the view runs in the buffer of the field, which holds the text
+  ;;      of the field, AND that buffer is not shown itself
+  ;; WHEN a step is taken there, which changes the buffer
+  ;; THEN the page is asked to mark all of the field, AND the text of
+  ;;      the buffer is typed in its place
+  (dolist (typing '(nil t))
+    (canvas-browser-test--in-page
+      (when typing (canvas-browser-insert-mode))
+      (canvas-browser-test--with-history-view
+        (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+          (canvas-browser-test--press "C-x u")
+          (let ((field canvas-browser-test--viewed))
+            (should (memq field (canvas-browser-test--field-buffers)))
+            (should-not canvas-browser-test--shown)
+            (should (equal (with-current-buffer field (buffer-string)) "one"))
+            (setq canvas-browser-test--commands nil)
+            (with-current-buffer field
+              (goto-char (point-max))
+              (insert " again"))
+            (canvas-browser-test--fire-field-timers)
+            (should (cl-some (lambda (command)
+                               (let ((script (plist-get (cdr command) :expression)))
+                                 (and script (canvas-browser-test--mark-script-p script))))
+                             canvas-browser-test--commands))
+            (should (equal (plist-get (canvas-browser-test--params "Input.insertText") :text)
+                           "one again"))
+            (should-not (canvas-browser-test--keys-sent))))))))
+
+(defun canvas-browser-test--show-as-a-view-does (window buffer)
+  "Show BUFFER in WINDOW, and tell its buffer of that as a redisplay does.
+A view of the undo history that is left shows the buffer whose history
+it showed in the window, when no window has that buffer."
+  (set-window-buffer window buffer)
+  (with-current-buffer buffer
+    (run-hook-with-args 'window-buffer-change-functions window))
+  (canvas-browser-test--fire-field-timers))
+
+(ert-deftest canvas-browser-the-page-comes-back-when-a-history-view-is-left ()
+  ;; GIVEN a window that shows a page, AND the history of its field,
+  ;;       asked for there with C-x u
+  ;; WHEN the view is left, and it shows the buffer of the field in the
+  ;;      window, as the view of undo-tree does with the buffer whose
+  ;;      history it showed
+  ;; THEN the window shows the page again, AND the buffer of the field
+  ;;      follows its field again
+  ;; GIVEN the buffer of a field that is open to be written in
+  ;; WHEN it is shown in the window
+  ;; THEN it stays there
+  (let* ((window (selected-window))
+         (before (window-buffer window)))
+    (unwind-protect
+        (canvas-browser-test--in-page
+          (canvas-browser-test--with-history-view
+            (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+              (let ((page (current-buffer)))
+                (set-window-buffer window page)
+                (canvas-browser-test--press "C-x u")
+                (let ((field canvas-browser-test--viewed))
+                  (canvas-browser-test--show-as-a-view-does window field)
+                  (should (eq (window-buffer window) page))
+                  (should-not (buffer-local-value 'canvas-browser--field-state field))
+                  (should (eq (canvas-browser-test--edit-field) field))
+                  (canvas-browser-test--show-as-a-view-does window field)
+                  (should (eq (window-buffer window) field)))))))
+      (set-window-buffer window before))))
+
+(ert-deftest canvas-browser-without-a-view-c-x-u-takes-back-a-step-in-the-field ()
+  ;; GIVEN an Emacs where C-x u is undo, as it is without a package
+  ;;       that shows the history, AND a page with a field
+  ;; WHEN C-x u is pressed in the page buffer
+  ;; THEN Control and z go to the page, which knows each key that was
+  ;;      typed
+  (canvas-browser-test--in-page
+    (canvas-browser-insert-mode)
+    (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+      (canvas-browser-test--press "C-x u")
+      (let ((down (car (canvas-browser-test--keys-sent))))
+        (should (equal (list (plist-get down :key) (plist-get down :modifiers)) '("z" 2)))))))
+
+(ert-deftest canvas-browser-the-hidden-buffers-of-fields-go-with-their-page ()
+  ;; GIVEN a page buffer with the buffer of a field that is not shown
+  ;; WHEN the page goes to a new address
+  ;; THEN the buffer of the field is gone: the new page has other fields
+  ;; GIVEN the same again
+  ;; WHEN the page buffer is killed
+  ;; THEN the buffer of the field is gone
+  (canvas-browser-test--with-chromium
+    (let ((page (generate-new-buffer " *canvas-browser-test-page*")))
+      (unwind-protect
+          (with-current-buffer page
+            (canvas-browser-mode)
+            (canvas-browser--open "https://example.org" 800 600)
+            (canvas-browser-insert-mode)
+            (canvas-browser-test--with-page-field '(:id "k-1" :text "one") t
+              (run-hooks 'post-command-hook)
+              (canvas-browser-test--fire-field-timers)
+              (should (canvas-browser-test--field-buffers))
+              (canvas-browser-test--event "Page.frameNavigated"
+                                          '(:frame (:id "F1" :url "https://example.org/next")
+                                            :type "Navigation"))
+              (should-not (canvas-browser-test--field-buffers))
+              (run-hooks 'post-command-hook)
+              (canvas-browser-test--fire-field-timers)
+              (should (canvas-browser-test--field-buffers))
+              (kill-buffer page)
+              (should-not (canvas-browser-test--field-buffers))))
+        (when (buffer-live-p page) (kill-buffer page))))))
+
 ;;;; The targets of embark
 
 (defvar embark-target-finders)

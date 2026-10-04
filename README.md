@@ -152,6 +152,30 @@ A page can read the clipboard only with a permission. canvas-browser
 gives the site that permission for the one read, and takes it back.
 This works for a page that is served over https.
 
+### A field in a buffer
+
+`C-c '` opens the text of the field with the focus in an ordinary
+buffer. Write there with all that Emacs has for text. `C-c C-c` types
+the text into the field, in place of what the field holds. `C-c C-k`
+leaves the field as it is. Neither key sends the text. It goes in as a
+yank does, without a key, so a chat that sends on Enter sends nothing.
+
+An editor that a page builds itself gets a paragraph for each line.
+What such a field holds that is no text, as a picture, does not come
+back. A field for a password does not open in a buffer.
+
+When the edit ends, the buffer stays, and it is the buffer of that
+field from then on. Its undo history is the history of the field, which
+chromium keeps to itself. While you type in the page, the field is read
+into the buffer at each pause, so each pause is one step there.
+
+`C-x u` in the page buffer does with that history what the key does in
+a buffer for text. With a package that shows the undo history on that
+key, as undo-tree does, the view opens on the history of the field. A
+step that you take there is typed into the field. Without such a
+package the key is undo, and the page takes back a step, as on `C-/`.
+A step back puts plain text in place of all that the field holds.
+
 ### Sending a page somewhere
 
 `>` sends the page to a receiver, and asks which one. While the caret
@@ -440,7 +464,9 @@ Normal state keeps the keys of Emacs:
 | `C-r` | steps to the hit before, in the last search |
 | `d` | turns dark mode on or off, for this page and the next ones |
 | `i` | sends the keys to the page, as a click in a field does |
-| `C-/`, `C-x u`, `C-?` | undo and do again in the field of the page. A page buffer has no text of its own to undo |
+| `C-c '` | opens the text of the field with the focus in an ordinary buffer, also while the keys go to the page |
+| `C-/`, `C-?` | undo and do again in the field of the page. A page buffer has no text of its own to undo |
+| `C-x u` | shows the history of the field, with a package that shows the undo history on that key. Without one, it is undo |
 | `t` | puts the text of the page, or of the part picked with `S`, in an ordinary buffer |
 | `M-s M-l` | searches that text with `consult-line`, also while the keys go to the page |
 | `M-.` in that text | shows the page at the line: the page scrolls to it and paints it for a moment, and `M-,` comes back to the text |
@@ -571,7 +597,8 @@ and the insert mode of Surfingkeys have them do:
 | `M-DEL`, `M-d`, `C-<backspace>`, `C-<delete>` | delete the word before and after the cursor |
 | `C-k` | kill to the end of the line, and at its end the line break |
 | `C-y`, `S-<insert>`, the middle button | type the newest kill of Emacs |
-| `C-/`, `C-x u`, `C-?` | undo, and do again |
+| `C-/`, `C-?` | undo, and do again |
+| `C-x u` | the history of the field, or undo |
 | `S-<return>` | a line break where Enter alone sends, as in a chat |
 | `C-<return>` | Control and Enter, which send many a form |
 | `TAB`, `S-TAB` | the next and the previous field |
@@ -791,6 +818,7 @@ chromium a window on.
 | `canvas-browser-line-height` | 40 | pixels that `n` and `p` scroll |
 | `canvas-browser-search-url` | DuckDuckGo | where words are searched for |
 | `canvas-browser-spots-delay` | 0.3 | seconds of quiet before the pointer areas are read |
+| `canvas-browser-field-history-delay` | 1 | seconds of quiet before the field is read into its buffer, or nil to keep no history of what is typed in a page |
 
 A page that stops answering for a few seconds says so in the echo area,
 and `g` reads it again.

@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head><title>canvas-browser field fixture</title></head>
+  <body>
+    <p><textarea id="area" style="width: 300px; height: 60px">one
+two</textarea></p>
+    <!-- An editor that a page builds itself: an element that can be
+         edited, with a paragraph for each line, and an empty paragraph
+         for an empty line. -->
+    <div id="editor" contenteditable="true"
+         style="width: 300px; border: 1px solid #888"><p>first</p><p><br></p><p>third</p></div>
+    <p><shadow-area id="shadowed"></shadow-area></p>
+    <p><input id="secret" type="password" value="hidden"></p>
+    <script>
+      // The keys that the page is told of.  A chat sends its text when
+      // it is told of Enter, so a text from a buffer must come without
+      // a key.
+      window.keys = [];
+      document.addEventListener('keydown', event => window.keys.push(event.key), true);
+      // A field inside the shadow root of a web component.
+      customElements.define('shadow-area', class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({mode: 'open'}).innerHTML =
+            '<textarea id="inner" style="width: 300px; height: 30px">in the shadow</textarea>';
+        }
+      });
+    </script>
+  </body>
+</html>

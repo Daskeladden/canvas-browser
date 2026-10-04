@@ -828,12 +828,16 @@ still hears that the reader prefers dark.  So the dark is told again
 after a restore of the page itself.  A navigation to a new page keeps it.
 
 A frame at a site that may show notifications is given the way to tell
-Emacs of them."
+Emacs of them.
+
+A new page has other fields, so the buffers of the fields of the page
+before it go.  A page that is restored still has its fields."
   (canvas-browser--frame-may-notify (plist-get (plist-get params :frame) :url))
   (canvas-browser--mark-changed)
-  (when (and (null (plist-get (plist-get params :frame) :parentId))
-             (equal (plist-get params :type) "BackForwardCacheRestore"))
-    (canvas-browser--apply-dark)))
+  (when (null (plist-get (plist-get params :frame) :parentId))
+    (if (equal (plist-get params :type) "BackForwardCacheRestore")
+        (canvas-browser--apply-dark)
+      (canvas-browser--forget-fields))))
 
 (defun canvas-browser--loaded (_params)
   "Ask the page that has loaded for its title, for the header line."
@@ -1069,6 +1073,7 @@ A choice of files that this page waited for is forgotten with it."
     (cancel-timer canvas-browser--crisp-timer)
     (setq canvas-browser--crisp-timer nil))
   (canvas-browser--forget-live)
+  (canvas-browser--forget-fields)
   (canvas-browser--forget-files))
 
 (defun canvas-browser--forget-files ()
@@ -3810,6 +3815,7 @@ and the settings.  The widths line the columns of the two rows up."
    ("f" "hints" canvas-browser-hints)
    ("M-j" "jump" canvas-browser-caret-jump)
    ("TAB" "field" canvas-browser-next-field)
+   ("E" "edit field" canvas-browser-edit-field)
    ("s" "find" canvas-browser-find)
    ("t" "text" canvas-browser-text)
    ("L" "lines" canvas-browser-search-text)
@@ -3867,6 +3873,7 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "t" #'canvas-browser-text
   "e" #'canvas-browser-open-in-eww
   "M-s M-l" #'canvas-browser-search-text
+  "C-c '" #'canvas-browser-edit-field
   "<remap> <imenu>" #'canvas-browser-imenu
   "<remap> <consult-imenu>" #'canvas-browser-imenu
   "z" #'canvas-keys-zoom-fit
@@ -4451,10 +4458,12 @@ commands are bound as well as the keys: a key that the reader gave to
 undo then reaches the field, and a package that takes the undo keys of
 every buffer leaves alone a mode that has an undo of its own, as
 undo-tree does."
-  (dolist (key '("C-/" "C-_" "C-x u"))
+  (dolist (key '("C-/" "C-_"))
     (define-key map (kbd key) #'canvas-browser-field-undo))
   (dolist (key '("C-?" "C-M-_"))
     (define-key map (kbd key) #'canvas-browser-field-redo))
+  ;; The key that shows the undo history where a package gives it that.
+  (define-key map (kbd "C-x u") #'canvas-browser-field-history)
   (define-key map [remap undo] #'canvas-browser-field-undo)
   (define-key map [remap undo-redo] #'canvas-browser-field-redo))
 
@@ -4486,6 +4495,7 @@ here, on every load."
   ;; `consult-line' would then search the page buffer, which holds no
   ;; text.
   (define-key map (kbd "M-s M-l") #'canvas-browser-search-text)
+  (define-key map (kbd "C-c '") #'canvas-browser-edit-field)
   (define-key map [remap imenu] #'canvas-browser-imenu)
   (define-key map [remap consult-imenu] #'canvas-browser-imenu))
 
@@ -4600,6 +4610,7 @@ nothing the window does not.  Take the mode out of
   ;; Any command may change the page anywhere, so what was moving before
   ;; it says nothing about the page after it.
   (add-hook 'pre-command-hook #'canvas-browser--forget-live nil t)
+  (add-hook 'post-command-hook #'canvas-browser--field-read-later nil t)
   (canvas-browser--embark-here)
   (canvas-browser--watch-freshness))
 
@@ -4803,6 +4814,411 @@ is closed."
     (canvas-browser--attach-leave page)
     (message "canvas-browser: no file for the page")))
 
+;;;; A field of the page in a buffer
+
+(defcustom canvas-browser-field-history-delay 1
+  "How many seconds after a key the text of the field of a page is read.
+The text goes into the buffer of the field as a step to undo, so that
+the field has a history that Emacs can show: chromium keeps its own to
+itself.  With nil no field is read, and a field has a history only of
+what was written in its buffer."
+  :type '(choice (number :tag "Seconds")
+                 (const :tag "Keep no history of what is typed in a page" nil))
+  :group 'canvas-browser)
+
+(defconst canvas-browser--field-js
+  (concat canvas-browser--takes-typing-js "
+  const activeField = () => {
+    let e = document.activeElement;
+    while (e) {
+      if (e.shadowRoot && e.shadowRoot.activeElement) { e = e.shadowRoot.activeElement; continue; }
+      if (e.tagName === 'IFRAME') {
+        let inner = null;
+        try { inner = e.contentDocument && e.contentDocument.activeElement; }
+        catch (other) { inner = null; }
+        if (inner && inner !== e.contentDocument.body) { e = inner; continue; }
+      }
+      break;
+    }
+    return takesTyping(e) ? e : null;
+  };
+  const keptFields = () => window.__canvasBrowserFields || (window.__canvasBrowserFields =
+    {key: Math.random().toString(36).slice(2), ids: new WeakMap(), fields: new Map(), last: 0});
+  const fieldId = e => {
+    const kept = keptFields();
+    if (!kept.ids.has(e)) {
+      kept.ids.set(e, kept.key + '-' + (++kept.last));
+      kept.fields.set(kept.ids.get(e), new WeakRef(e));
+    }
+    return kept.ids.get(e);
+  };
+  const fieldOf = id => {
+    const known = keptFields().fields.get(id);
+    const e = known && known.deref();
+    return e && e.isConnected ? e : null;
+  };
+  const fieldText = e => {
+    if (typeof e.value === 'string') return e.value;
+    let text = '', loose = false;
+    const breakLine = () => {
+      if (!text || text.endsWith('\\n')) return;
+      if (loose) text = text.replace(/ $/, '');
+      text += '\\n';
+    };
+    const visit = node => {
+      if (node.nodeType === 3) {
+        const kept = /^pre/.test(getComputedStyle(node.parentElement || node.parentNode.host).whiteSpace);
+        let piece = kept ? node.textContent : node.textContent.replace(/\\s+/g, ' ');
+        if (!kept && (!text || /[\\n ]$/.test(text))) piece = piece.replace(/^ /, '');
+        if (piece) { text += piece; loose = !kept; }
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      if (node.tagName === 'BR') { text += '\\n'; return; }
+      const style = getComputedStyle(node);
+      if (style.display === 'none') return;
+      const block = !/^(inline|contents)/.test(style.display);
+      if (block) breakLine();
+      node.childNodes.forEach(visit);
+      if (block) breakLine();
+    };
+    e.childNodes.forEach(visit);
+    return text.replace(/\\n$/, '');
+  };
+  const markAll = e => {
+    e.focus();
+    if (typeof e.select === 'function') { e.select(); return; }
+    const range = e.ownerDocument.createRange();
+    range.selectNodeContents(e);
+    const root = e.getRootNode();
+    const selection = root.getSelection ? root.getSelection() : e.ownerDocument.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };")
+  "The JavaScript that reads a field of a page and marks all of it.
+`activeField\\=' gives the field that has the focus, also in a web
+component and in a frame of the same site, or null when the focus is in
+nothing that takes typing.
+`fieldId\\=' gives a field a name that no other field has, in this page
+or in the one that was at its address before, and `fieldOf\\=' gives the
+field of a name, or null once the page has let go of it.
+`fieldText\\=' gives the text of a field.  An editor that a page builds
+itself has no value: its text is a line for each block it shows and for
+each line break.  The innerText of the page is not that text, because
+it has an empty line between two paragraphs, and each such line would
+come back as a paragraph of its own.
+`markAll\\=' gives the field the focus and marks all that it holds.")
+
+(defconst canvas-browser--field-read-script
+  (concat "(function () {" canvas-browser--field-js "
+  const e = activeField();
+  if (!e) return null;
+  if (e.type === 'password') return {password: true};
+  return {id: fieldId(e), text: fieldText(e)};
+})()")
+  "The JavaScript that gives the field with the focus: its name and its text.
+The answer is null without such a field, and it says so when the field
+is one for a password, without the password.")
+
+(defconst canvas-browser--field-mark-script
+  (concat "(function (id) {" canvas-browser--field-js "
+  const e = fieldOf(id);
+  if (!e) return null;
+  const told = " canvas-browser--selection-change-js ";
+  markAll(e);
+  return told.then(() => true);
+})(%s)")
+  "The JavaScript that marks all of a field; %s is the name of the field.
+It gives a promise that is kept once the page has told of the new
+selection, as an editor must know of it before a text takes its place.
+The answer is null when the page no longer has the field.")
+
+(defconst canvas-browser--field-push-delay 0.2
+  "How many seconds a change in the history of a field waits to be typed.
+Steps that follow one another fast are typed into the field as one.")
+
+(defvar-local canvas-browser--field-buffers nil
+  "In a page buffer: the buffers of its fields, as an alist of (ID . BUFFER).")
+
+(defvar-local canvas-browser--field-read-timer nil
+  "In a page buffer: the timer that reads the field once the keys pause.")
+
+(defvar-local canvas-browser--field-page nil
+  "The page buffer that has the field whose text this buffer holds.")
+
+(defvar-local canvas-browser--field-id nil
+  "The name that the page has for the field whose text this buffer holds.")
+
+(defvar-local canvas-browser--field-state nil
+  "What a change of the text of this buffer means for its field.
+With `edit\\=' the buffer is open to be written in: its text waits for
+`C-c C-c\\=', and the field is not read into it.  With `live\\=' the
+history of the buffer is looked at: each change is typed into the field
+at once.  With nil the buffer follows the field.")
+
+(defvar-local canvas-browser--field-push-timer nil
+  "The timer that types the text of this buffer into its field.")
+
+(defvar canvas-browser--field-reading nil
+  "Whether the text of a field is being put in its buffer.
+That change comes from the page, and is not typed back into it.")
+
+(defvar canvas-browser-edit-field-mode-map (make-sparse-keymap)
+  "Keymap of the buffer that holds the text of a field of a page.")
+
+;; The keys are bound here and not where the map is made, so that they
+;; reach a running Emacs when the file is loaded again.
+(keymap-set canvas-browser-edit-field-mode-map "C-c C-c" #'canvas-browser-edit-field-finish)
+(keymap-set canvas-browser-edit-field-mode-map "C-c C-k" #'canvas-browser-edit-field-abort)
+
+(define-minor-mode canvas-browser-edit-field-mode
+  "The buffer holds the text of a field of a page of canvas-browser.
+`C-c C-c\\=' types the text into the field, in place of what the field
+holds, and sends nothing.  `C-c C-k\\=' leaves the field as it is."
+  :lighter " Field"
+  :keymap canvas-browser-edit-field-mode-map
+  (if canvas-browser-edit-field-mode
+      (setq-local header-line-format
+                  (substitute-command-keys
+                   (concat "\\<canvas-browser-edit-field-mode-map>"
+                           "The text of a field: \\[canvas-browser-edit-field-finish]"
+                           " puts it in the field, \\[canvas-browser-edit-field-abort]"
+                           " leaves the field as it is")))
+    (kill-local-variable 'header-line-format)))
+
+(defun canvas-browser--field-buffer-of (page id)
+  "The buffer of the field that PAGE names ID, or nil when it has none."
+  (let ((buffer (cdr (assoc id (buffer-local-value 'canvas-browser--field-buffers page)))))
+    (and (buffer-live-p buffer) buffer)))
+
+(defun canvas-browser--new-field-buffer (page id text)
+  "A new buffer for the field that PAGE names ID, which holds TEXT."
+  (let ((buffer (generate-new-buffer (format "*field of %s*" (buffer-name page)))))
+    (with-current-buffer buffer
+      (text-mode)
+      (insert text)
+      ;; The text of the field is where its history starts, not a change
+      ;; that can be taken back.
+      (setq buffer-undo-list nil)
+      (canvas-browser-edit-field-mode 1)
+      (setq canvas-browser--field-page page
+            canvas-browser--field-id id)
+      (add-hook 'after-change-functions #'canvas-browser--field-changed nil t)
+      (add-hook 'window-buffer-change-functions #'canvas-browser--field-shown nil t))
+    (with-current-buffer page
+      (setf (alist-get id canvas-browser--field-buffers nil nil #'equal) buffer))
+    buffer))
+
+(defun canvas-browser--field-follow (text)
+  "Make TEXT, which the field holds now, the text of this buffer.
+Only what differs is changed, and the change is one step to undo.  A
+buffer that is open to be written in keeps its text."
+  (unless (or (eq canvas-browser--field-state 'edit)
+              (equal text (buffer-substring-no-properties (point-min) (point-max))))
+    (let ((canvas-browser--field-reading t))
+      (undo-boundary)
+      (replace-region-contents (point-min) (point-max) text 0.5)
+      (undo-boundary))))
+
+(defun canvas-browser--field-buffer (page field)
+  "The buffer of FIELD of PAGE, with the text that the field holds now.
+FIELD is what the page answered about a field: a plist of its name and
+its text.  A field that has no buffer yet gets one."
+  (let* ((id (plist-get field :id))
+         (text (plist-get field :text))
+         (buffer (canvas-browser--field-buffer-of page id)))
+    (if (null buffer)
+        (canvas-browser--new-field-buffer page id text)
+      (with-current-buffer buffer (canvas-browser--field-follow text))
+      buffer)))
+
+(defun canvas-browser--field-send (then)
+  "Type the text of this buffer into its field, in place of what it holds.
+THEN is called in the page buffer with whether the page still has the
+field.  The text is typed without a key, as a yank is: the page is told
+of no Enter, so a chat does not send what it gets."
+  (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+        (id canvas-browser--field-id))
+    (with-current-buffer canvas-browser--field-page
+      (canvas-browser--ask-page
+       (format canvas-browser--field-mark-script (json-encode id))
+       (lambda (marked)
+         (when marked
+           (canvas-browser--tell "Input.insertText" (list :text text)))
+         (funcall then (and marked t)))))))
+
+(defun canvas-browser--field-push (buffer)
+  "Type the text of BUFFER into its field, while both are still there."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq canvas-browser--field-push-timer nil)
+      (when (buffer-live-p canvas-browser--field-page)
+        (canvas-browser--field-send #'ignore)))))
+
+(defun canvas-browser--field-changed (&rest _)
+  "Have the text of this buffer typed into its field soon.
+This is for a buffer whose history is looked at: a step that is taken
+there shows in the page.  A change that came from the page is left
+out."
+  (when (and (eq canvas-browser--field-state 'live)
+             (not canvas-browser--field-reading))
+    (when canvas-browser--field-push-timer
+      (cancel-timer canvas-browser--field-push-timer))
+    (setq canvas-browser--field-push-timer
+          (run-with-timer canvas-browser--field-push-delay nil
+                          #'canvas-browser--field-push (current-buffer)))))
+
+(defun canvas-browser--field-hide (window buffer)
+  "Show the page of BUFFER in WINDOW, in place of BUFFER, the buffer of a field.
+The buffer follows its field again."
+  (when (and (window-live-p window) (buffer-live-p buffer)
+             (eq (window-buffer window) buffer))
+    (let ((page (buffer-local-value 'canvas-browser--field-page buffer)))
+      (with-current-buffer buffer
+        (setq canvas-browser--field-state nil))
+      (when (buffer-live-p page)
+        (set-window-buffer window page)
+        (unrecord-window-buffer window buffer)))))
+
+(defun canvas-browser--field-shown (window)
+  "Have the page take the place of the buffer of its field in WINDOW.
+This is for a buffer whose history was asked for in the page, where it
+stands for the field.  A view of the undo history goes back to the
+buffer whose history it showed, as the visualizer of undo-tree does,
+and shows that buffer when no window has it.  The reader came from the
+page, so the page is what the window shows again."
+  (let ((buffer (window-buffer window)))
+    (when (eq (buffer-local-value 'canvas-browser--field-state buffer) 'live)
+      ;; The windows are told of a change while they change, which is no
+      ;; time to change them again.
+      (run-with-timer 0 nil #'canvas-browser--field-hide window buffer))))
+
+(defun canvas-browser--edit-field-open (field)
+  "Open FIELD in its buffer: what this page answered about its field."
+  (cond ((null field)
+         (message "canvas-browser: no field of the page has the focus"))
+        ((plist-get field :password)
+         (message "canvas-browser: a password is not shown in a buffer"))
+        (t (let ((buffer (canvas-browser--field-buffer (current-buffer) field)))
+             (with-current-buffer buffer
+               (setq canvas-browser--field-state 'edit))
+             (pop-to-buffer buffer)))))
+
+(defun canvas-browser-edit-field ()
+  "Edit the text of the field with the focus in a buffer of its own.
+The buffer is an ordinary buffer for text, with all that Emacs has for
+one.  There `C-c C-c\\=' types the text into the field, in place of what
+the field holds, and `C-c C-k\\=' leaves the field as it is.  Nothing is
+sent either way.  What the field holds that is no text, as a picture,
+does not come back.
+
+The buffer stays when the edit ends, and it is the buffer of that field
+from then on: its undo history is the history of the field."
+  (interactive)
+  (canvas-browser--ask-page canvas-browser--field-read-script
+                            #'canvas-browser--edit-field-open))
+
+(defun canvas-browser--edit-field-leave (buffer)
+  "Put BUFFER out of sight, which was open to write the text of a field in.
+It follows its field again."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq canvas-browser--field-state nil))
+    (when-let* ((window (get-buffer-window buffer t)))
+      (quit-window nil window))))
+
+(defun canvas-browser-edit-field-finish ()
+  "Type the text of this buffer into its field, in place of what it holds.
+The text goes in as a yank does, without a key, so nothing is sent."
+  (interactive)
+  (unless (buffer-live-p canvas-browser--field-page)
+    (user-error "canvas-browser: the page of this field is gone"))
+  (let ((buffer (current-buffer)))
+    (canvas-browser--field-send
+     (lambda (marked)
+       (if marked
+           (canvas-browser--edit-field-leave buffer)
+         (message "canvas-browser: the page no longer has this field; its text stays in the buffer"))))))
+
+(defun canvas-browser-edit-field-abort ()
+  "Put this buffer out of sight, and leave the field of the page as it is.
+What was written here stays in the undo history of the buffer."
+  (interactive)
+  (canvas-browser--edit-field-leave (current-buffer)))
+
+(defun canvas-browser--history-keys ()
+  "The keys that ask for the history of a field: those just pressed, or C-x u.
+A command that was not called by a key of its own has no keys to hand
+on."
+  (let ((keys (this-command-keys-vector)))
+    (if (eq (key-binding keys) #'canvas-browser-field-history)
+        keys
+      (kbd "C-x u"))))
+
+(defun canvas-browser--field-history-of (field keys)
+  "Run in the buffer of FIELD what KEYS run there, or undo in the page.
+FIELD is what this page answered about its field.  Plain undo on KEYS
+means that nothing shows the history of a buffer there.  The page then
+takes a step back itself, which it also does when it has no field: it
+knows each key that was typed."
+  (let* ((buffer (and (plist-get field :id)
+                      (canvas-browser--field-buffer (current-buffer) field)))
+         (command (and buffer (with-current-buffer buffer (key-binding keys)))))
+    (if (or (not (commandp command)) (eq command 'undo))
+        (canvas-browser-field-undo)
+      (with-current-buffer buffer
+        (setq canvas-browser--field-state 'live)
+        (call-interactively command)))))
+
+(defun canvas-browser-field-history ()
+  "Do with the history of the field what this key does in a buffer for text.
+The key is `C-x u\\='.  A package that shows the undo history of a
+buffer on that key then shows the history of the field: the steps of
+its buffer, which are what was written there and what the field held at
+each pause in typing.  A step that is taken in that view is typed into
+the field.  Without such a package the key is undo, and the page takes
+back a step, as on `C-/\\='."
+  (interactive)
+  (let ((keys (canvas-browser--history-keys)))
+    (canvas-browser--ask-page
+     canvas-browser--field-read-script
+     (lambda (field) (canvas-browser--field-history-of field keys)))))
+
+(defun canvas-browser--field-read (page)
+  "Put what the field of PAGE holds now in the buffer of the field."
+  (when (buffer-live-p page)
+    (with-current-buffer page
+      (setq canvas-browser--field-read-timer nil)
+      (canvas-browser--ask-page
+       canvas-browser--field-read-script
+       (lambda (field)
+         (when (plist-get field :id)
+           (canvas-browser--field-buffer (current-buffer) field)))))))
+
+(defun canvas-browser--field-read-later ()
+  "Read the field of this page once the keys pause, while they go to the page.
+Each pause is then a step in the history of the field."
+  (when canvas-browser--field-read-timer
+    (cancel-timer canvas-browser--field-read-timer)
+    (setq canvas-browser--field-read-timer nil))
+  (when (and canvas-browser--insert canvas-browser-field-history-delay)
+    (setq canvas-browser--field-read-timer
+          (run-with-idle-timer canvas-browser-field-history-delay nil
+                               #'canvas-browser--field-read (current-buffer)))))
+
+(defun canvas-browser--forget-fields ()
+  "Kill the buffers of the fields of this page, but one that is written in.
+The page that had the fields is gone.  A buffer that is open to be
+written in holds text that is nowhere else."
+  (when canvas-browser--field-read-timer
+    (cancel-timer canvas-browser--field-read-timer)
+    (setq canvas-browser--field-read-timer nil))
+  (dolist (entry canvas-browser--field-buffers)
+    (when (and (buffer-live-p (cdr entry))
+               (not (eq (buffer-local-value 'canvas-browser--field-state (cdr entry)) 'edit)))
+      (kill-buffer (cdr entry))))
+  (setq canvas-browser--field-buffers nil))
+
 ;;;; Sending the page to a receiver
 
 (defcustom canvas-browser-receivers
@@ -4849,6 +5265,16 @@ it goes on, and its errors reach the user."
       (error "canvas-browser: the page did not answer in %s seconds"
              canvas-browser-cdp-timeout))
     result))
+
+(defun canvas-browser--ask-page (script then)
+  "Run SCRIPT in the page, and call THEN in this buffer with its value.
+When the value is a promise, THEN gets what the promise is kept with.
+The null of JSON is nil."
+  (canvas-browser--tell
+   "Runtime.evaluate"
+   (list :expression script :returnByValue t :awaitPromise t)
+   (canvas-browser--here
+    (lambda (result) (funcall then (canvas-browser--value-of result))))))
 
 (defun canvas-browser--value-now (script &optional await)
   "The value that SCRIPT gives in this page; nil for the null of JSON.

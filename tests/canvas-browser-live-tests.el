@@ -1631,6 +1631,161 @@ that holds its start, and whether the window shows that element."
                                       return [range.startContainer.parentElement.id, range.toString()]; })()")
                            '("given" "Dee")))))))))
 
+(defun canvas-browser-live-test--field-buffers ()
+  "The buffers that hold the text of a field of a page."
+  (seq-filter (lambda (buffer) (buffer-local-value 'canvas-browser-edit-field-mode buffer))
+              (buffer-list)))
+
+(defun canvas-browser-live-test--edited-field ()
+  "The buffer of a field that is open to be written in, or nil."
+  (seq-find (lambda (buffer)
+              (eq (buffer-local-value 'canvas-browser--field-state buffer) 'edit))
+            (canvas-browser-live-test--field-buffers)))
+
+(defun canvas-browser-live-test--edit-field (element)
+  "Give the focus to what the JavaScript ELEMENT names, and open it in a buffer.
+Give the buffer once the page has answered, or nil when none opens."
+  (canvas-browser-live-test--page-says (format "(%s).focus()" element))
+  (canvas-browser-edit-field)
+  (canvas-browser-live-test--wait 2 #'canvas-browser-live-test--edited-field)
+  (canvas-browser-live-test--edited-field))
+
+(defun canvas-browser-live-test--finish-field (field text)
+  "End the edit in FIELD, the buffer of a field, with TEXT as its text.
+With nil for TEXT, the text stays as the buffer has it."
+  (with-current-buffer field
+    (when text
+      (erase-buffer)
+      (insert text))
+    (canvas-browser-edit-field-finish))
+  (should (canvas-browser-live-test--wait
+           10 (lambda () (not (canvas-browser-live-test--edited-field))))))
+
+(defmacro canvas-browser-live-test--in-field-fixture (&rest body)
+  "Run BODY in a page buffer of the field fixture, with no window changed."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+     (canvas-browser-live-test--in-fixture "field.html"
+       (canvas-browser-live-test--lay-out 800 600)
+       (unwind-protect (progn ,@body)
+         (mapc #'kill-buffer (canvas-browser-live-test--field-buffers))))))
+
+(defun canvas-browser-live-test--step-back ()
+  "Stand in for a view of the undo history: take one step back in this buffer."
+  (interactive)
+  (let ((last-command nil))
+    (undo)))
+
+(ert-deftest canvas-browser-live-a-step-in-the-history-of-a-field-shows-in-the-page ()
+  ;; GIVEN the field fixture, with the focus in its text area, which
+  ;;       holds two lines, AND a package that shows the undo history of
+  ;;       a buffer on C-x u, here one that takes a step back at once
+  ;; WHEN the field is read, as it is when the keys pause, AND more is
+  ;;      typed into the page, AND the field is read again
+  ;; THEN the buffer of the field holds what the area holds now
+  ;; WHEN the history of the field is asked for in the page buffer
+  ;; THEN the step back is typed into the page: the area holds its two
+  ;;      lines again
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((before (lookup-key text-mode-map (kbd "C-x u"))))
+    (unwind-protect
+        (canvas-browser-live-test--in-field-fixture
+          (define-key text-mode-map (kbd "C-x u") #'canvas-browser-live-test--step-back)
+          (canvas-browser-live-test--page-says "document.getElementById('area').focus()")
+          (canvas-browser--field-read (current-buffer))
+          (should (canvas-browser-live-test--wait 5 #'canvas-browser-live-test--field-buffers))
+          (let ((field (car (canvas-browser-live-test--field-buffers))))
+            (should (equal (with-current-buffer field (buffer-string)) "one\ntwo"))
+            (canvas-browser--tell "Input.insertText" (list :text " and more"))
+            (should (canvas-browser-live-test--wait
+                     5 (lambda () (string-search "and more"
+                                                 (canvas-browser-live-test--value "area")))))
+            (canvas-browser--field-read (current-buffer))
+            (should (canvas-browser-live-test--wait
+                     5 (lambda () (string-search "and more"
+                                                 (with-current-buffer field (buffer-string))))))
+            (canvas-browser-field-history)
+            (should (canvas-browser-live-test--wait
+                     5 (lambda () (equal (canvas-browser-live-test--value "area") "one\ntwo"))))
+            (should (equal (canvas-browser-live-test--page-says "window.keys.length") 0))))
+      (define-key text-mode-map (kbd "C-x u") (and (not (numberp before)) before)))))
+
+(ert-deftest canvas-browser-live-a-text-area-is-edited-in-a-buffer ()
+  ;; GIVEN the field fixture, where a text area holds two lines
+  ;; WHEN the area has the focus, and its text is opened in a buffer
+  ;; THEN the buffer holds the two lines
+  ;; WHEN the text is changed in the buffer, and the edit is ended
+  ;; THEN the area holds the new text with its line breaks, AND the page
+  ;;      was told of no key, so a page that sends on Enter sends nothing
+  ;; WHEN the undo key of the field is pressed in the page buffer
+  ;; THEN the area holds its two lines again
+  ;; WHEN the redo key is pressed
+  ;; THEN the area holds the new text again
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-field-fixture
+    (let ((field (canvas-browser-live-test--edit-field "document.getElementById('area')")))
+      (should field)
+      (should (equal (with-current-buffer field (buffer-string)) "one\ntwo"))
+      (canvas-browser-live-test--finish-field field "alpha\nbeta\n\ngamma")
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (equal (canvas-browser-live-test--value "area")
+                                   "alpha\nbeta\n\ngamma"))))
+      (should (equal (canvas-browser-live-test--page-says "window.keys.length") 0))
+      (canvas-browser-field-undo)
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (equal (canvas-browser-live-test--value "area") "one\ntwo"))))
+      (canvas-browser-field-redo)
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (equal (canvas-browser-live-test--value "area")
+                                   "alpha\nbeta\n\ngamma")))))))
+
+(ert-deftest canvas-browser-live-an-editor-keeps-its-lines-through-a-buffer ()
+  ;; GIVEN the field fixture, where an editor that the page built holds
+  ;;       three paragraphs, the second one empty
+  ;; WHEN the editor has the focus, and its text is opened in a buffer
+  ;; THEN the buffer holds a line for each paragraph: an empty line for
+  ;;      the empty one, and no more empty lines than that
+  ;; WHEN the edit is ended with one more line
+  ;; THEN the editor holds a paragraph for each line of the buffer
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-field-fixture
+    (let ((field (canvas-browser-live-test--edit-field "document.getElementById('editor')")))
+      (should field)
+      (should (equal (with-current-buffer field (buffer-string)) "first\n\nthird"))
+      (canvas-browser-live-test--finish-field field "first\n\nthird\nfourth")
+      (should (canvas-browser-live-test--wait
+               5 (lambda ()
+                   (equal (canvas-browser-live-test--page-says
+                           "[...document.querySelectorAll('#editor > p')].map(p => p.textContent)")
+                          '("first" "" "third" "fourth")))))
+      (should (equal (canvas-browser-live-test--page-says "window.keys.length") 0)))))
+
+(ert-deftest canvas-browser-live-a-field-in-a-web-component-is-edited-in-a-buffer ()
+  ;; GIVEN the field fixture, where a text area stands in the shadow
+  ;;       root of a web component
+  ;; WHEN that area has the focus, its text is opened in a buffer, and
+  ;;      the edit is ended with another text
+  ;; THEN the buffer held the text of the area, AND the area holds the
+  ;;      other text
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-field-fixture
+    (let* ((inner "document.getElementById('shadowed').shadowRoot.getElementById('inner')")
+           (field (canvas-browser-live-test--edit-field inner)))
+      (should field)
+      (should (equal (with-current-buffer field (buffer-string)) "in the shadow"))
+      (canvas-browser-live-test--finish-field field "out of it")
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (equal (canvas-browser-live-test--page-says (concat inner ".value"))
+                                   "out of it")))))))
+
+(ert-deftest canvas-browser-live-a-password-field-opens-no-buffer ()
+  ;; GIVEN the field fixture, with the focus in its field for a password
+  ;; WHEN the field is asked for in a buffer
+  ;; THEN no buffer opens
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-field-fixture
+    (should-not (canvas-browser-live-test--edit-field "document.getElementById('secret')"))))
+
 (defun canvas-browser-live-test--hits ()
   "What the page paints of a search: how many hits, and where the one shown is.
 It is (COUNT ID TEXT): the id of the element that holds the start of
