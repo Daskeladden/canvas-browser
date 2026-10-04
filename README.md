@@ -429,11 +429,14 @@ Normal state keeps the keys of Emacs:
 | `i` | sends the keys to the page, as a click in a field does |
 | `t` | puts the text of the page, or of the part picked with `S`, in an ordinary buffer |
 | `M-s M-l` | searches that text with `consult-line`, also while the keys go to the page |
-| `M-.` in that text | shows the page at the line: the page scrolls to it and paints it, and `M-,` comes back to the text |
+| `M-.` in that text | shows the page at the line: the page scrolls to it and paints it for a moment, and `M-,` comes back to the text |
 | `e` | opens the same URL in eww |
 | a click | clicks the page at that pixel, and types there if it is a field |
 | a drag | marks what lies between its two ends, once the button is let go |
 | the wheel | scrolls what lies under the pointer, over a link as well |
+
+With smear-cursor on, you see where a search lands: the first hit is
+flashed, and the cursor of smear-cursor flies from one hit to the next.
 
 The scroll keys move the page itself, which happens at once. The wheel
 goes to the page as a wheel, at the pixel the pointer is over, so that it

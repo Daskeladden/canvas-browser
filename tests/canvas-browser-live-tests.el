@@ -1476,7 +1476,7 @@ that holds its start, and whether the window shows that element."
       (should (re-search-forward (concat "^" (regexp-quote line) "$") nil t))
       (canvas-browser-text-show-in-page))
     (with-current-buffer page
-      (canvas-browser-live-test--wait 2 (lambda () nil))
+      (canvas-browser-live-test--wait 0.5 (lambda () nil))
       (canvas-browser-live-test--page-says
        "(() => { const hits = CSS.highlights.get('canvas-browser-find');
                  if (!hits) return null;
@@ -1509,7 +1509,7 @@ that holds its start, and whether the window shows that element."
           (re-search-forward "^Reply$")
           (canvas-browser-text-show-in-page))
         (with-current-buffer page
-          (canvas-browser-live-test--wait 2 (lambda () nil))
+          (canvas-browser-live-test--wait 0.5 (lambda () nil))
           (should (equal (canvas-browser-live-test--page-says
                           "[...CSS.highlights.get('canvas-browser-find')][0].startContainer.parentElement.id")
                          "second"))
@@ -1521,7 +1521,12 @@ that holds its start, and whether the window shows that element."
       (should (equal (canvas-browser-live-test--shown-line "LOUD WORDS")
                      '("shout" t "loud words")))
       (should (equal (canvas-browser-live-test--shown-line "The far end.")
-                     '("far" t "The far end."))))))
+                     '("far" t "The far end.")))
+      ;; The paint is a blink: a moment later the page is as it was.
+      (canvas-browser-live-test--wait 2.5 (lambda () nil))
+      (should (equal (canvas-browser-live-test--page-says
+                      "CSS.highlights.has('canvas-browser-find') ? 1 : 0")
+                     0)))))
 
 (defun canvas-browser-live-test--hits ()
   "What the page paints of a search: how many hits, and where the one shown is.
@@ -1553,6 +1558,9 @@ moment to answer the search first."
     (canvas-browser-live-test--lay-out 800 600)
     (canvas-browser-find "Reply")
     (should (equal (canvas-browser-live-test--hits) '(2 "first" "Reply")))
+    ;; The page says where the hit stands, for the eye to be drawn there.
+    (should (> (plist-get canvas-browser--find-box :w) 0))
+    (should (< (plist-get canvas-browser--find-box :y) 600))
     (canvas-browser-find-next)
     (should (equal (canvas-browser-live-test--hits) '(2 "second" "Reply")))
     (should (> (canvas-browser-live-test--pane-top) 0))

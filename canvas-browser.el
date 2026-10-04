@@ -2559,18 +2559,21 @@ it.  It is nil for a search that starts where the window stands.")
         '::highlight(canvas-browser-find-current) { background: #ff6d00; color: #000; }';
       document.documentElement.appendChild(sheet);
     }
-    if (ranges.length) CSS.highlights.set('canvas-browser-find', new Highlight(...ranges));
+    const all = ranges.length ? new Highlight(...ranges) : null;
+    if (all) CSS.highlights.set('canvas-browser-find', all);
     else CSS.highlights.delete('canvas-browser-find');
     if (current) {
       const mark = new Highlight(current);
       mark.priority = 1;
       CSS.highlights.set('canvas-browser-find-current', mark);
     } else CSS.highlights.delete('canvas-browser-find-current');
+    return all;
   };"
   "The JavaScript that paints ranges of a page as hits, and one as the hit shown.
 The page paints them itself, with the highlight API of CSS:
 `window.find\\=' answers in a headless chromium but leaves nothing to
-see.")
+see.  `paint\\=' gives the paint of the hits, so that it can be told
+from the paint of a later search.")
 
 (defconst canvas-browser--flat-js "
   const flatten = root => {
@@ -2635,6 +2638,10 @@ see.")
     };
     return {flat, range};
   };
+  const boxOf = range => {
+    const box = range.getBoundingClientRect();
+    return [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)];
+  };
   const reveal = range => {
     const element = range.startContainer.parentElement || range.startContainer.parentNode.host;
     const origin = window.__canvasBrowserFindOrigin;
@@ -2655,7 +2662,8 @@ more than one piece of the page, as a sentence with a link in it does.
 Text that the page shows in capitals is in capitals there.
 `reveal\\=' scrolls a range into view, also in a part that scrolls on
 its own, and moves nothing when the range is in view already.  While a
-search runs, it notes where each thing stood before it scrolled it.")
+search runs, it notes where each thing stood before it scrolled it.
+`boxOf\\=' gives the box of a range in the window, as (X Y W H).")
 
 (defconst canvas-browser--find-script (concat "
 (function (text, regexp, anchor, step) {" canvas-browser--paint-js canvas-browser--flat-js "
@@ -2689,7 +2697,7 @@ search runs, it notes where each thing stood before it scrolled it.")
   if (!window.__canvasBrowserFindOrigin) window.__canvasBrowserFindOrigin = new Map();
   reveal(ranges[index]);
   paint(ranges, ranges[index]);
-  return {count: hits.length, index, anchor: hits[index][0]};
+  return {count: hits.length, index, anchor: hits[index][0], box: boxOf(ranges[index])};
 })(%s, %s, %s, %d)")
   "The JavaScript that searches a page and shows one of its hits.
 It takes the text, whether the text is a regexp, where the search stands
@@ -2742,6 +2750,21 @@ It is nil for a search for nothing."
           ((zerop count) (format "%sno hit" mode))
           (t (format "%shit %d of %d" mode (1+ (plist-get value :index)) count)))))
 
+(defvar-local canvas-browser--find-box nil
+  "The box of the hit that a search of this page showed last, or nil.")
+
+(defun canvas-browser--land (box)
+  "Draw the eye to BOX, where a search of this page landed.
+BOX is (X Y W H) as the page gives it.  The first hit of a search is
+flashed, as what a hint copied is, and the eye is flown from one hit to
+the next, as it is when the focus moves: with the effects of
+smear-cursor while that is on."
+  (when-let* ((to (canvas-browser--box-of box)))
+    (if canvas-browser--find-box
+        (canvas-browser--fly canvas-browser--find-box to)
+      (canvas-browser--pulse (current-buffer) to))
+    (setq canvas-browser--find-box to)))
+
 (defun canvas-browser--found (value string ticket)
   "Take VALUE, the answer of the page to the search for STRING with TICKET.
 An answer to an older search than the newest one is dropped: it says
@@ -2750,6 +2773,7 @@ where the page stood, not where it stands."
     (when (plist-get value :anchor)
       (setq canvas-browser--find-anchor (plist-get value :anchor)
             canvas-browser--find-index (plist-get value :index)))
+    (canvas-browser--land (plist-get value :box))
     (canvas-browser--find-say (canvas-browser--found-text value string))))
 
 (defun canvas-browser--find (string step)
@@ -2862,7 +2886,8 @@ exact about case.
 
 From Lisp, with STRING, the page is searched for it at once."
   (interactive)
-  (setq canvas-browser--find-anchor nil)
+  (setq canvas-browser--find-anchor nil
+        canvas-browser--find-box nil)
   (if string
       (canvas-browser--find string 0)
     (let ((typed ""))
@@ -3058,7 +3083,7 @@ that goes back in xref comes back to the line."
           canvas-browser--text-place place)))
 
 (defconst canvas-browser--locate-js (concat "
-(function (root, wanted) {" canvas-browser--paint-js canvas-browser--flat-js "
+(function (root, wanted, blink) {" canvas-browser--paint-js canvas-browser--flat-js "
   const view = flatten(root && root.isConnected ? root : document.body);
   const hay = view.flat.toLowerCase();
   for (let found = 0; found < wanted.length; found++) {
@@ -3069,8 +3094,11 @@ that goes back in xref comes back to the line."
     const rank = Math.min(wanted[found].rank, hits.length - 1);
     const range = view.range(hits[rank], hits[rank] + needle.length);
     reveal(range);
-    paint([range], null);
-    return {found, count: hits.length, rank};
+    const mine = paint([range], null);
+    setTimeout(() => {
+      if (CSS.highlights.get('canvas-browser-find') === mine) CSS.highlights.delete('canvas-browser-find');
+    }, blink);
+    return {found, count: hits.length, rank, box: boxOf(range)};
   }
   paint([], null);
   return {found: -1};
@@ -3084,9 +3112,14 @@ case and with one space for white space, since a page can show its text
 in capitals and breaks its lines as it likes.  A line can lie in more
 than one piece of the page, as a sentence with a link in it does.  The
 hit of the rank is scrolled into view, also in a part that scrolls on
-its own, and painted.  It gives which line it took, how many hits that
+its own, and painted for as many milliseconds as its third argument
+says.  It gives which line it took, how many hits that
 line has and which one it shows, or -1 for the line when the page holds
 none of them.")
+
+(defconst canvas-browser--locate-blink 1500
+  "For how many milliseconds a line shown from the text of a page is painted.
+The reader came to see where the line is, not to keep it marked.")
 
 (defconst canvas-browser--locate-tries 5
   "How many lines `M-.\=' in the text of a page tries, from point on.
@@ -3146,6 +3179,8 @@ else the whole page."
 (defun canvas-browser--located (answer lines)
   "Say what ANSWER, of the page, found of LINES."
   (let ((found (or (plist-get answer :found) -1)))
+    (setq canvas-browser--find-box nil)
+    (canvas-browser--land (plist-get answer :box))
     (cond ((< found 0)
            (message "canvas-browser: the page does not hold this line as it is written"))
           ((> found 0)
@@ -3158,16 +3193,18 @@ else the whole page."
   "Show in this page the first of LINES that it holds, of the text at PLACE."
   (canvas-browser--tell
    "Runtime.evaluate"
-   (list :expression (format "%s(%s, %s)" canvas-browser--locate-js
+   (list :expression (format "%s(%s, %s, %d)" canvas-browser--locate-js
                              (canvas-browser--text-root-js place)
-                             (json-encode (vconcat lines)))
+                             (json-encode (vconcat lines))
+                             canvas-browser--locate-blink)
          :returnByValue t)
    (lambda (result)
      (canvas-browser--located (canvas-browser--value-of result) lines))))
 
 (defun canvas-browser-text-show-in-page ()
   "Show where the line at point stands in the page that this text is of.
-The page buffer is shown, the page scrolls to the line and paints it.
+The page buffer is shown, the page scrolls to the line and paints it
+for a moment.
 A line that stands in the page more than once is the one with the same
 rank as here.  When the page does not hold the line, as one that a
 translator made, the first line after it that the page holds is shown.

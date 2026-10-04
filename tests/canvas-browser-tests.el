@@ -362,9 +362,19 @@ for an answer that a test cannot give."
   (canvas-browser-test--with-text "Reply\nHello there\nReply\n" '(:found 0 :count 2 :rank 1)
     (let ((said (canvas-browser-test--show-line 3)))
       (should (eq shown page))
-      (should (string-search "(document.body, [{\"text\":\"Reply\",\"rank\":1}])"
+      (should (string-search "(document.body, [{\"text\":\"Reply\",\"rank\":1}], "
                              (canvas-browser-test--asked-for)))
       (should (string-search "2 of 2" said)))))
+
+(ert-deftest canvas-browser-a-line-shown-from-the-text-is-painted-for-a-moment ()
+  ;; GIVEN the text of a page
+  ;; WHEN M-. shows a line of it in the page
+  ;; THEN the page is told to paint the line for a moment only, a second
+  ;;      and a half: the reader came to see where it is, not to keep it
+  ;;      marked
+  (canvas-browser-test--with-text "Reply\n" '(:found 0 :count 1 :rank 0)
+    (canvas-browser-test--show-line 1)
+    (should (string-suffix-p "}], 1500)" (canvas-browser-test--asked-for)))))
 
 (ert-deftest canvas-browser-the-way-back-from-the-page-is-the-key-of-xref ()
   ;; GIVEN the text of a page, with point on its third line
@@ -1051,6 +1061,55 @@ Each is the text of its arguments."
     (canvas-browser-test--type "C-s a M-r RET")
     (should (equal (canvas-browser-test--searches-asked)
                    '("\"a\", false, null, 0" "\"a\", true, 10, 0" "false")))))
+
+(defmacro canvas-browser-test--landing (&rest body)
+  "Run BODY in a page and keep how the eye is drawn to its hits.
+Each flash goes to `drawn\=' as (flash BOX), and each flight as
+(fly FROM TO), newest first.  The page answers a search with `answer\='."
+  (declare (indent 0))
+  `(let ((drawn nil)
+         (answer nil))
+     (canvas-browser-test--finding answer
+       (let ((canvas-browser-pulse-function (lambda (box) (push (list 'flash box) drawn)))
+             (canvas-browser-focus-function (lambda (from to) (push (list 'fly from to) drawn))))
+         ,@body))))
+
+(ert-deftest canvas-browser-the-eye-is-drawn-to-where-a-search-lands ()
+  ;; GIVEN a page that is searched
+  ;; WHEN the page shows the first hit, and then the next one
+  ;; THEN the first hit is flashed, AND the eye is flown from it to the
+  ;;      next one
+  ;; WHEN a new search starts
+  ;; THEN its first hit is flashed again: it is not flown to from a hit
+  ;;      of the search before
+  (canvas-browser-test--landing
+    (setq answer '(:count 2 :index 0 :anchor 5 :box (10 20 30 12)))
+    (canvas-browser-find "Reply")
+    (should (equal drawn '((flash (:x 10 :y 20 :w 30 :h 12)))))
+    (setq answer '(:count 2 :index 1 :anchor 90 :box (10 300 30 12)))
+    (canvas-browser-find-next)
+    (should (equal (car drawn) '(fly (:x 10 :y 20 :w 30 :h 12) (:x 10 :y 300 :w 30 :h 12))))
+    (canvas-browser-find "other")
+    (should (equal (car drawn) '(flash (:x 10 :y 300 :w 30 :h 12))))))
+
+(ert-deftest canvas-browser-a-search-that-finds-nothing-draws-nothing ()
+  ;; GIVEN a page that is searched for what it does not hold
+  ;; THEN nothing is flashed and nothing flies
+  (canvas-browser-test--landing
+    (setq answer '(:count 0))
+    (canvas-browser-find "nothing here")
+    (should-not drawn)))
+
+(ert-deftest canvas-browser-the-eye-is-drawn-to-a-line-shown-from-the-text ()
+  ;; GIVEN the text of a page
+  ;; WHEN M-. shows a line of it in the page
+  ;; THEN the line is flashed in the page
+  (let* ((drawn nil)
+         (canvas-browser-pulse-function (lambda (box) (push box drawn))))
+    (canvas-browser-test--with-text "Reply\nHello there\n"
+        '(:found 0 :count 1 :rank 0 :box (10 20 30 12))
+      (canvas-browser-test--show-line 1)
+      (should (equal drawn '((:x 10 :y 20 :w 30 :h 12)))))))
 
 (ert-deftest canvas-browser-the-keys-of-a-search-are-those-of-isearch ()
   ;; GIVEN the keys of a search of a page
