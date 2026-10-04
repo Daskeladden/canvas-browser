@@ -222,6 +222,75 @@ a picture inside the first, and an item that is only a day.")
                               :text)
                    "Ann\n\nHello."))))
 
+(defconst canvas-browser-test--linked-html
+  (concat "<div data-kind=\"item\" data-link=\"https://example.org/chat/m/17\">"
+          "<span data-kind=\"name\">Ann</span><time datetime=\"2026-09-24T12:00:00Z\"></time>"
+          "<div data-kind=\"message\"><p>Hello.</p></div></div>"
+          "<div data-kind=\"item\"><span data-kind=\"name\">Ben</span>"
+          "<time datetime=\"2026-09-24T12:01:00Z\"></time>"
+          "<div data-kind=\"message\"><p>Hi.</p></div></div>")
+  "The HTML of a chat of two messages.  The first one has an address.")
+
+(defun canvas-browser-test--linked-thread ()
+  "The thread of `canvas-browser-test--linked-html', its addresses read."
+  (let ((canvas-browser-translators
+         (list (cons "example\\.org"
+                     (canvas-browser-thread-translator
+                      '((data-kind "item")
+                        :author (inside data-kind "name")
+                        :time (tag time datetime)
+                        :body (inside data-kind "message")
+                        :link (attr data-link)))))))
+    (plist-get (canvas-browser-translate "https://example.org/chat"
+                                         canvas-browser-test--linked-html)
+               :thread)))
+
+(ert-deftest canvas-browser-an-item-can-have-an-address-of-its-own ()
+  ;; GIVEN a chat whose first message has an address of its own, and
+  ;;       whose second has none
+  ;; WHEN it is translated by a thread translator that reads the address
+  ;; THEN the first item has the address, AND the second has none
+  (skip-unless (libxml-available-p))
+  (let ((thread (canvas-browser-test--linked-thread)))
+    (should (equal (plist-get (nth 0 thread) :link) "https://example.org/chat/m/17"))
+    (should-not (plist-get (nth 1 thread) :link))))
+
+(ert-deftest canvas-browser-an-item-with-an-address-links-to-it-in-org ()
+  ;; GIVEN that thread
+  ;; WHEN it is written for org
+  ;; THEN the head of the first item ends with a link to its address,
+  ;;      AND the head of the second is as it always was
+  (skip-unless (libxml-available-p))
+  (canvas-browser-test--in-utc
+    (should (equal (canvas-browser-thread-org (canvas-browser-test--linked-thread))
+                   (string-join
+                    '("- *Ann* · [2026-09-24 Thu 12:00] · [[https://example.org/chat/m/17][link]]"
+                      ""
+                      "  Hello."
+                      ""
+                      "- *Ben* · [2026-09-24 Thu 12:01]"
+                      ""
+                      "  Hi.")
+                    "\n")))))
+
+(ert-deftest canvas-browser-the-text-to-read-names-no-address ()
+  ;; GIVEN that thread
+  ;; WHEN it is written as text to read
+  ;; THEN no address stands in it: an address is to follow, not to read
+  (skip-unless (libxml-available-p))
+  (canvas-browser-test--in-utc
+    (should-not (string-search "https://" (canvas-browser-thread-text
+                                           (canvas-browser-test--linked-thread))))))
+
+(ert-deftest canvas-browser-the-head-of-an-item-is-the-same-with-an-address ()
+  ;; GIVEN an item, and the same item with an address
+  ;; THEN both have one head: a note knows a message by its head, and a
+  ;;      message is the same one when the page gives its address later
+  (let ((item '(:author "Ann" :time "noon" :text "Hello.")))
+    (should (equal (canvas-browser-org-head item)
+                   (canvas-browser-org-head
+                    (append item '(:link "https://example.org/chat/m/17")))))))
+
 (ert-deftest canvas-browser-an-address-without-a-translator-is-not-translated ()
   ;; GIVEN a translator for one address
   ;; WHEN the HTML of a page at another address is translated

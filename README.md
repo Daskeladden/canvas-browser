@@ -259,6 +259,11 @@ org timestamp. `canvas-browser-thread-text` and
 `canvas-browser-thread-org` write a thread out as text and as an org
 list.
 
+An item can have an address of its own, as a message of a chat has. Add
+`:link` to the item of the translator, with a way to read the address,
+and the item has it as `:link`. In the org list, the head of such an
+item ends with a link to it. The text to read names no address.
+
 An item is named by its tag, as `shreddit-comment` above, or by an
 attribute as `(data-role "comment")`. Inside an item:
 

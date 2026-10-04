@@ -46,6 +46,10 @@
 (defconst canvas-browser--edited-regexp " · edited, as of \\[[^]\n]+\\]\\'"
   "The end of the head of a new version of a message.")
 
+(defconst canvas-browser--link-regexp " · \\[\\[[^]\n]+\\]\\[link\\]\\]\\'"
+  "The link to its own address at the end of the head of a message.
+The mark of an edit comes after it.")
+
 ;;;; The items of the note
 
 (defun canvas-browser--item-line-p ()
@@ -77,18 +81,32 @@ long as they are inside it, and STOP, a function, does not hold."
                 (split-string text "\n")
                 "\n"))))
 
+(defun canvas-browser--without (regexp head)
+  "HEAD without what REGEXP matches at its end."
+  (let ((mark (string-match regexp head)))
+    (if mark (substring head 0 mark) head)))
+
+(defun canvas-browser--head-key (head)
+  "What the HEAD of an item of a note knows its message by.
+It is the head without the mark of an edit and without the link to the
+address of the message: the same message has neither when it was first
+sent from a page that gave no address."
+  (canvas-browser--without
+   canvas-browser--link-regexp
+   (canvas-browser--without canvas-browser--edited-regexp head)))
+
 (defun canvas-browser--org-entry ()
   "The item of an org list whose head line point is on, as a plist.
-:key is the head without the mark of an edit, :edited says whether the
-item is a new version, :depth how far in it stands, :start where it
-starts, :text its own text, :text-end where its own text ends, and :end
-where the items under it end."
+:key is what `canvas-browser--head-key\=' makes of the head, :edited
+says whether the item is a new version, :depth how far in it stands,
+:start where it starts, :text its own text, :text-end where its own
+text ends, and :end where the items under it end."
   (looking-at canvas-browser--org-item-regexp)
   (let* ((depth (/ (length (match-string 1)) 2))
          (head (match-string-no-properties 2))
          (edited (string-match canvas-browser--edited-regexp head))
          (text-end (canvas-browser--last-line-end depth #'canvas-browser--item-line-p)))
-    (list :key (if edited (substring head 0 edited) head)
+    (list :key (canvas-browser--head-key head)
           :edited (and edited t)
           :depth depth
           :start (line-beginning-position)

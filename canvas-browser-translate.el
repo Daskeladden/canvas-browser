@@ -203,9 +203,11 @@ The elements are looked at in the order of the page."
 ;;;; A thread: items, and the items inside them
 ;;
 ;; A thread is Lisp data: a list of items.  An item is a plist with
-;; :title, :author, :time, :text and :replies, each left out when the
-;; page has none.  :time is a time of Emacs when the page gives an ISO
-;; 8601 time, and else the string it gives.  :replies is a thread too.
+;; :title, :author, :time, :text, :link and :replies, each left out when
+;; the page has none.  :time is a time of Emacs when the page gives an
+;; ISO 8601 time, and else the string it gives.  :link is the address of
+;; the item itself, as a message of a chat has one.  :replies is a
+;; thread too.
 
 (defun canvas-browser--read-of (element attribute)
   "ELEMENT, or its ATTRIBUTE when ATTRIBUTE is given; nil without ELEMENT."
@@ -275,6 +277,7 @@ BODY is what holds its text, and REPLIES are the items inside it."
                                         :author (canvas-browser--read :author spec node)
                                         :time (and time (canvas-browser--time-of time))
                                         :text (canvas-browser--string body)
+                                        :link (canvas-browser--read :link spec node)
                                         :replies replies)
              by #'cddr
              when value append (list field value))))
@@ -313,11 +316,12 @@ that a page marks as an item: the items inside it take its place."
 
 (defun canvas-browser-thread-translator (&rest items)
   "A translator for a page that is a thread, whose items ITEMS describe.
-Each of ITEMS is (KEY :title T :author A :time W :body B).  KEY names
-the element that is one item, as a post or a comment is: its tag, or
-\(ATTRIBUTE VALUE) for an element whose ATTRIBUTE is VALUE.  The others
-say where the item keeps its title, its author, its time and its text,
-and each may be left out.  Each is a way to read a part of the item,
+Each of ITEMS is (KEY :title T :author A :time W :body B :link L).  KEY
+names the element that is one item, as a post or a comment is: its tag,
+or \(ATTRIBUTE VALUE) for an element whose ATTRIBUTE is VALUE.  The
+others say where the item keeps its title, its author, its time, its
+text and its own address, and each may be left out.  Each is a way to
+read a part of the item,
 as `canvas-browser--access\=' takes it: (attr NAME), (inside ATTRIBUTE
 VALUE), (tag NAME), or a function of the element.
 
@@ -382,12 +386,25 @@ Two items with one head are one message, as far as a note can tell."
                                  (and time (canvas-browser--org-time time))))
                  " · ")))
 
+(defun canvas-browser--org-link-mark (item)
+  "What the head of ITEM says of its own address in an org list.
+It is a link to the address, or nothing for an item without one.  A
+bracket in the address would end the link, so it is written as a URL
+writes it."
+  (if-let* ((link (plist-get item :link)))
+      (format " · [[%s][link]]"
+              (replace-regexp-in-string
+               "\\]" "%5D" (replace-regexp-in-string "\\[" "%5B" link)))
+    ""))
+
 (defun canvas-browser--org-item (item depth)
   "ITEM as an item of an org list at DEPTH, with its replies inside it.
-An ITEM with :edited, a time, is a new version of a message, and its
-head says so."
+An ITEM with :link has a link to its address after its head.  An ITEM
+with :edited, a time, is a new version of a message, and its head says
+so."
   (let* ((edited (plist-get item :edited))
          (head (concat (canvas-browser-org-head item)
+                       (canvas-browser--org-link-mark item)
                        (if edited
                            (format " · edited, as of %s" (canvas-browser--org-time edited))
                          "")))

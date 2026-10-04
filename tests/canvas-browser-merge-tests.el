@@ -91,6 +91,61 @@ A line of the reader follows the list.  The clock is at UTC."
                      '(0 . 0)))
       (should (equal (buffer-string) before)))))
 
+(defun canvas-browser-test--with-links (thread)
+  "THREAD with an address for each of its items, and for their replies."
+  (mapcar (lambda (item)
+            (let ((linked (append (list :link (format "https://example.org/m/%s"
+                                                      (plist-get item :author)))
+                                  item)))
+              (if (plist-get item :replies)
+                  (plist-put (copy-sequence linked) :replies
+                             (canvas-browser-test--with-links (plist-get item :replies)))
+                linked)))
+          thread))
+
+(ert-deftest canvas-browser-a-message-that-has-its-address-now-is-the-same-message ()
+  ;; GIVEN a note that holds a thread, written when the page gave no
+  ;;       address of a message
+  ;; WHEN the same thread is sent again, each message with its address
+  ;; THEN the note is as it was, AND nothing is counted: a message is
+  ;;      known by who wrote it and when
+  (canvas-browser-test--in-note canvas-browser-test--first-send
+    (let ((before (buffer-string)))
+      (should (equal (canvas-browser-org-merge
+                      (canvas-browser-test--with-links canvas-browser-test--first-send)
+                      canvas-browser-test--now)
+                     '(0 . 0)))
+      (should (equal (buffer-string) before)))))
+
+(ert-deftest canvas-browser-a-merge-knows-a-message-that-links-to-its-address ()
+  ;; GIVEN a note that holds a thread whose messages link to their
+  ;;       addresses
+  ;; WHEN the thread is sent again with one new message, and with the
+  ;;      text of bob changed
+  ;; THEN one new and one edited message are counted, AND the edited one
+  ;;      stands under the old one with its link before the mark of the
+  ;;      edit, AND a third send of the same adds nothing
+  (let* ((first (canvas-browser-test--with-links canvas-browser-test--first-send))
+         (again (canvas-browser-test--with-links
+                 (list (canvas-browser-test--item
+                        "alice" 1 "What is the role?"
+                        (canvas-browser-test--item "bob" 2 "The drawing layer, in C."))
+                       (canvas-browser-test--item "carol" 3 "Nice.")
+                       (canvas-browser-test--item "erin" 5 "Agreed.")))))
+    (canvas-browser-test--in-note first
+      (should (equal (canvas-browser-org-merge again canvas-browser-test--now) '(1 . 1)))
+      (should (string-search
+               (concat "  - *bob* · [2026-10-02 Fri 10:02] · [[https://example.org/m/bob][link]]"
+                       " · edited, as of [2026-10-03 Sat 11:00]\n\n"
+                       "    The drawing layer, in C.")
+               (buffer-string)))
+      (should (string-search
+               "- *erin* · [2026-10-02 Fri 10:05] · [[https://example.org/m/erin][link]]"
+               (buffer-string)))
+      (let ((before (buffer-string)))
+        (should (equal (canvas-browser-org-merge again canvas-browser-test--now) '(0 . 0)))
+        (should (equal (buffer-string) before))))))
+
 (ert-deftest canvas-browser-an-edited-message-goes-under-the-old-one ()
   ;; GIVEN a note that holds a thread
   ;; WHEN the thread is sent again, with the text of bob changed
