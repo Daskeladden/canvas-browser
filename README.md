@@ -345,6 +345,16 @@ link while you move to it. If you choose none, the page goes back to
 its place. The link that you choose is clicked, as a hint clicks it.
 `C-u a` opens its address in a page buffer of its own.
 
+### Org links
+
+`org-store-link` in a page buffer keeps a link to the page, named by
+its title, and `org-capture` there has the page in `%a`. `C-c C-l` runs
+`org-store-link` in a page buffer, and the menu has it. With text
+marked, by the caret or with the mouse, the address of the link names
+the text. A browser that opens such an address scrolls to the text. The
+marked text is also the `%i` of a capture. The same works in the buffer
+that `t` fills, with the region as the text.
+
 ### Marks and registers
 
 A page buffer has a mark ring of its own, for where the page stands.
@@ -494,6 +504,7 @@ Normal state keeps the keys of Emacs:
 | `f` | labels what a click can reach, fields inside web components included, and clicks the one you name; the labels stay until you name one or press `ESC` |
 | `a` | offers the links of the page by their text and address, and clicks the one you choose. `C-u a` opens it in a page buffer of its own |
 | `M-w` | labels the blocks of the page, and copies the picture of the one you name; `C-u M-w` copies the whole window |
+| `C-c C-l` | stores a link to the page for org, also while the keys go to the page |
 | `S` | outlines and labels the parts of the page, and picks the one you name: `>` sends its text, and the scroll keys move a part that scrolls on its own |
 | `v` | moves a caret through the text of the page with the motions of Emacs |
 | `M-j` | puts the caret on text you type, as `avy-goto-char-timer` puts point |

@@ -4243,6 +4243,8 @@ flush redraws the frame."
 
 ;;;; The menu
 
+(declare-function org-store-link "ol" (arg &optional interactive?))
+
 (canvas-keys-define-menu canvas-browser-menu
     "The menu of a page buffer.
 Its own columns stand in the first row, a word for each entry, and the
@@ -4264,6 +4266,7 @@ and the settings.  The widths line the columns of the two rows up."
    ("M-j" "jump" canvas-browser-caret-jump)
    ("TAB" "field" canvas-browser-next-field)
    ("E" "edit field" canvas-browser-edit-field)
+   ("k" "org link" org-store-link)
    ("s" "find" canvas-browser-find)
    ("t" "text" canvas-browser-text)
    ("L" "lines" canvas-browser-search-text)
@@ -4324,6 +4327,7 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "e" #'canvas-browser-open-in-eww
   "M-s M-l" #'canvas-browser-search-text
   "C-c '" #'canvas-browser-edit-field
+  "C-c C-l" #'org-store-link
   "<remap> <set-mark-command>" #'canvas-browser-set-mark
   "<remap> <exchange-point-and-mark>" #'canvas-browser-exchange-position-and-mark
   "<remap> <point-to-register>" #'canvas-browser-position-to-register
@@ -4950,6 +4954,7 @@ here, on every load."
   ;; text.
   (define-key map (kbd "M-s M-l") #'canvas-browser-search-text)
   (define-key map (kbd "C-c '") #'canvas-browser-edit-field)
+  (define-key map (kbd "C-c C-l") #'org-store-link)
   (define-key map [remap point-to-register] #'canvas-browser-position-to-register)
   (define-key map [remap consult-history] #'canvas-browser-history)
   (define-key map [remap imenu] #'canvas-browser-imenu)
@@ -6197,6 +6202,85 @@ does."
          (content (canvas-browser--with-attached-pictures content node)))
     (unless (canvas-browser--merge-into-node node content)
       (canvas-browser--capture-in-node node content))))
+
+;;;; A link to a page, for org
+
+(declare-function org-link-set-parameters "ol" (type &rest parameters))
+
+(defconst canvas-browser--fragment-words 4
+  "How many words name the start of a long text in an address, and its end.")
+
+(defun canvas-browser--fragment-term (words)
+  "WORDS as one term of the part of an address that names a text.
+A dash and a comma mean something there, so they are written as codes."
+  (replace-regexp-in-string "-" "%2D" (url-hexify-string (string-join words " ")) t t))
+
+(defun canvas-browser--text-fragment (text)
+  "The part of an address that names TEXT in its page, or nil for no text.
+A browser that opens such an address scrolls to the text and marks it.
+A short text of one line is named whole.  Any other is named by its
+first words and its last words: a browser finds a text by its start and
+its end, and each of the two must lie in one block of the page."
+  (let* ((lines (mapcar (lambda (line) (split-string line "[ \t]+" t))
+                        (split-string text "\n" t "[ \t]+")))
+         (lines (delq nil lines))
+         (count canvas-browser--fragment-words))
+    (when lines
+      (concat ":~:text="
+              (if (and (null (cdr lines)) (<= (length (car lines)) (* 2 count)))
+                  (canvas-browser--fragment-term (car lines))
+                (concat (canvas-browser--fragment-term (seq-take (car lines) count))
+                        ","
+                        (canvas-browser--fragment-term
+                         (last (car (last lines)) count))))))))
+
+(defun canvas-browser--with-text-fragment (url text)
+  "URL with the part that names TEXT in its page; URL itself for no TEXT.
+The part of its own that URL has stays, and a text that it named before
+gives way."
+  (if-let* ((fragment (and text (canvas-browser--text-fragment text))))
+      (let ((url (replace-regexp-in-string ":~:.*\\'" "" url)))
+        (concat url (if (string-search "#" url) "" "#") fragment))
+    url))
+
+(defun canvas-browser--page-selection ()
+  "The text that is marked in the page of this buffer, or nil for none.
+It is what the caret marks, or else what a drag of the mouse marked."
+  (or (canvas-browser--marked-text)
+      (let ((selection (canvas-browser--value-now "String(getSelection())")))
+        (and (stringp selection) (not (string-blank-p selection)) selection))))
+
+(defun canvas-browser--link-source ()
+  "What a link from this buffer is a link to: (PAGE TEXT), or nil.
+PAGE is the page buffer, and TEXT is what is marked, or nil.  The
+buffer is a page buffer, or the buffer that holds the text of a page,
+where the region is what is marked."
+  (cond ((derived-mode-p 'canvas-browser-mode)
+         (list (current-buffer) (canvas-browser--page-selection)))
+        ((and (bound-and-true-p canvas-browser-text-mode)
+              (buffer-live-p canvas-browser--text-page))
+         (list canvas-browser--text-page
+               (and (use-region-p)
+                    (buffer-substring-no-properties (region-beginning) (region-end)))))))
+
+(defun canvas-browser-org-store-link (&optional _interactive)
+  "Store a link to the page of this buffer for org; nil where there is none.
+The link is the address of the page, named by its title.  With text
+marked, the address names the text, so that a browser opens the page at
+it, and the text is what a capture takes as its first content.  This
+works in a page buffer, and in the buffer that holds the text of a
+page, with the region as the text."
+  (pcase (canvas-browser--link-source)
+    (`(,page ,text)
+     (when-let* ((url (buffer-local-value 'canvas-browser--url page)))
+       (canvas-browser--store-org-link
+        (list :url (canvas-browser--with-text-fragment url text)
+              :title (or (buffer-local-value 'canvas-browser--title page) url))
+        text)
+       t))))
+
+(with-eval-after-load 'ol
+  (org-link-set-parameters "canvas-browser" :store #'canvas-browser-org-store-link))
 
 ;;;; The targets of embark
 

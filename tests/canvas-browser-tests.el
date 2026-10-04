@@ -1472,6 +1472,133 @@ Each is the end of the script that asked: (\"NAME\", X, Y)."
   (should (eq (plist-get (canvas-browser-test--menu-entry "H") :command)
               #'canvas-browser-history)))
 
+;;;; A link to a page, for org
+
+(require 'ol)
+
+(defmacro canvas-browser-test--storing (&rest body)
+  "Run BODY with no link stored in org yet."
+  (declare (indent 0))
+  `(let ((org-stored-links nil)
+         (org-store-link-plist nil))
+     ,@body))
+
+(ert-deftest canvas-browser-org-stores-a-link-to-the-page ()
+  ;; GIVEN a page buffer with an address and a title, with nothing marked
+  ;; WHEN org is asked to store a link there
+  ;; THEN the link is the address, named by the title
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "A page")
+    (canvas-browser-test--answering ""
+      (canvas-browser-test--storing
+        (call-interactively #'org-store-link)
+        (should (equal (car org-stored-links) '("https://example.org" "A page")))))))
+
+(ert-deftest canvas-browser-a-link-to-marked-text-opens-the-page-at-that-text ()
+  ;; GIVEN a page where the caret marks a text, AND one where a drag of
+  ;;       the mouse marked a text
+  ;; WHEN org is asked to store a link there
+  ;; THEN the address of the link names the text, so that a browser
+  ;;      opens the page at it, AND the text is what a capture takes as
+  ;;      its first content
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "A page"
+          canvas-browser--caret t
+          canvas-browser--caret-text "the role of the layer")
+    (canvas-browser-test--storing
+      (call-interactively #'org-store-link)
+      (should (equal (car org-stored-links)
+                     '("https://example.org#:~:text=the%20role%20of%20the%20layer" "A page")))
+      (should (equal (plist-get org-store-link-plist :initial) "the role of the layer"))))
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "A page")
+    (canvas-browser-test--answering "dragged words"
+      (canvas-browser-test--storing
+        (call-interactively #'org-store-link)
+        (should (equal (car org-stored-links)
+                       '("https://example.org#:~:text=dragged%20words" "A page")))))))
+
+(ert-deftest canvas-browser-a-text-is-named-in-an-address-by-its-start-and-its-end ()
+  ;; GIVEN a short text, a long one, one of two lines, and one with
+  ;;       signs that mean something in the part of an address that names
+  ;;       a text
+  ;; WHEN each is written as that part
+  ;; THEN the short text stands there whole, AND the long one by its
+  ;;      first and its last four words, AND the two lines by the start
+  ;;      of the first and the end of the last, because a browser finds
+  ;;      neither across two blocks, AND the signs are written as codes
+  (should (equal (canvas-browser--text-fragment "two words") ":~:text=two%20words"))
+  (should (equal (canvas-browser--text-fragment
+                  "one two three four five six seven eight nine ten")
+                 ":~:text=one%20two%20three%20four,seven%20eight%20nine%20ten"))
+  (should (equal (canvas-browser--text-fragment "A heading\n\nThe words under it.")
+                 ":~:text=A%20heading,The%20words%20under%20it."))
+  (should (equal (canvas-browser--text-fragment "well-known, and more")
+                 ":~:text=well%2Dknown%2C%20and%20more"))
+  (should-not (canvas-browser--text-fragment "  \n")))
+
+(ert-deftest canvas-browser-the-text-is-added-to-an-address-after-its-own-part ()
+  ;; GIVEN an address without a part, one with a part, and one that
+  ;;       names a text already
+  ;; WHEN a text is added to each
+  ;; THEN the part of the address stays, AND a text that was named
+  ;;      before gives way to the new one, AND no text changes nothing
+  (should (equal (canvas-browser--with-text-fragment "https://example.org/a" "two words")
+                 "https://example.org/a#:~:text=two%20words"))
+  (should (equal (canvas-browser--with-text-fragment "https://example.org/a#part" "two words")
+                 "https://example.org/a#part:~:text=two%20words"))
+  (should (equal (canvas-browser--with-text-fragment "https://example.org/a#:~:text=old" "two words")
+                 "https://example.org/a#:~:text=two%20words"))
+  (should (equal (canvas-browser--with-text-fragment "https://example.org/a#part" nil)
+                 "https://example.org/a#part")))
+
+(ert-deftest canvas-browser-a-link-from-the-text-of-a-page-is-a-link-to-the-page ()
+  ;; GIVEN the buffer that holds the text of a page
+  ;; WHEN org is asked to store a link there
+  ;; THEN the link is the address of the page, named by its title
+  ;; WHEN a line of the text is the region
+  ;; THEN the address names that line, AND the line is what a capture
+  ;;      takes as its first content
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "A page")
+    (let ((page (current-buffer))
+          (transient-mark-mode t))
+      (with-temp-buffer
+        (canvas-browser--fill-text-buffer (current-buffer)
+                                          "First line.\nThe words to link to.\n" page nil)
+        (canvas-browser-test--storing
+          (call-interactively #'org-store-link)
+          (should (equal (car org-stored-links) '("https://example.org" "A page")))
+          (forward-line 1)
+          (set-mark (point))
+          (end-of-line)
+          (activate-mark)
+          (call-interactively #'org-store-link)
+          (should (equal (car org-stored-links)
+                         '("https://example.org#:~:text=The%20words%20to%20link%20to." "A page")))
+          (should (equal (plist-get org-store-link-plist :initial)
+                         "The words to link to.")))))))
+
+(ert-deftest canvas-browser-the-key-that-stores-a-link-for-org ()
+  ;; GIVEN a page buffer, in normal state and in insert state
+  ;; THEN C-c C-l stores a link to the page for org, AND the menu has it
+  (dolist (typing '(nil t))
+    (canvas-browser-test--in-page
+      (when typing (canvas-browser-insert-mode))
+      (should (eq (key-binding (kbd "C-c C-l")) #'org-store-link))))
+  (should (eq (plist-get (canvas-browser-test--menu-entry "k") :command)
+              #'org-store-link)))
+
+(ert-deftest canvas-browser-org-is-told-how-to-store-a-link-to-a-page ()
+  ;; GIVEN org
+  ;; THEN it knows the function that stores a link to a page, AND that
+  ;;      function stores nothing in a buffer that is no page, so that
+  ;;      org goes on to its other ways
+  (should (eq (org-link-get-parameter "canvas-browser" :store)
+              #'canvas-browser-org-store-link))
+  (with-temp-buffer
+    (should-not (canvas-browser-org-store-link))))
+
 ;;;; The window, the header line and a chromium that died
 
 (ert-deftest canvas-browser-a-resized-window-lays-the-page-out-again ()

@@ -1712,6 +1712,25 @@ that holds its start, and whether the window shows that element."
       (should (canvas-browser-live-test--wait
                5 (lambda () (equal (canvas-browser-live-test--scrolls) '(500 0))))))))
 
+(ert-deftest canvas-browser-live-an-address-that-names-a-text-opens-the-page-at-it ()
+  ;; GIVEN a page buffer at some page, AND the address of the locate
+  ;;       fixture with the part that names its last line, which stands
+  ;;       far down, as a link that org stored from marked text has it
+  ;; WHEN the page buffer goes to that address
+  ;; THEN the page is scrolled down to the line
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "page.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser-open-url
+     (canvas-browser--with-text-fragment
+      (concat "file://" (expand-file-name "locate.html" "tests/fixtures/"))
+      "The far end."))
+    (should (canvas-browser-live-test--wait
+             10 (lambda ()
+                  (and (equal (canvas-browser-live-test--page-says "document.title")
+                              "canvas-browser locate fixture")
+                       (> (canvas-browser-live-test--page-says "scrollY") 1000)))))))
+
 (defun canvas-browser-live-test--field-buffers ()
   "The buffers that hold the text of a field of a page."
   (seq-filter (lambda (buffer) (buffer-local-value 'canvas-browser-edit-field-mode buffer))
