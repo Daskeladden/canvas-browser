@@ -345,6 +345,20 @@ link while you move to it. If you choose none, the page goes back to
 its place. The link that you choose is clicked, as a hint clicks it.
 `C-u a` opens its address in a page buffer of its own.
 
+### Marks and registers
+
+A page buffer has a mark ring of its own, for where the page stands.
+`C-SPC` sets the mark. A mark keeps how far the page and each part of
+it are scrolled. `C-u C-SPC` goes back to the newest mark, and the next
+time to the mark before it. `C-x C-x` swaps the mark and the place of
+the page. A jump sets the mark too: to the top or the end of the page,
+to an entry of the index, to the hit of a search.
+
+`C-x r SPC` keeps the place of the page in a register, and `C-x r j`
+comes back to it from any buffer. If no buffer shows the page any more,
+the page opens again. A page that loaded again knows how far it was
+scrolled as a whole, but not how far each part was.
+
 ### Embark
 
 `embark-act` in a page buffer acts on the page. It has the actions of
@@ -456,6 +470,8 @@ Normal state keeps the keys of Emacs:
 |---|---|
 | `o` | opens a URL in this buffer, or searches for the words you type |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
+| `C-SPC`, `C-u C-SPC`, `C-x C-x` | set a mark where the page stands, go back to the newest mark, and swap the two |
+| `C-x r SPC`, `C-x r j` | keep the place of the page in a register, and come back to it from any buffer |
 | `y` | copies the address of this page, as `f y` copies the address of a link |
 | `>` | sends the marked text to a receiver you name, or else the part picked with `S`, or else the text of the page |
 | `O` | the same in a page buffer of its own, as the `O` of Vimium and qutebrowser opens a tab |

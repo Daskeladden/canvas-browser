@@ -840,8 +840,10 @@ before it go.  A page that is restored still has its fields."
       (canvas-browser--forget-fields))))
 
 (defun canvas-browser--loaded (_params)
-  "Ask the page that has loaded for its title, for the header line."
-  (canvas-browser--read-title))
+  "Ask the page that has loaded for its title, for the header line.
+A page that was opened for a position in it scrolls there."
+  (canvas-browser--read-title)
+  (canvas-browser--go-to-wanted-position))
 
 (defun canvas-browser--read-title ()
   "Ask the page for its title, and keep it.
@@ -1464,11 +1466,13 @@ at all."
 (defun canvas-browser-beginning-of-page ()
   "Go to the top of the page, or of the part picked."
   (interactive)
+  (canvas-browser--push-mark t)
   (canvas-browser--scroll "to" 0 "window.scrollTo(0, 0)"))
 
 (defun canvas-browser-end-of-page ()
   "Go to the foot of the page, or of the part picked, as far as it reaches."
   (interactive)
+  (canvas-browser--push-mark t)
   (canvas-browser--scroll "end" 0 "window.scrollTo(0, document.body.scrollHeight)"))
 
 (defcustom canvas-browser-line-height 40
@@ -2939,7 +2943,8 @@ hit and to the one before, and with nothing typed `C-s\\=' takes the
 last search up again.  `M-r\\=' switches between a string and a regexp
 of JavaScript.  `RET\\=' ends the search where it stands, and `C-g\\='
 puts the page back where it was.  Capital letters make the search
-exact about case.
+exact about case.  A search that ends with `RET\\=' leaves a mark where
+the page stood when it began.
 
 From Lisp, with STRING, the page is searched for it at once."
   (interactive)
@@ -2948,10 +2953,12 @@ From Lisp, with STRING, the page is searched for it at once."
   (if string
       (canvas-browser--find string 0)
     (let ((typed ""))
+      (canvas-browser--push-mark t)
       (condition-case nil
           (progn (setq typed (canvas-browser--find-read))
                  (canvas-browser--find-end typed nil))
         (quit (canvas-browser--find-end typed t)
+              (canvas-browser--drop-mark)
               (signal 'quit nil))))))
 
 ;;;; Dark mode
@@ -3406,6 +3413,7 @@ The key that goes back in xref comes back here."
       (user-error "canvas-browser: no text here to look for"))
     (xref-push-marker-stack)
     (pop-to-buffer page)
+    (canvas-browser--push-mark t)
     (canvas-browser--locate lines place)))
 
 ;;;; The index of a page, for imenu
@@ -3630,7 +3638,8 @@ consult calls the function with what happens and a candidate, (NAME .
 THING) or nil: before the reader chooses, for each candidate that the
 reader moves to, and at the end with the one that was picked.  The page
 notes where it stands at the start and shows each thing.  At the end it
-stays at what was picked, or goes back when nothing was.
+stays at what was picked, with a mark where it stood, or goes back when
+nothing was.
 
 The candidate that consult shows first, before the reader moved, is not
 shown in the page: the page must not jump to its first heading because
@@ -3640,13 +3649,16 @@ its index was opened."
     (lambda (action candidate)
       (with-current-buffer page
         (pcase action
-          ('setup (canvas-browser--keep-origins))
+          ('setup (canvas-browser--push-mark t)
+                  (canvas-browser--keep-origins))
           ('preview (when candidate
                       (if opened
                           (funcall show (cdr candidate))
                         (setq opened t))))
           ('return (canvas-browser--end-origins (null candidate))
-                   (when candidate (funcall show (cdr candidate)))))))))
+                   (if candidate
+                       (funcall show (cdr candidate))
+                     (canvas-browser--drop-mark))))))))
 
 (defun canvas-browser-imenu ()
   "Go to a heading or a message of this page, chosen from its index.
@@ -3790,6 +3802,184 @@ is offered as on any address."
       (if other
           (canvas-browser (cadr link))
         (canvas-browser--follow-link link)))))
+
+;;;; The positions of a page: marks and registers
+
+(cl-defstruct (canvas-browser-position (:constructor canvas-browser--make-position)
+                                       (:copier nil))
+  "Where a page stood: its address, and how far it was scrolled.
+ID names what the page itself keeps of the position: how far each of
+its parts was scrolled.  The page keeps that until it loads anew, so X
+and Y say how far the page as a whole was scrolled."
+  url title x y id)
+
+(defconst canvas-browser--position-js
+  (concat canvas-browser--reach-js "
+  const positions = () => window.__canvasBrowserPositions || (window.__canvasBrowserPositions =
+    {key: Math.random().toString(36).slice(2), kept: new Map(), last: 0});
+  const scrolled = () => {
+    const found = [];
+    walk(document, '*', e => { if (e.scrollTop || e.scrollLeft) found.push(e); });
+    return found;
+  };
+  const takePosition = () => {
+    const all = positions();
+    const id = all.key + '-' + (++all.last);
+    all.kept.set(id, scrolled().map(e => [new WeakRef(e), e.scrollLeft, e.scrollTop]));
+    return {id, x: Math.round(scrollX), y: Math.round(scrollY)};
+  };
+  const goToPosition = (id, x, y) => {
+    const kept = positions().kept.get(id);
+    if (!kept) { scrollTo(x, y); return false; }
+    const there = new Map(kept.map(([part, left, top]) => [part.deref(), [left, top]]));
+    for (const e of scrolled()) if (!there.has(e)) e.scrollTo(0, 0);
+    for (const [e, [left, top]] of there) if (e && e.isConnected) e.scrollTo(left, top);
+    return true;
+  };")
+  "The JavaScript that notes where a page stands, and puts it back there.
+A page is often more than one thing that scrolls.  So `takePosition\\='
+keeps how far each part of the page is scrolled, under a name that no
+other position has, in this page or in one that was at its address
+before.  `goToPosition\\=' scrolls each part back, and a part that was
+not scrolled then to its start.  A page that has loaded anew keeps
+nothing, and then scrolls as a whole to X and Y.")
+
+(defconst canvas-browser--position-script
+  (concat "(function () {" canvas-browser--position-js "
+  return takePosition();
+})()")
+  "The JavaScript that gives where the page stands: a name, and X and Y.")
+
+(defconst canvas-browser--go-to-position-script
+  (concat "(function (id, x, y) {" canvas-browser--position-js "
+  return goToPosition(id, x, y);
+})(%s, %d, %d)")
+  "The JavaScript that puts the page where a position says.
+%s is the name of the position, as JSON, and the two %d are its X and Y.")
+
+(defvar-local canvas-browser--mark-ring nil
+  "The positions that were marked in this page buffer, the newest first.")
+
+(defvar-local canvas-browser--position-wanted nil
+  "The position that this page goes to once it has loaded, or nil.")
+
+(defun canvas-browser--position (then)
+  "Call THEN in this buffer with the position where the page stands now."
+  (let ((url canvas-browser--url)
+        (title canvas-browser--title))
+    (canvas-browser--ask-page
+     canvas-browser--position-script
+     (lambda (answer)
+       (funcall then (canvas-browser--make-position
+                      :url url :title title
+                      :x (plist-get answer :x) :y (plist-get answer :y)
+                      :id (plist-get answer :id)))))))
+
+(defun canvas-browser--scroll-to-position (position)
+  "Scroll this page to where POSITION says."
+  (canvas-browser--tell
+   "Runtime.evaluate"
+   (list :expression (format canvas-browser--go-to-position-script
+                             (json-encode (canvas-browser-position-id position))
+                             (canvas-browser-position-x position)
+                             (canvas-browser-position-y position)))))
+
+(defun canvas-browser--go-to-position (position)
+  "Have this page stand where POSITION says.
+A position of another address is gone to first, and the page scrolls
+once it has loaded."
+  (if (equal (canvas-browser-position-url position) canvas-browser--url)
+      (canvas-browser--scroll-to-position position)
+    (setq canvas-browser--position-wanted position)
+    (canvas-browser-open-url (canvas-browser-position-url position))))
+
+(defun canvas-browser--go-to-wanted-position ()
+  "Scroll this page, which has loaded, to the position that it was opened for."
+  (when-let* ((position canvas-browser--position-wanted))
+    (setq canvas-browser--position-wanted nil)
+    (canvas-browser--scroll-to-position position)))
+
+(defun canvas-browser--push-mark (&optional quiet)
+  "Keep where this page stands as the newest mark.
+The ring is as long as that of a buffer.  The reader is told, unless
+QUIET."
+  (canvas-browser--position
+   (lambda (position)
+     (setq canvas-browser--mark-ring
+           (seq-take (cons position canvas-browser--mark-ring) mark-ring-max))
+     (unless quiet
+       (message "canvas-browser: the mark is set where the page stands")))))
+
+(defun canvas-browser--drop-mark ()
+  "Forget the newest mark of this page buffer.
+It was set before a jump that did not happen after all."
+  (pop canvas-browser--mark-ring))
+
+(defun canvas-browser--newest-mark ()
+  "The newest mark of this page buffer; a user error when it has none."
+  (or (car canvas-browser--mark-ring)
+      (user-error "canvas-browser: no mark is set in this page buffer")))
+
+(defun canvas-browser-pop-mark ()
+  "Go to the newest mark of this page, and turn the ring of its marks.
+The next time goes to the mark before it, as `C-u C-SPC\=' does in a
+buffer."
+  (interactive nil canvas-browser-mode)
+  (let ((mark (canvas-browser--newest-mark)))
+    (setq canvas-browser--mark-ring (append (cdr canvas-browser--mark-ring) (list mark)))
+    (canvas-browser--go-to-position mark)))
+
+(defun canvas-browser-set-mark (&optional back)
+  "Mark where this page stands, to come back to it later.
+A mark keeps how far the page and each of its parts are scrolled.  With
+a prefix argument, BACK, go to the newest mark instead, as
+`canvas-browser-pop-mark\=' does.  A jump in the page sets the mark too:
+to the top or the end, to an entry of the index, to the hit of a
+search."
+  (interactive "P" canvas-browser-mode)
+  (if back
+      (canvas-browser-pop-mark)
+    (canvas-browser--push-mark)))
+
+(defun canvas-browser-exchange-position-and-mark ()
+  "Go to the newest mark of this page, and mark where the page stood."
+  (interactive nil canvas-browser-mode)
+  (let ((mark (canvas-browser--newest-mark)))
+    (canvas-browser--position
+     (lambda (here)
+       (setcar canvas-browser--mark-ring here)
+       (canvas-browser--go-to-position mark)))))
+
+(defun canvas-browser-position-to-register (register)
+  "Keep where this page stands in REGISTER.
+`jump-to-register\=' comes back to it from any buffer: in the page
+buffer that shows the page, or else in one that opens its address."
+  (interactive (list (register-read-with-preview "Position of the page to register: "))
+               canvas-browser-mode)
+  (canvas-browser--position
+   (lambda (position)
+     (set-register register position)
+     (message "canvas-browser: register %s holds where the page stands"
+              (single-key-description register)))))
+
+(cl-defmethod register-val-jump-to ((position canvas-browser-position) _arg)
+  "Go to POSITION of a page: the content of a register."
+  (let* ((url (canvas-browser-position-url position))
+         (showing (canvas-browser--buffer-showing url)))
+    (cond (showing
+           (pop-to-buffer showing)
+           (with-current-buffer showing
+             (canvas-browser--go-to-position position)))
+          ((derived-mode-p 'canvas-browser-mode)
+           (canvas-browser--go-to-position position))
+          (t (with-current-buffer (canvas-browser url)
+               (setq canvas-browser--position-wanted position))))))
+
+(cl-defmethod register-val-describe ((position canvas-browser-position) _verbose)
+  "Say what POSITION of a page is: the content of a register."
+  (princ (format "a position in the page %s"
+                 (or (canvas-browser-position-title position)
+                     (canvas-browser-position-url position)))))
 
 ;;;; The zoom and the picture
 
@@ -4012,6 +4202,9 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "e" #'canvas-browser-open-in-eww
   "M-s M-l" #'canvas-browser-search-text
   "C-c '" #'canvas-browser-edit-field
+  "<remap> <set-mark-command>" #'canvas-browser-set-mark
+  "<remap> <exchange-point-and-mark>" #'canvas-browser-exchange-position-and-mark
+  "<remap> <point-to-register>" #'canvas-browser-position-to-register
   "<remap> <imenu>" #'canvas-browser-imenu
   "<remap> <consult-imenu>" #'canvas-browser-imenu
   "z" #'canvas-keys-zoom-fit
@@ -4634,6 +4827,7 @@ here, on every load."
   ;; text.
   (define-key map (kbd "M-s M-l") #'canvas-browser-search-text)
   (define-key map (kbd "C-c '") #'canvas-browser-edit-field)
+  (define-key map [remap point-to-register] #'canvas-browser-position-to-register)
   (define-key map [remap imenu] #'canvas-browser-imenu)
   (define-key map [remap consult-imenu] #'canvas-browser-imenu))
 

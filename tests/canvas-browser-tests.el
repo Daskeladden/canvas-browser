@@ -792,7 +792,9 @@ It is the call that the script ends with, which says what was asked."
       (setq answer '(10 20 300 24))
       (canvas-browser-imenu)
       (should (equal (canvas-browser-test--asked-of-the-page)
-                     '("window.__canvasBrowserFindOrigin = new Map()"
+                     ;; The first question is where the page stands,
+                     ;; for the mark.
+                     '("()" "window.__canvasBrowserFindOrigin = new Map()"
                        "(1, 1500)" "(false)" "(1, 1500)"))))))
 
 (ert-deftest canvas-browser-the-page-stays-where-it-is-when-the-index-opens ()
@@ -811,7 +813,9 @@ It is the call that the script ends with, which says what was asked."
                    (funcall state 'setup nil)
                    (funcall state 'preview (car candidates))
                    (should (equal (canvas-browser-test--asked-of-the-page)
-                                  '("window.__canvasBrowserFindOrigin = new Map()")))
+                                  ;; The first question is where the page
+                                  ;; stands, for the mark.
+                                  '("()" "window.__canvasBrowserFindOrigin = new Map()")))
                    (funcall state 'preview (nth 1 candidates))
                    (funcall state 'preview (car candidates))
                    (should (equal (last (canvas-browser-test--asked-of-the-page) 2)
@@ -1047,7 +1051,9 @@ There is no consult, so the reader is asked with `completing-read\='."
                    second))))
       (canvas-browser-links)
       (should (equal (canvas-browser-test--asked-of-the-page)
-                     '("window.__canvasBrowserFindOrigin = new Map()"
+                     ;; The first question is where the page stands,
+                     ;; for the mark.
+                     '("()" "window.__canvasBrowserFindOrigin = new Map()"
                        "(1, 1500)" "(false)" "(1, 1500)" "(1)"))))
     (cl-letf (((symbol-function 'consult--read)
                (lambda (candidates &rest options)
@@ -1079,6 +1085,256 @@ There is no consult, so the reader is asked with `completing-read\='."
     (should (eq (key-binding (kbd "a")) #'canvas-browser-links)))
   (should (eq (plist-get (canvas-browser-test--menu-entry "a") :command)
               #'canvas-browser-links)))
+
+;;;; The positions of a page: marks and registers
+
+(defun canvas-browser-test--go-script-p (script)
+  "Whether SCRIPT asks the page to go to a position."
+  (string-prefix-p (car (split-string canvas-browser--go-to-position-script "(%s, %d, %d)" t))
+                   script))
+
+(defmacro canvas-browser-test--with-positions (&rest body)
+  "Run BODY in a page that says where it stands when it is asked.
+Each answer has the next number as its name, as p-1, and `scroll\=' as
+how far the page is scrolled down.  What the reader is told goes to
+`said\='."
+  (declare (indent 0))
+  `(canvas-browser-test--in-page
+     (let ((names 0) (scroll 0) (said nil))
+       (ignore scroll said)
+       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                  ;; A test may call its own variable `answer'.
+                  (lambda (method params &optional reply _session &rest _)
+                    (push (cons method params) canvas-browser-test--commands)
+                    (when reply
+                      (funcall reply
+                               (let ((script (or (plist-get params :expression) "")))
+                                 (list :result
+                                       (list :value
+                                             (cond ((equal script canvas-browser--position-script)
+                                                    (list :id (format "p-%d" (cl-incf names))
+                                                          :x 0 :y scroll))
+                                                   ((canvas-browser-test--go-script-p script)
+                                                    t)))))))))
+                 ((symbol-function 'message)
+                  (lambda (format-string &rest args)
+                    (setq said (and format-string (apply #'format format-string args))))))
+         ,@body))))
+
+(defun canvas-browser-test--went-to ()
+  "The positions that the page was asked to go to, oldest first.
+Each is the end of the script that asked: (\"NAME\", X, Y)."
+  (seq-filter (lambda (call) (string-match-p "\\`(\"p-[0-9]+\", [0-9]+, [0-9]+)\\'" call))
+              (canvas-browser-test--asked-of-the-page)))
+
+(defun canvas-browser-test--press-with-prefix (keys)
+  "Run what KEYS run in this buffer, with a prefix argument, as after `C-u\='."
+  (let ((current-prefix-arg '(4)))
+    (call-interactively (key-binding (kbd keys)))))
+
+(defun canvas-browser-test--marks ()
+  "How far down each mark of this page buffer is, the newest first."
+  (mapcar #'canvas-browser-position-y canvas-browser--mark-ring))
+
+(ert-deftest canvas-browser-c-spc-marks-where-the-page-stands ()
+  ;; GIVEN a page buffer whose keys are those of Emacs, scrolled down
+  ;; WHEN C-SPC is pressed
+  ;; THEN the page is asked where it stands, AND that is the mark: its
+  ;;      address and how far it is scrolled, AND the reader is told
+  ;; WHEN the keys go to the page
+  ;; THEN C-SPC is still the mark of the field
+  (canvas-browser-test--with-positions
+    (setq scroll 300)
+    (canvas-browser-test--press "C-SPC")
+    (let ((mark (car canvas-browser--mark-ring)))
+      (should (equal (list (canvas-browser-position-url mark) (canvas-browser-position-y mark)
+                           (canvas-browser-position-id mark))
+                     '("https://example.org" 300 "p-1"))))
+    (should (string-search "mark" said))
+    (canvas-browser-insert-mode)
+    (should (eq (key-binding (kbd "C-SPC")) #'canvas-browser-field-set-mark))))
+
+(ert-deftest canvas-browser-c-u-c-spc-goes-back-through-the-marks ()
+  ;; GIVEN a page with a mark at 100 and a newer one at 500
+  ;; WHEN C-u C-SPC is pressed three times
+  ;; THEN the page goes to the newer mark, then to the older one, and
+  ;;      then to the newer one again, as the mark ring of a buffer turns
+  (canvas-browser-test--with-positions
+    (setq scroll 100)
+    (canvas-browser-test--press "C-SPC")
+    (setq scroll 500)
+    (canvas-browser-test--press "C-SPC")
+    (setq canvas-browser-test--commands nil)
+    (dotimes (_ 3)
+      (canvas-browser-test--press-with-prefix "C-SPC"))
+    (should (equal (canvas-browser-test--went-to)
+                   '("(\"p-2\", 0, 500)" "(\"p-1\", 0, 100)" "(\"p-2\", 0, 500)")))))
+
+(ert-deftest canvas-browser-c-x-c-x-swaps-the-mark-and-where-the-page-stands ()
+  ;; GIVEN a page with a mark at 100, scrolled to 700 since
+  ;; WHEN C-x C-x is pressed
+  ;; THEN the page goes to the mark, AND the mark is at 700 now
+  (canvas-browser-test--with-positions
+    (setq scroll 100)
+    (canvas-browser-test--press "C-SPC")
+    (setq scroll 700)
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--press "C-x C-x")
+    (should (equal (canvas-browser-test--went-to) '("(\"p-1\", 0, 100)")))
+    (should (equal (canvas-browser-test--marks) '(700)))))
+
+(ert-deftest canvas-browser-without-a-mark-there-is-nowhere-to-go-back-to ()
+  ;; GIVEN a page buffer without a mark
+  ;; WHEN the mark is gone to, or swapped
+  ;; THEN that is a user error
+  (canvas-browser-test--with-positions
+    (should-error (canvas-browser-test--press-with-prefix "C-SPC") :type 'user-error)
+    (should-error (canvas-browser-test--press "C-x C-x") :type 'user-error)))
+
+(ert-deftest canvas-browser-a-jump-in-the-page-marks-where-it-came-from ()
+  ;; GIVEN a page scrolled to 300
+  ;; WHEN it goes to its end
+  ;; THEN the page is asked where it stands before it is told to scroll,
+  ;;      AND that is a mark, so that C-u C-SPC comes back
+  ;; WHEN it goes to its top from 900
+  ;; THEN that is the newest mark
+  (canvas-browser-test--with-positions
+    (setq scroll 300)
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-end-of-page)
+    (let ((asked (mapcar (lambda (command) (plist-get (cdr command) :expression))
+                         (reverse canvas-browser-test--commands))))
+      (should (equal (car asked) canvas-browser--position-script))
+      (should (string-search "scrollTo" (cadr asked))))
+    (setq scroll 900)
+    (canvas-browser-beginning-of-page)
+    (should (equal (canvas-browser-test--marks) '(900 300)))))
+
+(ert-deftest canvas-browser-the-mark-ring-of-a-page-is-as-long-as-that-of-a-buffer ()
+  ;; GIVEN a mark ring that holds two marks at most
+  ;; WHEN three marks are set
+  ;; THEN the two newest are kept
+  (canvas-browser-test--with-positions
+    (let ((mark-ring-max 2))
+      (dolist (y '(100 200 300))
+        (setq scroll y)
+        (canvas-browser-test--press "C-SPC"))
+      (should (equal (canvas-browser-test--marks) '(300 200))))))
+
+(ert-deftest canvas-browser-a-choice-that-is-made-marks-where-the-page-stood ()
+  ;; GIVEN a page at 300, and consult, which shows what is offered
+  ;; WHEN the reader picks an entry of what is offered
+  ;; THEN where the page stood before is a mark
+  ;; WHEN the reader gives up
+  ;; THEN no mark is added: the page went back
+  (canvas-browser-test--with-positions
+    (setq scroll 300)
+    (let ((state (canvas-browser--preview-state #'ignore)))
+      (funcall state 'setup nil)
+      (setq scroll 900)
+      (funcall state 'preview '("one" . 1))
+      (funcall state 'return '("one" . 1))
+      (should (equal (canvas-browser-test--marks) '(300))))
+    (let ((state (canvas-browser--preview-state #'ignore)))
+      (funcall state 'setup nil)
+      (funcall state 'return nil)
+      (should (equal (canvas-browser-test--marks) '(300))))))
+
+(ert-deftest canvas-browser-a-search-that-is-kept-marks-where-it-began ()
+  ;; GIVEN a page at 300
+  ;; WHEN a search is typed and ended with RET
+  ;; THEN where the page stood when the search began is a mark
+  ;; WHEN a search is given up
+  ;; THEN no mark is added
+  (canvas-browser-test--with-positions
+    (setq scroll 300)
+    (cl-letf (((symbol-function 'canvas-browser--find-read) (lambda () "words")))
+      (canvas-browser-find))
+    (should (equal (canvas-browser-test--marks) '(300)))
+    (cl-letf (((symbol-function 'canvas-browser--find-read) (lambda () (signal 'quit nil))))
+      ;; The search hands the quit on, as any command that is given up.
+      (should (eq 'quit (condition-case nil
+                            (canvas-browser-find)
+                          (quit 'quit)))))
+    (should (equal (canvas-browser-test--marks) '(300)))))
+
+(ert-deftest canvas-browser-a-mark-of-another-address-is-gone-back-to ()
+  ;; GIVEN a mark at 300 in a page, AND the page at another address now
+  ;; WHEN the mark is gone to
+  ;; THEN the page goes to the address of the mark, AND once it has
+  ;;      loaded it scrolls to where the mark was
+  (canvas-browser-test--with-positions
+    (setq scroll 300)
+    (canvas-browser-test--press "C-SPC")
+    (setq canvas-browser--url "https://example.org/next")
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--press-with-prefix "C-SPC")
+    (should (equal (plist-get (canvas-browser-test--params "Page.navigate") :url)
+                   "https://example.org"))
+    (should-not (canvas-browser-test--went-to))
+    (canvas-browser--loaded nil)
+    (should (equal (canvas-browser-test--went-to) '("(\"p-1\", 0, 300)")))
+    ;; The position is gone to once.
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser--loaded nil)
+    (should-not (canvas-browser-test--went-to))))
+
+(ert-deftest canvas-browser-a-register-keeps-a-position-of-a-page ()
+  ;; GIVEN a page at 300
+  ;; WHEN the key that keeps point in a register is pressed, in either
+  ;;      state, and a register is named
+  ;; THEN the register holds where the page stands, AND it is described
+  ;;      by the address of the page
+  ;; WHEN the register is jumped to in the page buffer
+  ;; THEN the page goes to that position
+  ;; WHEN it is jumped to from another buffer
+  ;; THEN the page buffer is shown, AND the page goes to the position
+  (canvas-browser-test--with-positions
+    (let ((register-alist nil)
+          (page (current-buffer))
+          (shown nil))
+      (should (eq (key-binding [remap point-to-register]) #'canvas-browser-position-to-register))
+      (canvas-browser-insert-mode)
+      (should (eq (key-binding [remap point-to-register]) #'canvas-browser-position-to-register))
+      (setq scroll 300)
+      (canvas-browser-position-to-register ?a)
+      (should (canvas-browser-position-p (get-register ?a)))
+      (should (string-search "example.org"
+                             (with-output-to-string
+                               (register-val-describe (get-register ?a) nil))))
+      (setq canvas-browser-test--commands nil)
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (setq shown buffer))))
+        (jump-to-register ?a)
+        (should (equal (canvas-browser-test--went-to) '("(\"p-1\", 0, 300)")))
+        (setq canvas-browser-test--commands nil)
+        (with-temp-buffer
+          (jump-to-register ?a))
+        (should (eq shown page))
+        (should (equal (canvas-browser-test--went-to) '("(\"p-1\", 0, 300)")))))))
+
+(ert-deftest canvas-browser-a-register-of-a-page-that-is-gone-opens-the-page ()
+  ;; GIVEN a register with a position of a page, AND no page buffer at
+  ;;       that address any more
+  ;; WHEN the register is jumped to from a buffer that is no page
+  ;; THEN the address opens in a page buffer of its own, which scrolls
+  ;;      to the position once the page has loaded
+  (canvas-browser-test--with-positions
+    (let ((register-alist nil)
+          (opened nil))
+      (setq scroll 300)
+      (canvas-browser-position-to-register ?a)
+      (setq canvas-browser--url "https://example.org/next")
+      (let ((new (generate-new-buffer " *canvas-browser-test-new*")))
+        (unwind-protect
+            (cl-letf (((symbol-function 'canvas-browser)
+                       (lambda (url) (setq opened url) new)))
+              (with-temp-buffer
+                (jump-to-register ?a))
+              (should (equal opened "https://example.org"))
+              (should (equal (canvas-browser-position-y
+                              (buffer-local-value 'canvas-browser--position-wanted new))
+                             300)))
+          (kill-buffer new))))))
 
 ;;;; The window, the header line and a chromium that died
 
@@ -1601,12 +1857,13 @@ ANSWER is evaluated at each search.  What the reader is told goes to
 
 (defun canvas-browser-test--searches-asked ()
   "Every search and every end of one that the page was asked for, oldest first.
-Each is the text of its arguments."
+Each is the text of its arguments.  The question where the page stands,
+which a search asks first for the mark, has none and is left out."
   (delq nil
         (mapcar (lambda (command)
                   (let ((expression (or (plist-get (cdr command) :expression) "")))
                     (and (equal (car command) "Runtime.evaluate")
-                         (string-match "})(\\(.*\\))\\'" expression)
+                         (string-match "})(\\(.+\\))\\'" expression)
                          (match-string 1 expression))))
                 (reverse canvas-browser-test--commands))))
 

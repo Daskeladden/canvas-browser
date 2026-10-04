@@ -1660,6 +1660,53 @@ that holds its start, and whether the window shows that element."
                5 (lambda () (equal (canvas-browser-live-test--page-says "location.hash")
                                    "#two")))))))
 
+(defun canvas-browser-live-test--scrolls ()
+  "How far the locate fixture is scrolled: the page, and its part that scrolls."
+  (canvas-browser-live-test--page-says
+   "[Math.round(scrollY), Math.round(document.getElementById('pane').scrollTop)]"))
+
+(defun canvas-browser-live-test--scroll-to (page pane)
+  "Scroll the locate fixture to PAGE pixels, and its part that scrolls to PANE."
+  (canvas-browser-live-test--page-says
+   (format "(scrollTo(0, %d), document.getElementById('pane').scrollTo(0, %d), true)"
+           page pane)))
+
+(ert-deftest canvas-browser-live-a-mark-brings-the-page-and-its-parts-back ()
+  ;; GIVEN the locate fixture, a long page with a part that scrolls on
+  ;;       its own, with the page scrolled to 500 and the part to 100
+  ;; WHEN the mark is set, both are scrolled elsewhere, and the mark is
+  ;;      gone back to
+  ;; THEN the page and the part are where they were
+  ;; WHEN the position is kept in a register, the page is read again,
+  ;;      and the register is jumped to
+  ;; THEN the page is scrolled to 500 again: a page that has loaded anew
+  ;;      no longer knows how far its part was scrolled
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "locate.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (let ((register-alist nil))
+      (canvas-browser-live-test--scroll-to 500 100)
+      (should (equal (canvas-browser-live-test--scrolls) '(500 100)))
+      (canvas-browser-set-mark)
+      (should (canvas-browser-live-test--wait 5 (lambda () canvas-browser--mark-ring)))
+      (canvas-browser-position-to-register ?a)
+      (should (canvas-browser-live-test--wait 5 (lambda () (get-register ?a))))
+      (canvas-browser-live-test--scroll-to 1200 0)
+      (should (equal (canvas-browser-live-test--scrolls) '(1200 0)))
+      (canvas-browser-pop-mark)
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (equal (canvas-browser-live-test--scrolls) '(500 100)))))
+      (canvas-browser-refresh)
+      ;; The page that has loaded anew has its part at the start again.
+      ;; Chromium itself may put the page back where it was.
+      (should (canvas-browser-live-test--wait
+               10 (lambda () (equal (cadr (canvas-browser-live-test--scrolls)) 0))))
+      (canvas-browser-live-test--scroll-to 1200 0)
+      (should (equal (canvas-browser-live-test--scrolls) '(1200 0)))
+      (jump-to-register ?a)
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (equal (canvas-browser-live-test--scrolls) '(500 0))))))))
+
 (defun canvas-browser-live-test--field-buffers ()
   "The buffers that hold the text of a field of a page."
   (seq-filter (lambda (buffer) (buffer-local-value 'canvas-browser-edit-field-mode buffer))
