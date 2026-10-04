@@ -2,8 +2,26 @@
 <html>
   <head><title>canvas-browser locate fixture</title></head>
   <body style="margin: 0">
+    <span id="reader" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0)">Reply to this, for a screen reader only</span>
+    <p id="side">Kim Doe and Dee</p>
     <p id="first">Reply</p>
     <p id="sentence">A sentence with <a href="#">a link</a> inside it.</p>
+    <div data-kind="item">
+      <span data-kind="name">Kim</span>
+      <div data-kind="message"><p id="pictures"><img alt="point" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="> the door of the house <img alt="🐻" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></p></div>
+    </div>
+    <div data-kind="item">
+      <span>10:32</span> <span data-kind="name">Bob</span>
+      <div data-kind="message"><div id="mention" style="display: inline">Kim Doe</div> saw the light of the lamp</div>
+    </div>
+    <div data-kind="item">
+      <span>10:40</span> <span data-kind="name">Cy</span>
+      <div data-kind="message"><p>A last word</p></div>
+    </div>
+    <div data-kind="item">
+      <span>10:45</span> <span data-kind="name">Eve</span>
+      <div data-kind="message"><div id="given" style="display: inline; padding-right: 4px">Dee</div><div style="display: inline">Fox</div> will look at the lamp</div>
+    </div>
     <div id="pane" style="height: 200px; overflow-y: auto">
       <p>filler 1</p><p>filler 2</p><p>filler 3</p><p>filler 4</p><p>filler 5</p>
       <p>filler 6</p><p>filler 7</p><p>filler 8</p><p>filler 9</p><p>filler 10</p>

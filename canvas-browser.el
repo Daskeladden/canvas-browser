@@ -2576,15 +2576,23 @@ see.  `paint\\=' gives the paint of the hits, so that it can be told
 from the paint of a later search.")
 
 (defconst canvas-browser--flat-js "
-  const flatten = root => {
-    const unread = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
-    const nodes = [];
+  const unread = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+  const unseen = (element, style) => {
+    if (style.overflowX === 'visible' && style.clip === 'auto' && style.clipPath === 'none') return false;
+    const box = element.getBoundingClientRect();
+    return box.width <= 2 || box.height <= 2;
+  };
+  const eachShown = (root, see) => {
     const visit = node => {
-      if (node.nodeType === 3) { if (node.textContent.trim()) nodes.push(node); return; }
+      if (node.nodeType === 3) { see(node); return; }
       if (node.nodeType === 1) {
         if (unread.has(node.tagName)) return;
-        if (getComputedStyle(node).display !== 'contents'
-            && !node.checkVisibility({checkVisibilityCSS: true, visibilityProperty: true})) return;
+        const style = getComputedStyle(node);
+        if (style.display !== 'contents'
+            && (!node.checkVisibility({checkVisibilityCSS: true, visibilityProperty: true,
+                                       opacityProperty: true})
+                || unseen(node, style))) return;
+        see(node);
         if (node.shadowRoot) { visit(node.shadowRoot); return; }
         if (node.tagName === 'SLOT') {
           const given = node.assignedNodes({flatten: true});
@@ -2594,6 +2602,10 @@ from the paint of a later search.")
       node.childNodes.forEach(visit);
     };
     visit(root);
+  };
+  const flatten = root => {
+    const nodes = [];
+    eachShown(root, node => { if (node.nodeType === 3 && node.textContent.trim()) nodes.push(node); });
     const above = node => node.parentNode || node.host;
     const block = node => {
       let e = above(node);
@@ -2655,8 +2667,12 @@ from the paint of a later search.")
     element.scrollIntoView({block: inside ? 'nearest' : 'center', inline: 'nearest'});
   };"
   "The JavaScript that reads the text of a part of a page as one line.
-`flatten\\=' gives the text that an element shows, through web
-components too, with one space for white space, and a way to make a
+`eachShown\\=' walks what an element shows, in the order of the page
+and through web components too.  What the page clips to nothing is not
+shown: a page keeps words for a screen reader in a box of one pixel,
+and such words have no place that the eye can be drawn to.
+`flatten\\=' gives the text that an element shows, with one space for
+white space, and a way to make a
 range of the page of a stretch of that text.  So a stretch can lie in
 more than one piece of the page, as a sentence with a link in it does.
 Text that the page shows in capitals is in capitals there.
@@ -2764,6 +2780,11 @@ smear-cursor while that is on."
         (canvas-browser--fly canvas-browser--find-box to)
       (canvas-browser--pulse (current-buffer) to))
     (setq canvas-browser--find-box to)))
+
+(defun canvas-browser--land-anew (box)
+  "Draw the eye to BOX of this page, as to the first hit of a search."
+  (setq canvas-browser--find-box nil)
+  (canvas-browser--land box))
 
 (defun canvas-browser--found (value string ticket)
   "Take VALUE, the answer of the page to the search for STRING with TICKET.
@@ -3085,14 +3106,21 @@ that goes back in xref comes back to the line."
 (defconst canvas-browser--locate-js (concat "
 (function (root, wanted, blink) {" canvas-browser--paint-js canvas-browser--flat-js "
   const view = flatten(root && root.isConnected ? root : document.body);
-  const hay = view.flat.toLowerCase();
+  const low = text => [...text].map(c => c.toLowerCase().length === c.length ? c.toLowerCase() : c).join('');
+  const tight = text => low(text.replace(/\\s+/g, ''));
+  const places = [];
+  for (let at = 0; at < view.flat.length; at++) if (view.flat[at] !== ' ') places.push(at);
+  const hay = tight(view.flat);
   for (let found = 0; found < wanted.length; found++) {
-    const needle = wanted[found].text.toLowerCase();
+    const needle = tight(wanted[found].text);
+    if (!needle) throw new Error('canvas-browser: asked for a line without text');
     const hits = [];
     for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) hits.push(at);
     if (!hits.length) continue;
     const rank = Math.min(wanted[found].rank, hits.length - 1);
-    const range = view.range(hits[rank], hits[rank] + needle.length);
+    const length = wanted[found].paint ? tight(wanted[found].text.slice(0, wanted[found].paint)).length
+                                       : needle.length;
+    const range = view.range(places[hits[rank]], places[hits[rank] + length - 1] + 1);
     reveal(range);
     const mine = paint([range], null);
     setTimeout(() => {
@@ -3107,10 +3135,13 @@ that goes back in xref comes back to the line."
 It takes an element and a list of lines, each with its text and its
 rank: how many times the text stands before the line.  It looks in the
 text that the element shows, through web components too, and takes the
-first line that stands there.  The text is compared without regard to
-case and with one space for white space, since a page can show its text
-in capitals and breaks its lines as it likes.  A line can lie in more
-than one piece of the page, as a sentence with a link in it does.  The
+first line that stands there.  A line can say how much of its text to
+paint, from its start, when it was asked for with more text than
+itself.  The text is compared without regard to case and to white
+space: a page can show its text in capitals, it breaks its lines as it
+likes, and it can show two parts side by side with no space between
+them that its text has on two lines.  A line can lie in more than one
+piece of the page, as a sentence with a link in it does.  The
 hit of the rank is scrolled into view, also in a part that scrolls on
 its own, and painted for as many milliseconds as its third argument
 says.  It gives which line it took, how many hits that
@@ -3126,9 +3157,19 @@ The reader came to see where the line is, not to keep it marked.")
 A line that a translator made, as the one that names who wrote a
 message, is not in the page.  The text of the message under it is.")
 
+(defconst canvas-browser--white-space
+  "[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+"
+  "A regexp for a run of white space, as a page takes it.
+It names what \\s names in JavaScript, so that Emacs and the page take
+the same letters out of a text.")
+
 (defun canvas-browser--squeeze (text)
   "TEXT with one space for each run of white space, and none at its ends."
-  (string-trim (replace-regexp-in-string "[ \t\n\r\u00a0]+" " " text)))
+  (string-trim (replace-regexp-in-string canvas-browser--white-space " " text)))
+
+(defun canvas-browser--tight (text)
+  "TEXT without its white space, as a page compares it."
+  (replace-regexp-in-string canvas-browser--white-space "" text))
 
 (defun canvas-browser--count-in (needle hay)
   "How many times NEEDLE stands in HAY, without regard to case."
@@ -3141,32 +3182,138 @@ message, is not in the page.  The text of the message under it is.")
             start (1+ start)))
     count))
 
-(defun canvas-browser--line-to-find ()
-  "The line at point as a page is asked for it, or nil for an empty line.
-It is a plist of its text and its rank: how many times that text stands
-in the buffer before the line."
-  (let ((text (canvas-browser--squeeze
-               (buffer-substring-no-properties (line-beginning-position)
-                                               (line-end-position)))))
+(defun canvas-browser--without-pictures (text)
+  "TEXT without what stands in it for a picture of the page.
+The text of a page names a picture in brackets, as [image], and has an
+emoji that the page draws as a picture as the emoji itself.  Each has
+the text property `canvas-browser-for-picture\='.  Brackets and emoji
+that are words of the page itself have not, and stay."
+  (let ((kept nil)
+        (start 0)
+        (end (length text)))
+    (while (< start end)
+      (let ((next (next-single-property-change start 'canvas-browser-for-picture text end)))
+        (unless (get-text-property start 'canvas-browser-for-picture text)
+          (push (substring-no-properties text start next) kept))
+        (setq start next)))
+    (apply #'concat (nreverse kept))))
+
+(defun canvas-browser--to-find (text before)
+  "TEXT as a page is asked for it, or nil for no text.
+It is a plist of the text, with one space for white space, and of its
+rank: how many times it stands in BEFORE, the text before it.  The rank
+is counted as the page compares, without regard to white space."
+  (let ((text (canvas-browser--squeeze text)))
     (unless (string-empty-p text)
       (list :text text
-            :rank (canvas-browser--count-in
-                   text (canvas-browser--squeeze
-                         (buffer-substring-no-properties (point-min)
-                                                         (line-beginning-position))))))))
+            :rank (canvas-browser--count-in (canvas-browser--tight text)
+                                            (canvas-browser--tight before))))))
+
+(defun canvas-browser--line-to-find ()
+  "The ways to ask a page for the line at point, or nil for an empty line.
+Each is a plist of `canvas-browser--to-find\='.  The first is the line
+as it is written.  A line that names pictures has a second way, without
+them: the page shows a picture there and has no text for it."
+  (let* ((line (buffer-substring (line-beginning-position) (line-end-position)))
+         (before (buffer-substring (point-min) (line-beginning-position)))
+         (bare (canvas-browser--without-pictures line)))
+    (delq nil (list (canvas-browser--to-find (substring-no-properties line)
+                                             (substring-no-properties before))
+                    (and (not (equal bare (substring-no-properties line)))
+                         (canvas-browser--to-find
+                          bare (canvas-browser--without-pictures before)))))))
+
+(defvar canvas-browser--locate-stretch 120
+  "How many letters of text a page is asked for at most, from a line on.")
+
+(defun canvas-browser--cut-at-word (text length)
+  "TEXT, or its start of at most LENGTH letters that ends at a word."
+  (if (<= (length text) length)
+      text
+    (substring text 0 (or (string-match-p " [^ ]*\\'" (substring text 0 (1+ length)))
+                          length))))
+
+(defun canvas-browser--stretch-way (text line before)
+  "The way to ask a page for TEXT, which starts with LINE, or nil.
+BEFORE is the text before it, for its rank.  TEXT is cut to
+`canvas-browser--locate-stretch\=' letters.  The way says with :paint
+how much of it is LINE.  It is nil for an empty LINE, and when the cut
+TEXT holds no more than LINE."
+  (let ((line (canvas-browser--squeeze line))
+        (stretch (canvas-browser--cut-at-word (canvas-browser--squeeze text)
+                                              canvas-browser--locate-stretch)))
+    (when (and (not (string-empty-p line)) (> (length stretch) (length line)))
+      (append (canvas-browser--to-find stretch before) (list :paint (length line))))))
+
+(defun canvas-browser--stretch-ways (text line before)
+  "The ways to ask a page for TEXT, which starts with LINE.
+BEFORE is a pair of the text before it: as it is written, and without
+what stands for a picture.  As for a line, a second way leaves out what
+stands for a picture."
+  (let ((bare (canvas-browser--without-pictures text)))
+    (delq nil (list (canvas-browser--stretch-way (substring-no-properties text)
+                                                 (substring-no-properties line)
+                                                 (car before))
+                    (and (not (equal bare (substring-no-properties text)))
+                         (canvas-browser--stretch-way
+                          bare (canvas-browser--without-pictures line) (cdr before)))))))
+
+(defun canvas-browser--lines-with-text ()
+  "The line at point and the lines after it, those that hold text.
+No more than `canvas-browser--locate-tries\=' lines are read."
+  (save-excursion
+    (let ((end (save-excursion (forward-line canvas-browser--locate-tries) (point))))
+      (seq-remove #'string-blank-p
+                  (split-string (buffer-substring (line-beginning-position) end) "\n")))))
+
+(defun canvas-browser--stretches (lines)
+  "LINES as one line: all of them, then one line fewer, down to two lines."
+  (let ((stretches nil))
+    (while (cdr lines)
+      (push (string-join lines " ") stretches)
+      (setq lines (butlast lines)))
+    (nreverse stretches)))
+
+(defun canvas-browser--stretch-to-find ()
+  "The ways to ask a page for the line at point with the lines after it.
+The text of a page breaks a line where the HTML has a block, and the
+page can show that block inside a line, as it shows a mention.  So the
+line alone can be a name that the page holds in many places, while the
+line and what comes after it, as one line, stand in the page once.
+
+The longest stretch comes first, then stretches of fewer lines: a page
+can have text between two messages that its text here does not have,
+and then it holds only a stretch that ends before the next message."
+  (let* ((start (line-beginning-position))
+         (line (buffer-substring start (line-end-position)))
+         (before (buffer-substring (point-min) start))
+         (before (cons (substring-no-properties before)
+                       (canvas-browser--without-pictures before))))
+    (unless (string-blank-p line)
+      (seq-uniq (mapcan (lambda (text) (canvas-browser--stretch-ways text line before))
+                        (canvas-browser--stretches (canvas-browser--lines-with-text)))
+                (lambda (one other)
+                  (equal (plist-get one :text) (plist-get other :text)))))))
 
 (defun canvas-browser--lines-to-find ()
   "The line at point and those after it, as a page is asked for them.
-Empty lines are left out, and no more than
-`canvas-browser--locate-tries\=' lines are given."
+The first ways are those of `canvas-browser--stretch-to-find\='.  Then
+come the lines one by one: empty lines are left out, and no more than
+`canvas-browser--locate-tries\=' lines are given.  Each way to ask is
+a plist, which also says with :line which line it is of: 0 for the line
+at point, or the first after it that holds text."
   (save-excursion
-    (let ((lines nil)
+    (let ((ways (nreverse (mapcar (lambda (way) (append way (list :line 0)))
+                                  (canvas-browser--stretch-to-find))))
+          (count 0)
           (more t))
-      (while (and more (< (length lines) canvas-browser--locate-tries))
+      (while (and more (< count canvas-browser--locate-tries))
         (when-let* ((line (canvas-browser--line-to-find)))
-          (push line lines))
+          (dolist (way line)
+            (push (append way (list :line count)) ways))
+          (setq count (1+ count)))
         (setq more (and (zerop (forward-line 1)) (not (eobp)))))
-      (nreverse lines))))
+      (nreverse ways))))
 
 (defun canvas-browser--text-root-js (place)
   "The JavaScript that names what a text was taken from, in this page.
@@ -3177,17 +3324,23 @@ else the whole page."
     "document.body"))
 
 (defun canvas-browser--located (answer lines)
-  "Say what ANSWER, of the page, found of LINES."
-  (let ((found (or (plist-get answer :found) -1)))
-    (setq canvas-browser--find-box nil)
-    (canvas-browser--land (plist-get answer :box))
-    (cond ((< found 0)
+  "Say what ANSWER, of the page, found of LINES.
+LINES are the ways to ask that `canvas-browser--lines-to-find\=' gave."
+  (let* ((found (or (plist-get answer :found) -1))
+         (way (and (>= found 0) (nth found lines))))
+    (canvas-browser--land-anew (plist-get answer :box))
+    (cond ((null way)
            (message "canvas-browser: the page does not hold this line as it is written"))
-          ((> found 0)
+          ((> (plist-get way :line) 0)
            (message "canvas-browser: this line is not in the page; shown is: %s"
-                    (canvas-browser--first-line (plist-get (nth found lines) :text))))
+                    (canvas-browser--first-line (plist-get way :text))))
           (t (message "canvas-browser: hit %d of %d"
                       (1+ (plist-get answer :rank)) (plist-get answer :count))))))
+
+(defun canvas-browser--way-to-send (way)
+  "WAY to ask for a line as the page is sent it: what it needs of the plist."
+  (append (list :text (plist-get way :text) :rank (plist-get way :rank))
+          (and (plist-get way :paint) (list :paint (plist-get way :paint)))))
 
 (defun canvas-browser--locate (lines place)
   "Show in this page the first of LINES that it holds, of the text at PLACE."
@@ -3195,7 +3348,8 @@ else the whole page."
    "Runtime.evaluate"
    (list :expression (format "%s(%s, %s, %d)" canvas-browser--locate-js
                              (canvas-browser--text-root-js place)
-                             (json-encode (vconcat lines))
+                             (json-encode
+                              (vconcat (mapcar #'canvas-browser--way-to-send lines)))
                              canvas-browser--locate-blink)
          :returnByValue t)
    (lambda (result)

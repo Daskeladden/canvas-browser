@@ -1528,6 +1528,109 @@ that holds its start, and whether the window shows that element."
                       "CSS.highlights.has('canvas-browser-find') ? 1 : 0")
                      0)))))
 
+(ert-deftest canvas-browser-live-a-line-with-pictures-is-shown-in-the-page ()
+  ;; GIVEN the locate fixture, where a message has a picture before its
+  ;;       words and one after them, as an application draws an emoji,
+  ;;       and a translator that gives the message with the first
+  ;;       picture named in brackets and the second as the emoji itself
+  ;; WHEN M-. is pressed on the line of the message in the text
+  ;; THEN the page paints the words of the message where they stand
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (skip-unless (libxml-available-p))
+  (let ((canvas-browser-translators
+         (list (cons "locate\\.html"
+                     (canvas-browser-thread-translator
+                      '((data-kind "item")
+                        :author (inside data-kind "name")
+                        :body (inside data-kind "message")))))))
+    (cl-letf (((symbol-function 'display-buffer) #'ignore)
+              ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (set-buffer buffer))))
+      (canvas-browser-live-test--in-fixture "locate.html"
+        (canvas-browser-live-test--lay-out 800 600)
+        (canvas-browser-text)
+        (let ((page (current-buffer)))
+          (with-current-buffer (canvas-browser--text-buffer)
+            (goto-char (point-min))
+            (should (re-search-forward "^\\[point\\].*the door of the house.*🐻$" nil t))
+            (canvas-browser-text-show-in-page))
+          (with-current-buffer page
+            (canvas-browser-live-test--wait 0.5 (lambda () nil))
+            (should (equal (canvas-browser-live-test--page-says
+                            "(() => { const range = [...CSS.highlights.get('canvas-browser-find')][0];
+                                      return [range.startContainer.parentElement.id, range.toString()]; })()")
+                           '("pictures" "the door of the house")))))))))
+
+(ert-deftest canvas-browser-live-a-message-that-starts-with-a-name-is-shown-in-the-page ()
+  ;; GIVEN the locate fixture, where a message starts with a name in a
+  ;;       block that the page shows inside the line, as an application
+  ;;       draws a mention, AND the page holds that name before it, in a
+  ;;       part that is no message, AND between two messages the page
+  ;;       has a time, which the translator does not give
+  ;; WHEN M-. is pressed on the name, which the text has on a line of
+  ;;      its own
+  ;; THEN the page paints the name where the message has it: it was
+  ;;      asked for the name with the words after it, without the
+  ;;      message that comes next
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (skip-unless (libxml-available-p))
+  (let ((canvas-browser-translators
+         (list (cons "locate\\.html"
+                     (canvas-browser-thread-translator
+                      '((data-kind "item")
+                        :author (inside data-kind "name")
+                        :body (inside data-kind "message")))))))
+    (cl-letf (((symbol-function 'display-buffer) #'ignore)
+              ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (set-buffer buffer))))
+      (canvas-browser-live-test--in-fixture "locate.html"
+        (canvas-browser-live-test--lay-out 800 600)
+        (canvas-browser-text)
+        (let ((page (current-buffer)))
+          (with-current-buffer (canvas-browser--text-buffer)
+            (goto-char (point-min))
+            (should (re-search-forward "^Kim Doe$" nil t))
+            (canvas-browser-text-show-in-page))
+          (with-current-buffer page
+            (canvas-browser-live-test--wait 0.5 (lambda () nil))
+            (should (equal (canvas-browser-live-test--page-says
+                            "(() => { const range = [...CSS.highlights.get('canvas-browser-find')][0];
+                                      return [range.startContainer.parentElement.id, range.toString()]; })()")
+                           '("mention" "Kim Doe")))))))))
+
+(ert-deftest canvas-browser-live-two-blocks-side-by-side-are-found-as-the-text-has-them ()
+  ;; GIVEN the locate fixture, where a message starts with a name in two
+  ;;       blocks that the page shows side by side with no space between
+  ;;       them, AND the page holds the first of the two names before
+  ;;       it, in a part that is no message
+  ;; WHEN M-. is pressed on the first name, which the text has on a line
+  ;;      of its own, with the second name on the line after it
+  ;; THEN the page paints the name where the message has it: the page
+  ;;      compares without regard to white space
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (skip-unless (libxml-available-p))
+  (let ((canvas-browser-translators
+         (list (cons "locate\\.html"
+                     (canvas-browser-thread-translator
+                      '((data-kind "item")
+                        :author (inside data-kind "name")
+                        :body (inside data-kind "message")))))))
+    (cl-letf (((symbol-function 'display-buffer) #'ignore)
+              ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (set-buffer buffer))))
+      (canvas-browser-live-test--in-fixture "locate.html"
+        (canvas-browser-live-test--lay-out 800 600)
+        (canvas-browser-text)
+        (let ((page (current-buffer)))
+          (with-current-buffer (canvas-browser--text-buffer)
+            (goto-char (point-min))
+            (should (re-search-forward "^Dee\nFox$" nil t))
+            (forward-line -1)
+            (canvas-browser-text-show-in-page))
+          (with-current-buffer page
+            (canvas-browser-live-test--wait 0.5 (lambda () nil))
+            (should (equal (canvas-browser-live-test--page-says
+                            "(() => { const range = [...CSS.highlights.get('canvas-browser-find')][0];
+                                      return [range.startContainer.parentElement.id, range.toString()]; })()")
+                           '("given" "Dee")))))))))
+
 (defun canvas-browser-live-test--hits ()
   "What the page paints of a search: how many hits, and where the one shown is.
 It is (COUNT ID TEXT): the id of the element that holds the start of

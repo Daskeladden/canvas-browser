@@ -396,7 +396,7 @@ for an answer that a test cannot give."
   ;;      AND for the line after it as a second try
   (canvas-browser-test--with-text "  Hello   there \nGood day\n" '(:found 0 :count 1 :rank 0)
     (canvas-browser-test--show-line 1)
-    (should (string-search (concat "[{\"text\":\"Hello there\",\"rank\":0},"
+    (should (string-search (concat "{\"text\":\"Hello there\",\"rank\":0},"
                                    "{\"text\":\"Good day\",\"rank\":0}]")
                            (canvas-browser-test--asked-for)))))
 
@@ -421,6 +421,151 @@ for an answer that a test cannot give."
     (should (string-search "[{\"text\":\"two\",\"rank\":0}]"
                            (canvas-browser-test--asked-for)))))
 
+(defun canvas-browser-test--picture (text)
+  "TEXT as the text of a page has what stands for a picture."
+  (propertize text 'canvas-browser-for-picture t))
+
+(defmacro canvas-browser-test--ways (&rest text)
+  "The ways to ask a page for the first line of TEXT and the lines after it.
+TEXT is strings, which stand in a buffer one after the other.  Each way
+is (TEXT RANK LINE)."
+  `(with-temp-buffer
+     (insert ,@text)
+     (goto-char (point-min))
+     (mapcar (lambda (way)
+               (list (plist-get way :text) (plist-get way :rank) (plist-get way :line)))
+             (seq-remove (lambda (way) (plist-get way :paint))
+                         (canvas-browser--lines-to-find)))))
+
+(defmacro canvas-browser-test--stretches (&rest text)
+  "The ways to ask a page for the first line of TEXT with the lines after it.
+Each is (TEXT RANK PAINT): PAINT is how much of it the page paints."
+  `(with-temp-buffer
+     (insert ,@text)
+     (goto-char (point-min))
+     (mapcar (lambda (way)
+               (list (plist-get way :text) (plist-get way :rank) (plist-get way :paint)))
+             (seq-filter (lambda (way) (plist-get way :paint))
+                         (canvas-browser--lines-to-find)))))
+
+(ert-deftest canvas-browser-a-line-is-first-asked-for-with-the-lines-after-it ()
+  ;; GIVEN a text whose first line is a name that the page holds in many
+  ;;       places, with the words of a message on the line after it, as
+  ;;       a message that starts with a mention is written
+  ;; WHEN the ways to ask the page for the first line are made
+  ;; THEN the first ways are the line with the lines after it as one
+  ;;      line, which the page holds once: all of them first, then one
+  ;;      line fewer, because a page can have other text between two
+  ;;      messages, AND of each the page paints the line itself only,
+  ;;      AND the line alone comes after them
+  (should (equal (canvas-browser-test--stretches "Kim Doe\nI saw the light was green\n\nmore\n")
+                 '(("Kim Doe I saw the light was green more" 0 7)
+                   ("Kim Doe I saw the light was green" 0 7))))
+  (should (equal (car (canvas-browser-test--ways "Kim Doe\nI saw the light was green\n"))
+                 '("Kim Doe" 0 0))))
+
+(ert-deftest canvas-browser-a-long-stretch-is-cut-at-a-word ()
+  ;; GIVEN a text whose lines after the first are longer than a stretch
+  ;;       may be
+  ;; THEN the stretch ends at a word, within its length, AND a stretch
+  ;;      of fewer lines that is cut to the same text is not asked for
+  ;;      again
+  (let ((canvas-browser--locate-stretch 20))
+    (should (equal (canvas-browser-test--stretches "Kim Doe\nI saw the light was green\n")
+                   '(("Kim Doe I saw the" 0 7))))
+    (should (equal (canvas-browser-test--stretches "Kim Doe\nI saw the light was green\nmore\n")
+                   '(("Kim Doe I saw the" 0 7))))))
+
+(ert-deftest canvas-browser-a-line-with-nothing-after-it-has-no-stretch ()
+  ;; GIVEN a text of one line, AND a text where point is on an empty line
+  ;; THEN the page is asked for no stretch
+  (should-not (canvas-browser-test--stretches "Kim Doe\n"))
+  (should-not (with-temp-buffer
+                (insert "one\n\ntwo\nthree\n")
+                (goto-char (point-min))
+                (forward-line 1)
+                (seq-filter (lambda (way) (plist-get way :paint))
+                            (canvas-browser--lines-to-find)))))
+
+(ert-deftest canvas-browser-a-stretch-is-also-asked-for-without-its-pictures ()
+  ;; GIVEN a text whose first line holds a picture, with a line after it
+  ;; THEN the stretch is asked for as it is written, AND without the
+  ;;      picture, of which the page paints the words of the line
+  (should (equal (canvas-browser-test--stretches
+                  (canvas-browser-test--picture "[point]") " Hello there\nNext\n")
+                 '(("[point] Hello there Next" 0 19) ("Hello there Next" 0 11)))))
+
+(ert-deftest canvas-browser-a-line-with-a-picture-is-also-asked-for-without-it ()
+  ;; GIVEN a text where a line holds two pictures, one named in brackets
+  ;;       and one an emoji that stands as itself, as the text of a page
+  ;;       has what an application draws as a picture
+  ;; WHEN the ways to ask the page for that line are made
+  ;; THEN the first is the line as it is written, AND the second its
+  ;;      words without what stands for a picture, AND then comes the
+  ;;      line after it
+  (should (equal (canvas-browser-test--ways
+                  (canvas-browser-test--picture "[point]") " Hello there "
+                  (canvas-browser-test--picture "🙁") "\nNext\n")
+                 '(("[point] Hello there 🙁" 0 0) ("Hello there" 0 0) ("Next" 0 1)))))
+
+(ert-deftest canvas-browser-the-rank-of-a-line-without-its-pictures-counts-the-words ()
+  ;; GIVEN a text where the same words stand on two lines, the second
+  ;;       time after a picture
+  ;; WHEN the ways to ask for the second line are made
+  ;; THEN its words without the picture are the second time that they
+  ;;      stand there
+  (should (equal (with-temp-buffer
+                   (insert "Hello there\n" (canvas-browser-test--picture "[image]")
+                           " Hello there\n")
+                   (forward-line -1)
+                   (mapcar (lambda (way) (list (plist-get way :text) (plist-get way :rank)))
+                           (canvas-browser--lines-to-find)))
+                 '(("[image] Hello there" 0) ("Hello there" 1)))))
+
+(ert-deftest canvas-browser-the-rank-of-a-line-is-counted-without-white-space ()
+  ;; GIVEN a text where the letters of a line stand before it too, with
+  ;;       other white space between them: on two lines there and in one
+  ;;       word here, AND the other way round
+  ;; WHEN the way to ask for the line is made
+  ;; THEN it is the second time that the line stands there: the page
+  ;;      compares without regard to white space, so the rank must too
+  (should (equal (canvas-browser--to-find "DeeFox" "Dee\nFox\n\n")
+                 '(:text "DeeFox" :rank 1)))
+  (should (equal (canvas-browser--to-find "Dee Fox" "DeeFox\n")
+                 '(:text "Dee Fox" :rank 1))))
+
+(ert-deftest canvas-browser-a-line-that-is-only-a-picture-is-asked-for-once ()
+  ;; GIVEN a text with a line that is a picture and no words
+  ;; THEN the page is asked for the line as it is written, and not for
+  ;;      nothing
+  (should (equal (canvas-browser-test--ways (canvas-browser-test--picture "[image]") "\nNext\n")
+                 '(("[image]" 0 0) ("Next" 0 1)))))
+
+(ert-deftest canvas-browser-brackets-that-the-page-wrote-are-no-picture ()
+  ;; GIVEN a text with brackets that are words of the page itself
+  ;; THEN the line is asked for as it is written only
+  (should (equal (canvas-browser-test--ways "see [1] for details\n")
+                 '(("see [1] for details" 0 0)))))
+
+(ert-deftest canvas-browser-a-line-found-without-its-pictures-is-a-hit ()
+  ;; GIVEN the ways to ask for a line with a picture, and a page that
+  ;;       holds the words without the picture
+  ;; WHEN the page answers
+  ;; THEN the reader is told of a hit: it is the line that was asked for
+  (canvas-browser-test--in-page
+    (let ((said nil)
+          (lines (with-temp-buffer
+                   (insert (canvas-browser-test--picture "[image]") " Hello there\nNext\n")
+                   (goto-char (point-min))
+                   (canvas-browser--lines-to-find))))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (setq said (apply #'format format-string args)))))
+        (canvas-browser--located '(:found 3 :count 1 :rank 0) lines)
+        (should (string-search "hit 1 of 1" said))
+        (canvas-browser--located '(:found 4 :count 1 :rank 0) lines)
+        (should (string-search "shown is: Next" said))))))
+
 (ert-deftest canvas-browser-a-line-that-the-page-does-not-hold-is-said ()
   ;; GIVEN the text of a page, and a page that holds none of its lines
   ;;       as they are written, as the lines that a translator made
@@ -434,8 +579,8 @@ for an answer that a test cannot give."
   ;;       and whose second line it holds
   ;; WHEN M-. is pressed on the first
   ;; THEN the reader is told that the line after it is shown
-  (canvas-browser-test--with-text "alice at noon\nHello there\n" '(:found 1 :count 1 :rank 0)
-    (should (string-search "Hello there" (canvas-browser-test--show-line 1)))))
+  (canvas-browser-test--with-text "alice at noon\nHello there\n" '(:found 2 :count 1 :rank 0)
+    (should (string-search "shown is: Hello there" (canvas-browser-test--show-line 1)))))
 
 (ert-deftest canvas-browser-a-line-of-a-part-is-looked-for-in-the-part ()
   ;; GIVEN a page where a part is picked, and the text of that part

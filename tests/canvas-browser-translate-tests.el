@@ -291,6 +291,28 @@ a picture inside the first, and an item that is only a day.")
                    (canvas-browser-org-head
                     (append item '(:link "https://example.org/chat/m/17")))))))
 
+(ert-deftest canvas-browser-what-stands-for-a-picture-says-so ()
+  ;; GIVEN a line of HTML with three pictures among its words: one with
+  ;;       a description, one whose description is an emoji, and one
+  ;;       with neither
+  ;; WHEN its text is made
+  ;; THEN each stretch that stands for a picture says so, the emoji that
+  ;;      stands as itself too, AND the words of the page do not
+  (skip-unless (libxml-available-p))
+  (let* ((text (canvas-browser-dom-text
+                (canvas-browser--parse-html
+                 (concat "<p><img alt=\"point\" src=\"a.png\"> the words "
+                         "<img alt=\"🙁\" src=\"b.png\"> more <img src=\"c.png\"></p>"))))
+         (for-picture (lambda (word)
+                        (get-text-property (string-search word text)
+                                           'canvas-browser-for-picture text))))
+    (should (equal (substring-no-properties text) "[point] the words 🙁 more [image]"))
+    (should (funcall for-picture "[point]"))
+    (should (funcall for-picture "🙁"))
+    (should (funcall for-picture "[image]"))
+    (should-not (funcall for-picture "the words"))
+    (should-not (funcall for-picture "more"))))
+
 (ert-deftest canvas-browser-an-address-without-a-translator-is-not-translated ()
   ;; GIVEN a translator for one address
   ;; WHEN the HTML of a page at another address is translated

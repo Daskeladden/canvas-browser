@@ -98,12 +98,18 @@ A picture for the look alone, with an empty description or the role
 presentation, stands for nothing.  An emoji stands as itself, a
 description or a label in brackets, and a picture with neither as
 [image].  The brackets carry the address of the picture as the text
-property `canvas-browser-picture\=', so that a receiver can fetch it."
+property `canvas-browser-picture\=', so that a receiver can fetch it.
+
+Each of them has the text property `canvas-browser-for-picture\=': the
+page shows a picture there and no text, so who looks for the text in
+the page must leave it out."
   (let ((alt (dom-attr node 'alt))
         (label (dom-attr node 'aria-label)))
     (cond ((or (equal alt "") (equal (dom-attr node 'role) "presentation")) nil)
-          ((and alt (not (string-match-p "[[:alnum:]]" alt))) alt)
-          (t (let ((text (format "[%s]" (or alt label "image"))))
+          ((and alt (not (string-match-p "[[:alnum:]]" alt)))
+           (propertize alt 'canvas-browser-for-picture t))
+          (t (let ((text (propertize (format "[%s]" (or alt label "image"))
+                                     'canvas-browser-for-picture t)))
                (if-let* ((address (dom-attr node 'src)))
                    (propertize text 'canvas-browser-picture address)
                  text))))))
