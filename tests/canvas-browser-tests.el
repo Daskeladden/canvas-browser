@@ -4504,6 +4504,71 @@ selection at once."
           (canvas-browser-hints)
           (should (equal (car kill-ring) "The words of it")))))))
 
+(defmacro canvas-browser-test--copying (blocks chosen &rest body)
+  "Run BODY in a page with BLOCKS, where the reader names the label CHOSEN.
+CHOSEN is what a hint that was read gives: the place of the label, and
+after it the action that was asked for first, if any.  The picture of
+the window is 800 by 600.  What is cut from it goes to `cut\=', what is
+copied as a picture to `copied\=', and the boxes that were labelled to
+`labelled\='."
+  (declare (indent 2))
+  `(let ((copied nil) (cut nil) (labelled nil))
+     (ignore copied cut labelled)
+     (canvas-browser-test--answering '(20 30 100 50 800)
+       (cl-letf (((symbol-function 'canvas-browser--blocks)
+                  (lambda (answer) (funcall answer ,blocks)))
+                 ((symbol-function 'canvas-browser--draw-hints)
+                  (lambda (boxes &rest _) (setq labelled boxes)))
+                 ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) ,chosen))
+                 ((symbol-function 'canvas-browser--picture-size) (lambda (_png) '(800 . 600)))
+                 ((symbol-function 'canvas-browser--crop-png)
+                  (lambda (_png x y width height) (setq cut (list x y width height)) "PART"))
+                 ((symbol-function 'canvas-keys-copy-png) (lambda (bytes) (setq copied bytes))))
+         ,@body))))
+
+(ert-deftest canvas-browser-m-w-offers-the-whole-page-with-its-blocks ()
+  ;; GIVEN a page with one block, and a page with none
+  ;; WHEN M-w is pressed
+  ;; THEN the whole page has the first label, in the top corner, as when
+  ;;      a part is picked, AND the block has the next
+  (canvas-browser-test--in-page
+    (canvas-browser-test--copying '((:x 20 :y 30 :w 100 :h 50)) nil
+      (canvas-browser-copy-block)
+      (should (equal labelled (list (canvas-browser--page-box) '(:x 20 :y 30 :w 100 :h 50)))))
+    (canvas-browser-test--copying nil nil
+      (canvas-browser-copy-block)
+      (should (equal labelled (list (canvas-browser--page-box)))))))
+
+(ert-deftest canvas-browser-the-whole-page-is-copied-as-what-the-window-shows ()
+  ;; GIVEN a page of 800 by 600 pixels in its window
+  ;; WHEN M-w is pressed, and the label of the page is named
+  ;; THEN a picture of the whole window is copied, as of a block as much
+  ;;      of it as shows
+  (canvas-browser-test--in-page
+    (canvas-browser-test--copying '((:x 20 :y 30 :w 100 :h 50)) (list 0)
+      (canvas-browser-copy-block)
+      (should (canvas-browser-test--params "Page.captureScreenshot"))
+      (should (equal cut '(0 0 800 600)))
+      (should (equal copied "PART")))))
+
+(ert-deftest canvas-browser-the-text-and-the-address-of-the-whole-page-are-copied ()
+  ;; GIVEN a page
+  ;; WHEN M-w is pressed, then w, and the label of the page is named
+  ;; THEN the text of the whole page is the newest kill
+  ;; WHEN y is pressed before the label
+  ;; THEN the address of the page is
+  (canvas-browser-test--in-page
+    (let ((kill-ring nil) (kill-ring-yank-pointer nil) (interprogram-cut-function nil))
+      (cl-letf (((symbol-function 'canvas-browser--page-text) (lambda () "All the words.")))
+        (canvas-browser-test--copying nil
+            (cons 0 (assq ?w canvas-browser--hint-actions))
+          (canvas-browser-copy-block)
+          (should (equal (car kill-ring) "All the words.")))
+        (canvas-browser-test--copying nil
+            (cons 0 (assq ?y canvas-browser--hint-actions))
+          (canvas-browser-copy-block)
+          (should (equal (car kill-ring) "https://example.org")))))))
+
 (ert-deftest canvas-browser-copy-labels-the-blocks-and-copies-a-picture ()
   ;; GIVEN a page buffer
   ;; WHEN M-w is pressed, and the first block is named with no action
@@ -4515,12 +4580,19 @@ selection at once."
       (canvas-browser-test--answering '(20 30 100 50 800)
         (cl-letf (((symbol-function 'canvas-browser--blocks)
                    (lambda (answer) (funcall answer '((:x 20 :y 30 :w 100 :h 50)))))
-                  ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) (list 0)))
+                  ;; The whole page has the first label.
+                  ((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) (list 1)))
                   ((symbol-function 'canvas-browser--picture-size) (lambda (_png) '(800 . 600)))
                   ((symbol-function 'canvas-browser--crop-png)
                    (lambda (_png x y width height) (setq cut (list x y width height)) "PART"))
-                  ((symbol-function 'canvas-keys-copy-png) (lambda (bytes) (setq copied bytes))))
+                  ((symbol-function 'canvas-keys-copy-png) (lambda (bytes) (setq copied bytes)))
+                  ((symbol-function 'canvas-browser--draw-hints) #'ignore))
           (canvas-browser-copy-block)
+          ;; The block is the first of the things that the page kept.
+          (should (cl-some (lambda (command)
+                             (string-suffix-p "(window.__canvasBrowserTargets[0])"
+                                              (or (plist-get (cdr command) :expression) "")))
+                           canvas-browser-test--commands))
           (should (canvas-browser-test--params "Page.captureScreenshot"))
           (should (equal cut '(20 30 100 50)))
           (should (equal copied "PART")))))))

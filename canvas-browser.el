@@ -2331,18 +2331,49 @@ open it in a buffer of its own or in eww."
   "Call ANSWER with the boxes of the blocks of the page."
   (canvas-browser--evaluate canvas-browser--blocks-script answer))
 
+(defun canvas-browser--copy-page-text ()
+  "Put the text of the whole page in the kill ring."
+  (let ((text (canvas-browser--page-text)))
+    (if (string-blank-p text)
+        (message "canvas-browser: this page has no text")
+      (kill-new text)
+      (message "canvas-browser: copied %d characters" (length text)))))
+
+(defun canvas-browser--copy-window-picture ()
+  "Copy the picture of the page, as much of it as the window shows, as a PNG."
+  (pcase-let ((`(,width . ,height) canvas-browser--size))
+    (canvas-browser--capture-part (list 0 0 width height width))))
+
+(defun canvas-browser--act-on-page (action)
+  "Do to the whole page what ACTION does to a thing that a hint names.
+ACTION is a function of `canvas-browser--hint-actions\=', or nil for a
+copy of its picture."
+  (pcase action
+    ((or 'nil 'canvas-browser--copy-picture) (canvas-browser--copy-window-picture))
+    ('canvas-browser--copy-text (canvas-browser--copy-page-text))
+    ('canvas-browser--copy-address (canvas-browser-copy-url))
+    ('canvas-browser--open-target (canvas-browser canvas-browser--url))
+    ('canvas-browser--eww-target (eww canvas-browser--url))
+    (_ (error "canvas-browser: %S does nothing to a whole page" action))))
+
 (defun canvas-browser-copy-block ()
-  "Label the blocks of the page, and copy the picture of the one you name.
-A key of `canvas-browser--hint-actions\' pressed before the letters
-copies something else of it, such as its text with `w\'.  This is what
-`M-w\' does in a page; with a prefix it copies the whole window."
+  "Label the page and its blocks, and copy the picture of the one you name.
+The whole page carries the first letter, in the top corner, as it does
+when a part is picked.  A key of `canvas-browser--hint-actions\=' pressed
+before the letters copies something else, such as the text with `w\='.
+This is what `M-w\=' does in a page; with a prefix it copies the whole
+window at once."
   (interactive)
   (canvas-browser--blocks
    (lambda (boxes)
-     (if (null boxes)
-         (message "canvas-browser: nothing on this page to copy")
-       (when-let* ((chosen (canvas-browser--choose-box boxes canvas-browser--hint-actions)))
-         (canvas-browser--act chosen boxes #'canvas-browser--copy-picture))))))
+     (when-let* ((chosen (canvas-browser--choose-box
+                          (cons (canvas-browser--page-box) boxes)
+                          canvas-browser--hint-actions)))
+       (pcase-let ((`(,place . ,action) chosen))
+         (if (zerop place)
+             (canvas-browser--act-on-page (nth 2 action))
+           (canvas-browser--act (cons (1- place) action) boxes
+                                #'canvas-browser--copy-picture)))))))
 
 ;;;; The part of the page that is picked
 

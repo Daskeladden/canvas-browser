@@ -503,7 +503,7 @@ Normal state keeps the keys of Emacs:
 | `<home>`, `<end>`, `C-<home>`, `C-<end>`, `M-<`, `M->` | go to the top and the foot of the page |
 | `f` | labels what a click can reach, fields inside web components included, and clicks the one you name; the labels stay until you name one or press `ESC` |
 | `a` | offers the links of the page by their text and address, and clicks the one you choose. `C-u a` opens it in a page buffer of its own |
-| `M-w` | labels the blocks of the page, and copies the picture of the one you name; `C-u M-w` copies the whole window |
+| `M-w` | labels the page and its blocks, and copies the picture of the one you name. `C-u M-w` copies the whole window at once |
 | `C-c C-l` | stores a link to the page for org, also while the keys go to the page |
 | `S` | outlines and labels the parts of the page, and picks the one you name: `>` sends its text, and the scroll keys move a part that scrolls on its own |
 | `v` | moves a caret through the text of the page with the motions of Emacs |
@@ -611,6 +611,11 @@ a header, a sidebar, an article, a dialog, a table, a piece of code, a
 picture. So `f y` and a hint copies the address of a link, and `M-w w`
 and a hint copies the text of an article. None of these keys is a letter
 of the hints, and the code refuses one that is.
+
+`M-w` labels the whole page too, with the first letter, in the top
+corner. That label copies the picture of the page as the window shows
+it. `M-w w` and that label copies the text of the whole page, and
+`M-w y` its address.
 
 When a click or a tab moves the focus of the page, smear-cursor flies
 its cursor from the box that had the focus to the box that has it, as it
