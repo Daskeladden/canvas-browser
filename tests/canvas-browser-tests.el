@@ -4752,20 +4752,63 @@ The window manager says so on the root window, where Emacs reads it."
       (should-not (plist-member down :text)))))
 
 (ert-deftest canvas-browser-the-undo-keys-undo-in-the-field ()
-  ;; GIVEN a page buffer in insert state
+  ;; GIVEN a page buffer, in normal state and in insert state
   ;; WHEN a key that undoes in Emacs is pressed, or one that redoes
   ;; THEN the key z goes to the page with Control, and with Shift as well
-  ;;      for a redo, which undo and redo in a browser
+  ;;      for a redo, which undo and redo in a browser: a page buffer
+  ;;      has no text of its own to undo
+  (dolist (typing '(nil t))
+    (canvas-browser-test--in-page
+      (when typing (canvas-browser-insert-mode))
+      (dolist (case '(("C-/" 2) ("C-_" 2) ("C-x u" 2) ("C-?" 10) ("C-M-_" 10)))
+        (setq canvas-browser-test--commands nil)
+        (canvas-browser-test--press (car case))
+        (let ((down (car (canvas-browser-test--keys-sent))))
+          (should (equal (list typing (car case) (plist-get down :key) (plist-get down :code)
+                               (plist-get down :windowsVirtualKeyCode)
+                               (plist-get down :modifiers))
+                         (list typing (car case) "z" "KeyZ" 90 (cadr case)))))))))
+
+(ert-deftest canvas-browser-a-key-given-to-undo-reaches-the-field ()
+  ;; GIVEN a page buffer, in normal state and in insert state
+  ;; THEN the undo command of Emacs and its redo are those of the field
+  ;;      there, so a key that the reader gave to undo reaches the field
+  ;;      as well
+  (dolist (typing '(nil t))
+    (canvas-browser-test--in-page
+      (when typing (canvas-browser-insert-mode))
+      (should (eq (key-binding [remap undo]) #'canvas-browser-field-undo))
+      (should (eq (key-binding [remap undo-redo]) #'canvas-browser-field-redo)))))
+
+(defvar undo-tree-mode)
+(declare-function turn-on-undo-tree-mode "undo-tree")
+
+(ert-deftest canvas-browser-undo-tree-leaves-a-page-buffer-alone ()
+  ;; GIVEN undo-tree, which turns itself on in every buffer but one
+  ;;       whose mode has an undo of its own
+  ;; WHEN it is asked to turn itself on in a page buffer
+  ;; THEN it stays off: its keys would take the undo keys from the
+  ;;      field and try to undo in the page buffer, which is read-only
+  (skip-unless (require 'undo-tree nil t))
   (canvas-browser-test--in-page
-    (canvas-browser-insert-mode)
-    (dolist (case '(("C-/" 2) ("C-_" 2) ("C-x u" 2) ("C-?" 10) ("C-M-_" 10)))
-      (setq canvas-browser-test--commands nil)
-      (canvas-browser-test--press (car case))
-      (let ((down (car (canvas-browser-test--keys-sent))))
-        (should (equal (list (car case) (plist-get down :key) (plist-get down :code)
-                             (plist-get down :windowsVirtualKeyCode)
-                             (plist-get down :modifiers))
-                       (list (car case) "z" "KeyZ" 90 (cadr case))))))))
+    (turn-on-undo-tree-mode)
+    (should-not undo-tree-mode)
+    (should (eq (key-binding (kbd "C-/")) #'canvas-browser-field-undo))))
+
+(ert-deftest canvas-browser-a-page-buffer-keeps-no-undo-of-its-picture ()
+  ;; GIVEN a buffer that keeps steps to undo, as a buffer with a plain
+  ;;       name does
+  ;; WHEN it becomes a page buffer
+  ;; THEN it keeps none: its text is the picture of the page, which is
+  ;;      no change of the reader
+  (canvas-browser-test--with-chromium
+    (let ((page (generate-new-buffer "canvas-browser-test-page")))
+      (unwind-protect
+          (with-current-buffer page
+            (should-not (eq buffer-undo-list t))
+            (canvas-browser-mode)
+            (should (eq buffer-undo-list t)))
+        (kill-buffer page)))))
 
 (ert-deftest canvas-browser-the-paste-keys-type-the-newest-kill ()
   ;; GIVEN a page buffer in insert state, and "pasted" as the newest kill

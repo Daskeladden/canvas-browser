@@ -440,6 +440,7 @@ Normal state keeps the keys of Emacs:
 | `C-r` | steps to the hit before, in the last search |
 | `d` | turns dark mode on or off, for this page and the next ones |
 | `i` | sends the keys to the page, as a click in a field does |
+| `C-/`, `C-x u`, `C-?` | undo and do again in the field of the page. A page buffer has no text of its own to undo |
 | `t` | puts the text of the page, or of the part picked with `S`, in an ordinary buffer |
 | `M-s M-l` | searches that text with `consult-line`, also while the keys go to the page |
 | `M-.` in that text | shows the page at the line: the page scrolls to it and paints it for a moment, and `M-,` comes back to the text |

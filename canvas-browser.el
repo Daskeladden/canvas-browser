@@ -4443,6 +4443,21 @@ whether a part of the page is picked."
 (defvar canvas-browser-insert-map (make-sparse-keymap)
   "Keymap of a page buffer in insert state: every key goes to the page.")
 
+(defun canvas-browser--bind-undo-keys (map)
+  "Bind the keys and the commands that undo in Emacs to the undo of the field.
+A page buffer holds the picture of a page and no text of its own, so
+the only thing to undo there is what was typed into the page.  The
+commands are bound as well as the keys: a key that the reader gave to
+undo then reaches the field, and a package that takes the undo keys of
+every buffer leaves alone a mode that has an undo of its own, as
+undo-tree does."
+  (dolist (key '("C-/" "C-_" "C-x u"))
+    (define-key map (kbd key) #'canvas-browser-field-undo))
+  (dolist (key '("C-?" "C-M-_"))
+    (define-key map (kbd key) #'canvas-browser-field-redo))
+  (define-key map [remap undo] #'canvas-browser-field-undo)
+  (define-key map [remap undo-redo] #'canvas-browser-field-redo))
+
 (defun canvas-browser--bind-insert-keys (map)
   "Bind the keys of insert state in MAP.
 A variable keeps its value when its file is loaded again, so keys bound
@@ -4455,10 +4470,7 @@ here, on every load."
   (define-key map (kbd "C-y") #'canvas-browser-yank)
   (define-key map (kbd "S-<insert>") #'canvas-browser-yank)
   (define-key map [mouse-2] #'canvas-browser-yank)
-  (dolist (key '("C-/" "C-_" "C-x u"))
-    (define-key map (kbd key) #'canvas-browser-field-undo))
-  (dolist (key '("C-?" "C-M-_"))
-    (define-key map (kbd key) #'canvas-browser-field-redo))
+  (canvas-browser--bind-undo-keys map)
   (define-key map (kbd "TAB") #'canvas-browser-next-field)
   (define-key map (kbd "<backtab>") #'canvas-browser-previous-field)
   (define-key map (kbd "<escape>") #'canvas-browser-normal-mode)
@@ -4478,6 +4490,7 @@ here, on every load."
   (define-key map [remap consult-imenu] #'canvas-browser-imenu))
 
 (canvas-browser--bind-insert-keys canvas-browser-insert-map)
+(canvas-browser--bind-undo-keys canvas-browser-mode-map)
 
 (declare-function eww "eww" (url &optional arg))
 
@@ -4569,6 +4582,9 @@ nothing the window does not.  Take the mode out of
   (setq cursor-type nil
         truncate-lines t)
   (setq header-line-format '(:eval (canvas-browser--header)))
+  ;; The text of the buffer is the picture of the page.  A new picture
+  ;; is no step that the reader can take back.
+  (buffer-disable-undo)
   ;; `revert-buffer-function' is not buffer-local by itself: a plain setq
   ;; would make every other buffer read a page again.
   (setq-local revert-buffer-function #'canvas-browser-refresh)
