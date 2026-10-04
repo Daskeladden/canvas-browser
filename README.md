@@ -300,6 +300,19 @@ text. The helpers `canvas-browser-dom-text` and
 `canvas-browser-dom-with` are there for it. Translators need an Emacs
 with libxml.
 
+### The index of a page
+
+`imenu` works in a page buffer, and so does `consult-imenu`. The index
+is the outline of the page: its headings, each with the headings under
+it. Pick one, and the page scrolls to it and paints it for a moment.
+With consult, the page shows each entry while you move to it. `C-g`
+puts the page back where it was.
+
+At an address with a thread translator, the index also has a menu
+`Messages`. It lists each message by its author and the start of its
+text, with a reply under the message that it answers. Pick one, and
+the page shows where its text stands.
+
 ### Embark
 
 `embark-act` in a page buffer acts on the page. It has the actions of

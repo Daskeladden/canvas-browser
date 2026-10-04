@@ -576,10 +576,21 @@ ANSWER, when given, is called with chromium's answer, and REFUSED with
 what chromium says when it refuses the command.  A chromium that died
 is started again, and a page that chromium has let go of is opened
 afresh; a command without a session reaches no page."
+  (when (string-prefix-p "Input.dispatch" method)
+    (canvas-browser--mark-changed))
   (if (or canvas-browser--restarting
           (and (canvas-browser-cdp-running-p) canvas-browser--session))
       (canvas-browser-cdp-send method params answer canvas-browser--session refused)
     (canvas-browser--restart)))
+
+(defun canvas-browser--mark-changed ()
+  "Have Emacs count this buffer as changed, without a change that is seen.
+The buffer holds one glyph whatever the page shows, so nothing in it
+changes when the page does.  What is kept for a buffer until the buffer
+changes, as consult-imenu keeps an index, would stay that of the page
+as it was.  A click, a key and the wheel can each change the page."
+  (with-silent-modifications
+    (put-text-property (point-min) (point-max) 'canvas-browser-changed (float-time))))
 
 (defconst canvas-browser--not-active "Not attached to an active page"
   "What chromium says when it refuses a command because of where the page is.
@@ -819,6 +830,7 @@ after a restore of the page itself.  A navigation to a new page keeps it.
 A frame at a site that may show notifications is given the way to tell
 Emacs of them."
   (canvas-browser--frame-may-notify (plist-get (plist-get params :frame) :url))
+  (canvas-browser--mark-changed)
   (when (and (null (plist-get (plist-get params :frame) :parentId))
              (equal (plist-get params :type) "BackForwardCacheRestore"))
     (canvas-browser--apply-dark)))
@@ -2654,6 +2666,12 @@ from the paint of a later search.")
     const box = range.getBoundingClientRect();
     return [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(box.height)];
   };
+  const blinkOn = (range, ms) => {
+    const mine = paint([range], null);
+    setTimeout(() => {
+      if (CSS.highlights.get('canvas-browser-find') === mine) CSS.highlights.delete('canvas-browser-find');
+    }, ms);
+  };
   const reveal = range => {
     const element = range.startContainer.parentElement || range.startContainer.parentNode.host;
     const origin = window.__canvasBrowserFindOrigin;
@@ -2679,7 +2697,9 @@ Text that the page shows in capitals is in capitals there.
 `reveal\\=' scrolls a range into view, also in a part that scrolls on
 its own, and moves nothing when the range is in view already.  While a
 search runs, it notes where each thing stood before it scrolled it.
-`boxOf\\=' gives the box of a range in the window, as (X Y W H).")
+`boxOf\\=' gives the box of a range in the window, as (X Y W H), and
+`blinkOn\\=' paints a range for some milliseconds.  It needs `paint\\='
+of `canvas-browser--paint-js\\='.")
 
 (defconst canvas-browser--find-script (concat "
 (function (text, regexp, anchor, step) {" canvas-browser--paint-js canvas-browser--flat-js "
@@ -2827,14 +2847,25 @@ Else give nil."
     (canvas-browser--find typed step)
     nil))
 
+(defun canvas-browser--keep-origins ()
+  "Have this page note where it stands before something scrolls it.
+`canvas-browser--end-origins\=' can then put it back."
+  (canvas-browser--tell "Runtime.evaluate"
+                        (list :expression "window.__canvasBrowserFindOrigin = new Map()")))
+
+(defun canvas-browser--end-origins (back)
+  "Have this page forget where it stood; with BACK, it goes back there first.
+It then also loses the paint of a search."
+  (canvas-browser--tell "Runtime.evaluate"
+                        (list :expression (format canvas-browser--find-end-script
+                                                  (if back "true" "false")))))
+
 (defun canvas-browser--find-end (string given-up)
   "End the search of this page for STRING.
 With GIVEN-UP, the page goes back to where it stood and loses its paint.
 Else STRING is kept as the last search, and the page stays."
   (setq canvas-browser--last-search (and (not given-up) (not (string-empty-p string)) string))
-  (canvas-browser--tell "Runtime.evaluate"
-                        (list :expression (format canvas-browser--find-end-script
-                                                  (if given-up "true" "false")))))
+  (canvas-browser--end-origins given-up))
 
 (defun canvas-browser--in-found-page (function)
   "Call FUNCTION in the page that is searched: with what is typed, or with nil.
@@ -3122,10 +3153,7 @@ that goes back in xref comes back to the line."
                                        : needle.length;
     const range = view.range(places[hits[rank]], places[hits[rank] + length - 1] + 1);
     reveal(range);
-    const mine = paint([range], null);
-    setTimeout(() => {
-      if (CSS.highlights.get('canvas-browser-find') === mine) CSS.highlights.delete('canvas-browser-find');
-    }, blink);
+    blinkOn(range, blink);
     return {found, count: hits.length, rank, box: boxOf(range)};
   }
   paint([], null);
@@ -3375,6 +3403,253 @@ The key that goes back in xref comes back here."
     (pop-to-buffer page)
     (canvas-browser--locate lines place)))
 
+;;;; The index of a page, for imenu
+
+(defconst canvas-browser--headings-script
+  (concat "(function () {" canvas-browser--flat-js "
+     const found = [];
+     eachShown(document.body, e => {
+       if (e.nodeType !== 1 || !e.matches('h1,h2,h3,h4,h5,h6,[role=heading]')) return;
+       const text = (e.innerText || '').replace(/\\s+/g, ' ').trim();
+       if (!text) return;
+       const level = /^H[1-6]$/.test(e.tagName) ? Number(e.tagName[1])
+                   : Number(e.getAttribute('aria-level')) || 2;
+       found.push([e, level, text.slice(0, 80)]);
+     });
+     window.__canvasBrowserHeadings = found.map(heading => heading[0]);
+     return found.map(heading => [heading[1], heading[2]]);
+   })()")
+  "The JavaScript that gives the headings of a page, each as (LEVEL TEXT).
+A heading is what the page marks as one, inside web components too, and
+that it shows: a heading that is there for a screen reader only is
+none.  They come in the order of the page, so the headings of one
+column come before those of the next.  They are kept in the page as
+well, so that one of them is found later by the place it has there.")
+
+(defconst canvas-browser--heading-js (concat "
+(function (index, blink) {" canvas-browser--paint-js canvas-browser--flat-js "
+  const heading = (window.__canvasBrowserHeadings || [])[index];
+  if (!heading || !heading.isConnected) return null;
+  const range = document.createRange();
+  range.selectNodeContents(heading);
+  reveal(range);
+  blinkOn(range, blink);
+  return boxOf(range);
+})")
+  "The JavaScript function that shows a heading of a page.
+It takes the place of the heading among those that the page kept, and
+for how many milliseconds to paint it.  It gives the box of the
+heading, or null for a heading that the page has thrown away.")
+
+(defun canvas-browser--show-heading (_name _position index)
+  "Show the heading at INDEX of this page, as imenu calls an entry of its index."
+  (canvas-browser--tell
+   "Runtime.evaluate"
+   (list :expression (format "%s(%d, %d)" canvas-browser--heading-js index
+                             canvas-browser--locate-blink)
+         :returnByValue t)
+   (canvas-browser--here
+    (lambda (result)
+      (if-let* ((box (canvas-browser--value-of result)))
+          (canvas-browser--land-anew box)
+        (message "canvas-browser: that heading has gone, the page has changed"))))))
+
+(defun canvas-browser--show-message (_name _position lines)
+  "Show the message whose text starts with LINES, as imenu calls an entry."
+  (canvas-browser--locate lines (plist-get canvas-browser--part :place)))
+
+(defun canvas-browser--heading-entries ()
+  "The headings of this page, each (LEVEL NAME FUNCTION ARGUMENT)."
+  (cl-loop for (level text) in (canvas-browser--value-now canvas-browser--headings-script)
+           for index from 0
+           collect (list level text #'canvas-browser--show-heading index)))
+
+(defconst canvas-browser--name-length 40
+  "How many letters of the text of a message stand in its name in an index.")
+
+(defun canvas-browser--text-start (text)
+  "The first line of TEXT, cut to `canvas-browser--name-length\=' letters."
+  (let ((line (canvas-browser--squeeze (car (split-string text "\n")))))
+    (if (> (length line) canvas-browser--name-length)
+        (concat (substring line 0 canvas-browser--name-length) "…")
+      line)))
+
+(defun canvas-browser--item-name (item)
+  "What an index calls ITEM of a thread.
+It is its title.  Without one it is who wrote it and how its text
+starts, which tells two messages of one author apart.  Without a text
+it is who wrote it and when."
+  (let ((author (plist-get item :author))
+        (time (plist-get item :time))
+        (text (plist-get item :text)))
+    (cond ((plist-get item :title))
+          (text (concat (and author (concat author ": "))
+                        (canvas-browser--text-start text)))
+          (t (string-join (delq nil (list author (and time (canvas-browser--time-text time))))
+                          " · ")))))
+
+(defun canvas-browser--paint-whole (way)
+  "WAY to ask for a line, with all of its text to paint.
+A message that was picked is what the eye must find, not its first line."
+  (list :text (plist-get way :text)
+        :rank (plist-get way :rank)
+        :line (plist-get way :line)))
+
+(defun canvas-browser--message-entries (thread level)
+  "The items of THREAD and their replies, each (LEVEL NAME FUNCTION LINES).
+The text of each item is put in this buffer, after the texts before it.
+LINES are the first lines of the text as a page is asked for them, each
+with its rank: how many times it stands in the texts before it."
+  (mapcan (lambda (item)
+            (let ((start (point)))
+              (insert (or (plist-get item :text) "") "\n\n")
+              (cons (list level (canvas-browser--item-name item)
+                          #'canvas-browser--show-message
+                          (save-excursion
+                            (goto-char start)
+                            (mapcar #'canvas-browser--paint-whole
+                                    (canvas-browser--lines-to-find))))
+                    (canvas-browser--message-entries (plist-get item :replies)
+                                                     (1+ level)))))
+          thread))
+
+(defun canvas-browser--unique-names (entries)
+  "ENTRIES, each (LEVEL NAME . REST), with a number after a name that came before.
+An index finds an entry by its name, so two with one name are one."
+  (let ((seen (make-hash-table :test 'equal)))
+    (mapcar (lambda (entry)
+              (pcase-let* ((`(,level ,name . ,rest) entry)
+                           (count (cl-incf (gethash name seen 0))))
+                (if (= count 1)
+                    entry
+                  (cons level (cons (format "%s <%d>" name count) rest)))))
+            entries)))
+
+(defun canvas-browser--index-entry (entry)
+  "ENTRY, (LEVEL NAME FUNCTION ARGUMENT), as an entry of imenu that calls FUNCTION."
+  (pcase-let ((`(,_ ,name ,function ,argument) entry))
+    (list name (point-min) function argument)))
+
+(defun canvas-browser--outline (entries)
+  "ENTRIES as an index of imenu.
+Each is (LEVEL NAME FUNCTION ARGUMENT), and they stand in their order.
+An entry with entries of a deeper level after it is a menu of its own,
+which starts with the entry itself, as the index of org has it."
+  (let ((index nil))
+    (while entries
+      (let* ((entry (pop entries))
+             (under nil))
+        (while (and entries (> (car (car entries)) (car entry)))
+          (push (pop entries) under))
+        (push (if under
+                  (cons (nth 1 entry)
+                        (cons (canvas-browser--index-entry entry)
+                              (canvas-browser--outline (nreverse under))))
+                (canvas-browser--index-entry entry))
+              index)))
+    (nreverse index)))
+
+(defun canvas-browser--index-of (entries)
+  "ENTRIES, each (LEVEL NAME FUNCTION ARGUMENT), as an index of imenu."
+  (canvas-browser--outline (canvas-browser--unique-names entries)))
+
+(defun canvas-browser--thread-index ()
+  "The messages of the thread of this page as a menu of an index, or nil.
+A page has a thread when its address has a translator that gives one."
+  (when-let* ((thread (plist-get (canvas-browser--translation
+                                  (if canvas-browser--part 'part 'page))
+                                 :thread)))
+    (list (cons "Messages"
+                (canvas-browser--index-of
+                 (with-temp-buffer (canvas-browser--message-entries thread 1)))))))
+
+(defun canvas-browser-imenu-index ()
+  "The index of this page, for imenu.
+The headings of the page are its outline: a heading with headings under
+it is a menu of its own.  The messages of a thread are a menu too, each
+named by who wrote it and when, a reply under the message it answers.
+A page has them when its address has a translator that gives a thread.
+An entry that is picked is shown in the page, and painted for a moment."
+  (append (canvas-browser--index-of (canvas-browser--heading-entries))
+          (canvas-browser--thread-index)))
+
+;;;;; Choosing from the index
+
+(declare-function consult--read "consult" (table &rest options))
+(declare-function consult--lookup-cons "consult" (selected candidates &rest _))
+
+(defvar canvas-browser-imenu-history nil
+  "The entries of the indexes of pages that were chosen.")
+
+(defun canvas-browser--menu-p (entry)
+  "Whether ENTRY of an index of imenu is a menu, and not something to pick."
+  (and (consp (cdr entry)) (consp (cadr entry))))
+
+(defun canvas-browser--flat-index (index &optional path)
+  "INDEX, an index of imenu, as a list of (NAME . ENTRY) to choose from.
+An entry of a menu is named by the path to it, MENU/ENTRY, under PATH
+when given.  The entry that a menu starts with, which has the name of
+the menu, is named as the menu: it is the heading that the menu is of."
+  (mapcan (lambda (entry)
+            (let ((name (if path (concat path "/" (car entry)) (car entry))))
+              (cond ((not (canvas-browser--menu-p entry))
+                     (list (cons name entry)))
+                    ((and (not (canvas-browser--menu-p (cadr entry)))
+                          (equal (car (cadr entry)) (car entry)))
+                     (cons (cons name (cadr entry))
+                           (canvas-browser--flat-index (cddr entry) name)))
+                    (t (canvas-browser--flat-index (cdr entry) name)))))
+          index))
+
+(defun canvas-browser--pick-entry (entry)
+  "Show ENTRY of the index of this page, as imenu does for a picked entry."
+  (pcase-let ((`(,name ,position ,function . ,arguments) entry))
+    (apply function name position arguments)))
+
+(defun canvas-browser--imenu-state ()
+  "The function that shows the entries of the index of this page to consult.
+consult calls it with what happens and an entry, (NAME . ENTRY) or nil:
+before the reader chooses, for each entry that the reader moves to, and
+at the end with the entry that was picked.  The page notes where it
+stands at the start and shows each entry.  At the end it stays at the
+picked entry, or goes back when none was picked.
+
+The entry that consult shows first, before the reader moved, is not
+shown in the page: the page must not jump to its first heading because
+its index was opened."
+  (let ((page (current-buffer))
+        (opened nil))
+    (lambda (action candidate)
+      (with-current-buffer page
+        (pcase action
+          ('setup (canvas-browser--keep-origins))
+          ('preview (when candidate
+                      (if opened
+                          (canvas-browser--pick-entry (cdr candidate))
+                        (setq opened t))))
+          ('return (canvas-browser--end-origins (null candidate))
+                   (when candidate (canvas-browser--pick-entry (cdr candidate)))))))))
+
+(defun canvas-browser-imenu ()
+  "Go to a heading or a message of this page, chosen from its index.
+With consult, the page shows each entry while you move to it, and goes
+back to where it stood when you give up.  Without consult, this is
+`imenu\\='.  The keys of `imenu\\=' and of `consult-imenu\\=' run it in a
+page buffer."
+  (interactive nil canvas-browser-mode)
+  (if (or (fboundp 'consult--read) (require 'consult nil t))
+      (let ((entries (canvas-browser--flat-index (canvas-browser-imenu-index))))
+        (unless entries
+          (user-error "canvas-browser: this page has no heading and no thread"))
+        (consult--read entries
+                       :prompt "Go to: "
+                       :require-match t
+                       :sort nil
+                       :lookup #'consult--lookup-cons
+                       :state (canvas-browser--imenu-state)
+                       :history 'canvas-browser-imenu-history))
+    (call-interactively #'imenu)))
+
 ;;;; The zoom and the picture
 
 (defcustom canvas-browser-zoom-step 1.2
@@ -3592,6 +3867,8 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "t" #'canvas-browser-text
   "e" #'canvas-browser-open-in-eww
   "M-s M-l" #'canvas-browser-search-text
+  "<remap> <imenu>" #'canvas-browser-imenu
+  "<remap> <consult-imenu>" #'canvas-browser-imenu
   "z" #'canvas-keys-zoom-fit
   "<remap> <scroll-up-command>" #'canvas-browser-scroll-up
   "<remap> <scroll-down-command>" #'canvas-browser-scroll-down
@@ -4196,7 +4473,9 @@ here, on every load."
   ;; does when it opens a talk.  Without this key here, the key of
   ;; `consult-line' would then search the page buffer, which holds no
   ;; text.
-  (define-key map (kbd "M-s M-l") #'canvas-browser-search-text))
+  (define-key map (kbd "M-s M-l") #'canvas-browser-search-text)
+  (define-key map [remap imenu] #'canvas-browser-imenu)
+  (define-key map [remap consult-imenu] #'canvas-browser-imenu))
 
 (canvas-browser--bind-insert-keys canvas-browser-insert-map)
 
@@ -4294,6 +4573,7 @@ nothing the window does not.  Take the mode out of
   ;; would make every other buffer read a page again.
   (setq-local revert-buffer-function #'canvas-browser-refresh)
   (setq-local bookmark-make-record-function #'canvas-browser-bookmark-make-record)
+  (setq-local imenu-create-index-function #'canvas-browser-imenu-index)
   (setq canvas-keys-menu-command #'canvas-browser-menu
         canvas-keys-write-command #'canvas-browser-write-picture
         canvas-keys-copy-function #'canvas-browser-copy-block

@@ -624,6 +624,300 @@ Each is (TEXT RANK PAINT): PAINT is how much of it the page paints."
                                                      :type 'user-error)))))
       (kill-buffer text-buffer))))
 
+;;;; The index of a page
+
+(defmacro canvas-browser-test--indexing (headings &rest body)
+  "Run BODY in a page that gives HEADINGS, each (LEVEL TEXT), as its headings.
+The page answers `answer\=' to anything else it is asked, and what the
+reader is told goes to `said\='."
+  (declare (indent 1))
+  `(canvas-browser-test--in-page
+     (let ((answer nil)
+           (said nil))
+       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                  (lambda (method params &optional reply _session &rest _)
+                    (push (cons method params) canvas-browser-test--commands)
+                    (when reply
+                      (funcall reply
+                               (list :result
+                                     (list :value
+                                           (if (string-search
+                                                "__canvasBrowserHeadings = "
+                                                (or (plist-get params :expression) ""))
+                                               ,headings
+                                             answer)))))))
+                 ((symbol-function 'message)
+                  (lambda (format-string &rest args)
+                    (setq said (and format-string (apply #'format format-string args))))))
+         ,@body))))
+
+(defun canvas-browser-test--names (index)
+  "The names of INDEX, an index of imenu, with a list for each menu in it."
+  (mapcar (lambda (entry)
+            (if (and (consp (cdr entry)) (consp (cadr entry)))
+                (cons (car entry) (canvas-browser-test--names (cdr entry)))
+              (car entry)))
+          index))
+
+(defun canvas-browser-test--pick (entry)
+  "Pick ENTRY of an index, as imenu does for an entry that names a function."
+  (pcase-let ((`(,name ,position ,function . ,arguments) entry))
+    (apply function name position arguments)))
+
+(ert-deftest canvas-browser-the-headings-of-a-page-are-its-index ()
+  ;; GIVEN a page with a heading, two headings under it, and one under
+  ;;       the first of those
+  ;; WHEN imenu asks the page buffer for its index
+  ;; THEN the index is the outline of the page: a heading with headings
+  ;;      under it is a menu that starts with the heading itself
+  (canvas-browser-test--indexing '((1 "Guide") (2 "Install") (3 "From source") (2 "Use"))
+    (should (eq imenu-create-index-function #'canvas-browser-imenu-index))
+    (should (equal (canvas-browser-test--names (funcall imenu-create-index-function))
+                   '(("Guide" "Guide" ("Install" "Install" "From source") "Use"))))))
+
+(ert-deftest canvas-browser-a-heading-that-is-picked-is-shown-in-the-page ()
+  ;; GIVEN the index of a page with two headings
+  ;; WHEN the second is picked
+  ;; THEN the page is asked to show its second heading and to paint it
+  ;;      for a moment, AND the eye is drawn to where it stands
+  (canvas-browser-test--indexing '((1 "Guide") (1 "Use"))
+    (let* ((flashed nil)
+           (canvas-browser-pulse-function (lambda (box) (push box flashed)))
+           (index (canvas-browser-imenu-index)))
+      (setq answer '(10 20 300 24))
+      (canvas-browser-test--pick (nth 1 index))
+      (should (string-suffix-p "})(1, 1500)"
+                               (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                          :expression)))
+      (should (equal flashed '((:x 10 :y 20 :w 300 :h 24)))))))
+
+(ert-deftest canvas-browser-a-heading-that-has-gone-says-so ()
+  ;; GIVEN the index of a page, and a page that has thrown the heading
+  ;;       away since
+  ;; WHEN the heading is picked
+  ;; THEN the reader is told that it has gone
+  (canvas-browser-test--indexing '((1 "Guide"))
+    (let ((index (canvas-browser-imenu-index)))
+      (setq answer nil)
+      (canvas-browser-test--pick (car index))
+      (should (string-search "gone" said)))))
+
+(ert-deftest canvas-browser-two-headings-with-one-name-are-told-apart ()
+  ;; GIVEN a page where two headings have the same words
+  ;; WHEN its index is made
+  ;; THEN the second one is numbered, so that each can be picked
+  (canvas-browser-test--indexing '((2 "Reply") (2 "Notes") (2 "Reply"))
+    (should (equal (canvas-browser-test--names (canvas-browser-imenu-index))
+                   '("Reply" "Notes" "Reply <2>")))))
+
+(ert-deftest canvas-browser-the-messages-of-a-thread-are-in-the-index ()
+  ;; GIVEN a page with no heading, at an address with a translator that
+  ;;       gives a thread: a message with a reply, and a second message
+  ;; WHEN its index is made
+  ;; THEN the index has a menu of the messages, each named by who wrote
+  ;;      it, a reply under the message that it answers
+  ;; WHEN the reply is picked
+  ;; THEN the page is asked where the text of the reply stands
+  (let ((canvas-browser-translators
+         (list (cons "example\\.org"
+                     (lambda (_dom)
+                       '((:author "alice" :text "What is the role?"
+                          :replies ((:author "bob" :text "The drawing layer.")))
+                         (:author "carol" :text "What is the role?")))))))
+    (skip-unless (libxml-available-p))
+    (canvas-browser-test--indexing nil
+      (setq answer "<p>the page</p>")
+      (let* ((index (canvas-browser-imenu-index))
+             (messages (cdr (car index)))
+             (alice (car messages)))
+        ;; A message is named by who wrote it and how it starts.
+        (should (equal (canvas-browser-test--names index)
+                       '(("Messages" ("alice: What is the role?"
+                                      "alice: What is the role?"
+                                      "bob: The drawing layer.")
+                          "carol: What is the role?"))))
+        (setq answer '(:found 0 :count 1 :rank 0))
+        (canvas-browser-test--pick (nth 2 alice))
+        (should (string-search "[{\"text\":\"The drawing layer.\",\"rank\":0}]"
+                               (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                          :expression)))
+        ;; The second message has the words of the first: it is the
+        ;; second time that the words stand in the thread.
+        (canvas-browser-test--pick (nth 1 messages))
+        (should (string-search "[{\"text\":\"What is the role?\",\"rank\":1}]"
+                               (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                          :expression)))))))
+
+(defun canvas-browser-test--asked-of-the-page ()
+  "The end of each script that the page was asked to run, oldest first.
+It is the call that the script ends with, which says what was asked."
+  (delq nil
+        (mapcar (lambda (command)
+                  (let ((expression (or (plist-get (cdr command) :expression) "")))
+                    (and (equal (car command) "Runtime.evaluate")
+                         (string-match "\\(?:})\\|^\\)\\([^}\n]*\\)\\'" expression)
+                         (match-string 1 expression))))
+                (reverse canvas-browser-test--commands))))
+
+(ert-deftest canvas-browser-the-index-is-written-out-as-paths-to-choose-from ()
+  ;; GIVEN the index of a page: a heading with two under it, one of
+  ;;       which has a heading under it
+  ;; WHEN it is written out to choose from
+  ;; THEN each entry is named by the path to it, AND the entry that a
+  ;;      menu starts with is named as the menu
+  (canvas-browser-test--indexing '((1 "Guide") (2 "Install") (3 "From source") (2 "Use"))
+    (should (equal (mapcar #'car (canvas-browser--flat-index (canvas-browser-imenu-index)))
+                   '("Guide" "Guide/Install" "Guide/Install/From source" "Guide/Use")))))
+
+(ert-deftest canvas-browser-the-page-shows-each-entry-while-one-is-chosen ()
+  ;; GIVEN a page with two headings, and consult, which lets the reader
+  ;;       move through the entries of an index
+  ;; WHEN the reader moves to the second heading, and picks it
+  ;; THEN the page first notes where it stands, then shows the second
+  ;;      heading, AND at the pick it forgets where it stood and shows
+  ;;      the heading
+  (canvas-browser-test--indexing '((1 "Guide") (1 "Use"))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest options)
+                 (let ((state (plist-get options :state))
+                       (second (nth 1 candidates)))
+                   (setq canvas-browser-test--commands nil)
+                   (funcall state 'setup nil)
+                   (funcall state 'preview (car candidates))
+                   (funcall state 'preview second)
+                   (funcall state 'preview nil)
+                   (funcall state 'exit nil)
+                   (funcall state 'return second)
+                   second))))
+      (setq answer '(10 20 300 24))
+      (canvas-browser-imenu)
+      (should (equal (canvas-browser-test--asked-of-the-page)
+                     '("window.__canvasBrowserFindOrigin = new Map()"
+                       "(1, 1500)" "(false)" "(1, 1500)"))))))
+
+(ert-deftest canvas-browser-the-page-stays-where-it-is-when-the-index-opens ()
+  ;; GIVEN a page whose index the reader opens, where consult shows the
+  ;;       first entry as the one to pick, before the reader moved
+  ;; WHEN consult asks the page to show that entry
+  ;; THEN the page shows nothing: it must not jump to its first heading
+  ;;      because the index was opened
+  ;; WHEN the reader moves to another entry and back to the first
+  ;; THEN the page shows each
+  (canvas-browser-test--indexing '((1 "Guide") (1 "Use"))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest options)
+                 (let ((state (plist-get options :state)))
+                   (setq canvas-browser-test--commands nil)
+                   (funcall state 'setup nil)
+                   (funcall state 'preview (car candidates))
+                   (should (equal (canvas-browser-test--asked-of-the-page)
+                                  '("window.__canvasBrowserFindOrigin = new Map()")))
+                   (funcall state 'preview (nth 1 candidates))
+                   (funcall state 'preview (car candidates))
+                   (should (equal (last (canvas-browser-test--asked-of-the-page) 2)
+                                  '("(1, 1500)" "(0, 1500)")))
+                   (funcall state 'return nil)
+                   nil))))
+      (setq answer '(10 20 300 24))
+      (canvas-browser-imenu))))
+
+(ert-deftest canvas-browser-a-long-message-is-named-by-its-start ()
+  ;; GIVEN a message of a thread whose text is long, and one with a time
+  ;;       and no text
+  ;; THEN the first is named by who wrote it and the start of its first
+  ;;      line, cut short, AND the second by who wrote it and when
+  (should (equal (canvas-browser--item-name
+                  '(:author "alice"
+                    :text "This is a first line that goes on for much longer than a name\nSecond"))
+                 "alice: This is a first line that goes on for mu…"))
+  (should (equal (canvas-browser--item-name '(:author "bob" :time "noon")) "bob · noon"))
+  (should (equal (canvas-browser--item-name '(:title "A post" :author "carol" :text "Words"))
+                 "A post")))
+
+(ert-deftest canvas-browser-the-page-goes-back-when-no-entry-is-picked ()
+  ;; GIVEN a page whose index the reader moved through, so that the page
+  ;;       scrolled
+  ;; WHEN the reader gives up
+  ;; THEN the page is told to go back to where it stood
+  (canvas-browser-test--indexing '((1 "Guide") (1 "Use"))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest options)
+                 (let ((state (plist-get options :state)))
+                   (setq canvas-browser-test--commands nil)
+                   (funcall state 'setup nil)
+                   (funcall state 'preview (car candidates))
+                   (funcall state 'exit nil)
+                   (funcall state 'return nil)
+                   nil))))
+      (setq answer '(10 20 300 24))
+      (canvas-browser-imenu)
+      (should (equal (car (last (canvas-browser-test--asked-of-the-page))) "(true)")))))
+
+(ert-deftest canvas-browser-without-consult-the-index-is-chosen-from-with-imenu ()
+  ;; GIVEN an Emacs without consult
+  ;; WHEN the index of a page is asked for
+  ;; THEN imenu asks for the entry
+  (canvas-browser-test--indexing '((1 "Guide"))
+    (let ((called nil))
+      (cl-letf (((symbol-function 'imenu) (lambda (&rest _) (interactive) (setq called t))))
+        (should-not (fboundp 'consult--read))
+        (canvas-browser-imenu)
+        (should called)))))
+
+(ert-deftest canvas-browser-the-keys-of-imenu-choose-from-the-index-of-the-page ()
+  ;; GIVEN a page buffer, in normal state and in insert state
+  ;; THEN the keys of imenu and of consult-imenu, whatever they are,
+  ;;      choose from the index of the page
+  (canvas-browser-test--in-page
+    (dolist (map (list canvas-browser-mode-map canvas-browser-insert-map))
+      (should (eq (lookup-key map [remap imenu]) #'canvas-browser-imenu))
+      (should (eq (lookup-key map [remap consult-imenu]) #'canvas-browser-imenu)))))
+
+(ert-deftest canvas-browser-a-message-is-asked-for-by-its-start-as-one-line ()
+  ;; GIVEN a thread with a message whose text starts with a name on a
+  ;;       line of its own, as a message that starts with a mention is
+  ;;       written
+  ;; WHEN the message is picked from the index
+  ;; THEN the page is first asked for the start of the message as one
+  ;;      line, which it holds once, AND it paints all of that: the
+  ;;      message is what was picked, not its first line
+  (let ((canvas-browser-translators
+         (list (cons "example\\.org"
+                     (lambda (_dom)
+                       '((:author "bob" :text "Kim Doe\nI saw the light was green")))))))
+    (skip-unless (libxml-available-p))
+    (canvas-browser-test--indexing nil
+      (setq answer "<p>the page</p>")
+      (let ((index (canvas-browser-imenu-index)))
+        (setq answer '(:found 0 :count 1 :rank 0))
+        (canvas-browser-test--pick (car (cdr (car index))))
+        (should (string-search
+                 (concat "[{\"text\":\"Kim Doe I saw the light was green\",\"rank\":0},"
+                         "{\"text\":\"Kim Doe\",\"rank\":0},")
+                 (plist-get (canvas-browser-test--params "Runtime.evaluate") :expression)))))))
+
+(ert-deftest canvas-browser-a-page-with-nothing-to-index-has-no-index ()
+  ;; GIVEN a page with no heading and no translator
+  ;; WHEN its index is made
+  ;; THEN it is empty
+  (canvas-browser-test--indexing nil
+    (should-not (canvas-browser-imenu-index))))
+
+(ert-deftest canvas-browser-a-page-that-was-acted-on-counts-as-changed ()
+  ;; GIVEN a page buffer, which holds one glyph whatever the page shows
+  ;; WHEN the page is clicked
+  ;; THEN Emacs counts the buffer as changed: an index that is kept
+  ;;      until the buffer changes would else stay that of the page
+  ;;      before the click
+  (canvas-browser-test--in-page
+    (let ((inhibit-read-only t))
+      (insert "x")
+      (set-buffer-modified-p nil))
+    (let ((before (buffer-modified-tick)))
+      (canvas-browser--click 10 10)
+      (should (> (buffer-modified-tick) before))
+      (should-not (buffer-modified-p)))))
+
 ;;;; The window, the header line and a chromium that died
 
 (ert-deftest canvas-browser-a-resized-window-lays-the-page-out-again ()

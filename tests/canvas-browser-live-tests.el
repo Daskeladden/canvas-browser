@@ -1722,6 +1722,71 @@ moment to answer the search first."
       (should (string-search "nterminated" said)))
     (should (equal (car (canvas-browser-live-test--hits)) 10))))
 
+(ert-deftest canvas-browser-live-the-index-of-a-page-is-its-outline ()
+  ;; GIVEN the outline fixture: a heading, under it three headings, one
+  ;;       of them marked as a heading by its role, a heading under the
+  ;;       first of the three, and a heading that the page does not show
+  ;; WHEN imenu asks the page buffer for its index
+  ;; THEN the index is the outline of what the page shows
+  ;; WHEN the last heading, far down the page, is picked
+  ;; THEN the page scrolls to it and paints it, AND a moment later the
+  ;;      paint is gone
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "outline.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (let* ((index (funcall imenu-create-index-function))
+           (guide (car index))
+           (names (lambda (entries) (mapcar #'car entries))))
+      (should (equal (funcall names index) '("Guide")))
+      ;; A heading that is there for a screen reader only is none.
+      (should (equal (funcall names (cdr guide)) '("Guide" "Install" "Use" "The end")))
+      (should (equal (funcall names (cdr (nth 2 guide))) '("Install" "From source")))
+      ;; The headings of two columns come column by column, as the page
+      ;; has them, and not by how high each stands in the window.
+      (should (equal (funcall names (cdr (nth 3 guide)))
+                     '("Use" "Left" "Left and low" "Right")))
+      (pcase-let ((`(,name ,position ,function . ,arguments) (car (last guide))))
+        (apply function name position arguments))
+      (canvas-browser-live-test--wait 0.5 (lambda () nil))
+      (should (> (canvas-browser-live-test--page-says "scrollY") 0))
+      (should (equal (canvas-browser-live-test--page-says
+                      "[...CSS.highlights.get('canvas-browser-find')][0].startContainer.id")
+                     "end"))
+      (should (plist-get canvas-browser--find-box :w))
+      (canvas-browser-live-test--wait 2.5 (lambda () nil))
+      (should (equal (canvas-browser-live-test--page-says
+                      "CSS.highlights.has('canvas-browser-find') ? 1 : 0")
+                     0)))))
+
+(ert-deftest canvas-browser-live-a-choice-from-the-index-that-is-given-up-goes-back ()
+  ;; GIVEN the outline fixture, at its top, where the reader chooses
+  ;;       from the index and moves to the last heading, far down
+  ;; WHEN the page shows that heading
+  ;; THEN it has scrolled there
+  ;; WHEN the reader gives up
+  ;; THEN the page is back at its top, AND nothing is painted
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "outline.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (let* ((entries (canvas-browser--flat-index (funcall imenu-create-index-function)))
+           (state (canvas-browser--imenu-state)))
+      (should (equal (mapcar #'car entries)
+                     '("Guide" "Guide/Install" "Guide/Install/From source" "Guide/Use"
+                       "Guide/Use/Left" "Guide/Use/Left and low" "Guide/Use/Right"
+                       "Guide/The end")))
+      (funcall state 'setup nil)
+      ;; consult shows the first entry when the index opens.
+      (funcall state 'preview (car entries))
+      (funcall state 'preview (car (last entries)))
+      (canvas-browser-live-test--wait 0.5 (lambda () nil))
+      (should (> (canvas-browser-live-test--page-says "scrollY") 0))
+      (funcall state 'return nil)
+      (canvas-browser-live-test--wait 0.5 (lambda () nil))
+      (should (equal (canvas-browser-live-test--page-says "scrollY") 0))
+      (should (equal (canvas-browser-live-test--page-says
+                      "CSS.highlights.has('canvas-browser-find') ? 1 : 0")
+                     0)))))
+
 (defun canvas-browser-live-test--click-on (id)
   "Click the element ID of this page."
   (let ((middle (canvas-browser-live-test--middle id)))
