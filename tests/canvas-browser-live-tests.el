@@ -1198,6 +1198,26 @@ Chromium has a profile of its own."
                       "window.__canvasBrowserParts.map(e => e.tagName)")
                      '("MAIN" "DIV" "ASIDE"))))))
 
+(ert-deftest canvas-browser-live-a-pane-whose-content-fits-is-a-part ()
+  ;; GIVEN the panes fixture, laid out as an application lays itself out
+  ;;       with nothing that marks a part: a list that scrolls, beside
+  ;;       it a pane that could scroll and whose short content fits, and
+  ;;       in the pane a small box of code that could scroll as well
+  ;; WHEN the parts of the page are asked for
+  ;; THEN the list and the pane are parts, AND only the list is said to
+  ;;      scroll, AND the small box is no part
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "panes.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (let ((boxes 'waiting))
+      (canvas-browser--parts (lambda (answer) (setq boxes answer)))
+      (should (canvas-browser-live-test--wait 10 (lambda () (not (eq boxes 'waiting)))))
+      (should (equal (canvas-browser-live-test--page-says
+                      "window.__canvasBrowserParts.map(e => e.id)")
+                     '("side" "pane")))
+      (should (equal (mapcar (lambda (box) (eq (plist-get box :scrolls) t)) boxes)
+                     '(t nil))))))
+
 (ert-deftest canvas-browser-live-the-scroll-keys-move-the-part-that-is-picked ()
   ;; GIVEN the parts fixture, where the list that scrolls is picked
   ;; WHEN a line is scrolled

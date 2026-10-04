@@ -2324,18 +2324,19 @@ copies something else of it, such as its text with `w\'.  This is what
      const marked = 'main,aside,nav,header,footer,article,section,dialog,' +
        '[role=main],[role=complementary],[role=navigation],[role=banner],' +
        '[role=contentinfo],[role=region],[role=feed],[role=dialog],[role=article]';
-     const scrolls = e => {
-       if (e.scrollHeight <= e.clientHeight + 4) return false;
+     const could = e => {
        const overflow = getComputedStyle(e).overflowY;
        return overflow === 'auto' || overflow === 'scroll';
      };
+     const scrolls = e => e.scrollHeight > e.clientHeight + 4 && could(e);
+     const pane = e => e.clientWidth * e.clientHeight * 10 >= innerWidth * innerHeight && could(e);
      const inside = (outer, e) => { for (let n = e; n; n = up(n)) if (n === outer) return true; return false; };
      const same = (a, b) => Math.abs(a.x - b.x) < 3 && Math.abs(a.y - b.y) < 3 &&
                             Math.abs(a.w - b.w) < 3 && Math.abs(a.h - b.h) < 3;
      const parts = [], boxes = [];
      walk(document, '*', e => {
        const moves = scrolls(e);
-       if (!moves && !e.matches(marked)) return;
+       if (!moves && !e.matches(marked) && !pane(e)) return;
        const box = shown(e);
        if (box.w < 40 || box.h < 40) return;
        if (!moves) {
@@ -2353,8 +2354,12 @@ copies something else of it, such as its text with `w\'.  This is what
    })()")
   "The JavaScript that gives the boxes of the parts of a page, to pick one.
 A part is what scrolls on its own, or what the page itself marks as a
-part: its main content, a sidebar, a header, an article.  A box says
-whether its part scrolls.  Of two parts with one box, the one that
+part: its main content, a sidebar, a header, an article.  A pane is a
+part too: a box that could scroll and takes a tenth of the window or
+more, though its content fits now.  An application lays itself out in
+such panes and marks none of them, and a short talk fits in its pane.
+A small box that could scroll, as a line of code is, is no part.  A box
+says whether its part scrolls.  Of two parts with one box, the one that
 scrolls is kept.  The parts are kept in the page as well, so that a
 later key finds one of them by the place it has there.")
 

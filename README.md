@@ -154,7 +154,9 @@ same text.
 To send one part of the page and not the rest, pick the part first
 with `S`. `S` outlines and labels the parts that the window shows: the
 main content, a sidebar, a header, an article, and every part that
-scrolls on its own. Name the part you want. That part keeps an outline
+scrolls on its own. A large pane of an application is a part too, with
+or without content to scroll. Name the part you want. That part keeps
+an outline
 while it is picked, and the header line says `part`. `>` then sends
 that part: it is tinted while you choose the receiver, and its whole
 text goes, also what is out of the window. So the main content goes
