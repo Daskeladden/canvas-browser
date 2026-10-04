@@ -1465,6 +1465,37 @@ test of what goes by site needs a page that a server gave."
            (progn ,@body)
          (delete-process ,server)))))
 
+(defun canvas-browser-live-test--click-on (id)
+  "Click the element ID of this page."
+  (let ((middle (canvas-browser-live-test--middle id)))
+    (should middle)
+    (canvas-browser--click (car middle) (cdr middle))))
+
+(ert-deftest canvas-browser-live-what-a-page-copies-goes-to-the-kill-ring ()
+  ;; GIVEN the clipboard fixture, served as a site: a button that copies
+  ;;       a text as pages do now, one that copies as pages did before,
+  ;;       and one that copies nothing
+  ;; WHEN each is clicked
+  ;; THEN the text of the first is the newest kill, then the text of the
+  ;;      second, AND the third leaves the kill ring as it is
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--serving origin
+    (canvas-browser-live-test--at (concat origin "/clipboard.html")
+      (canvas-browser-live-test--lay-out 800 600)
+      (let ((kill-ring nil)
+            (kill-ring-yank-pointer nil)
+            (interprogram-cut-function nil)
+            (canvas-browser--clipboard nil))
+        (canvas-browser-live-test--click-on "modern")
+        (should (canvas-browser-live-test--wait
+                 5 (lambda () (equal (car kill-ring) "copied the new way"))))
+        (canvas-browser-live-test--click-on "old")
+        (should (canvas-browser-live-test--wait
+                 5 (lambda () (equal (car kill-ring) "copied the old way"))))
+        (canvas-browser-live-test--click-on "nothing")
+        (canvas-browser-live-test--wait 2 (lambda () nil))
+        (should (equal kill-ring '("copied the old way" "copied the new way")))))))
+
 (defun canvas-browser-live-test--said-p (words)
   "Whether the notify fixture has heard WORDS so far, within ten seconds."
   (canvas-browser-live-test--wait

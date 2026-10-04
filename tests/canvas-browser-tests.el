@@ -5747,6 +5747,103 @@ It is found as org finds it, from where the link stands."
   (should (eq (plist-get (canvas-browser-test--menu-entry ">") :command)
               'canvas-browser-send-to)))
 
+;;;; What a page copies
+
+(defmacro canvas-browser-test--with-clipboard (text &rest body)
+  "Run BODY in a page where the clipboard of chromium holds TEXT.
+TEXT is evaluated each time the page is asked.  The kill ring is empty
+and its own, a timer runs at once, and no command is kept from before."
+  (declare (indent 1))
+  `(canvas-browser-test--in-page
+     (let ((kill-ring nil)
+           (kill-ring-yank-pointer nil)
+           (interprogram-cut-function nil)
+           (canvas-browser--clipboard nil)
+           (send (symbol-function 'canvas-browser-cdp-send)))
+       (setq canvas-browser-test--commands nil)
+       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                  (lambda (method params &optional answer &rest rest)
+                    (if (and (equal method "Runtime.evaluate")
+                             (string-search "clipboard" (plist-get params :expression)))
+                        (progn (push (cons method params) canvas-browser-test--commands)
+                               (funcall answer (list :result (list :value ,text))))
+                      (apply send method params answer rest))))
+                 ((symbol-function 'run-at-time)
+                  (lambda (_time _repeat function &rest args) (apply function args))))
+         ,@body))))
+
+(defun canvas-browser-test--clipboard-commands ()
+  "What chromium was told about the clipboard, oldest first, each in a word."
+  (delq nil
+        (mapcar (lambda (command)
+                  (pcase (car command)
+                    ("Browser.setPermission"
+                     (and (equal (plist-get (plist-get (cdr command) :permission) :name)
+                                 "clipboard-read")
+                          (list (plist-get (cdr command) :setting)
+                                (plist-get (cdr command) :origin))))
+                    ("Runtime.evaluate"
+                     (and (string-search "clipboard" (plist-get (cdr command) :expression))
+                          'read))))
+                (reverse canvas-browser-test--commands))))
+
+(ert-deftest canvas-browser-what-a-page-copies-goes-to-the-kill-ring ()
+  ;; GIVEN a page whose button copies a link, as a button to copy does
+  ;; WHEN the button is clicked
+  ;; THEN the link is the newest kill, AND the reader is told, AND the
+  ;;      site may read the clipboard only while Emacs reads it
+  (canvas-browser-test--with-clipboard "https://example.org/a/link"
+    (let ((said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (setq said (apply #'format format-string args)))))
+        (canvas-browser--click 10 10))
+      (should (equal (current-kill 0) "https://example.org/a/link"))
+      (should (string-search "https://example.org/a/link" said))
+      (should (equal (canvas-browser-test--clipboard-commands)
+                     '(("granted" "https://example.org") read
+                       ("prompt" "https://example.org")))))))
+
+(ert-deftest canvas-browser-a-click-that-copies-nothing-leaves-the-kill-ring ()
+  ;; GIVEN a page that copied a link, which Emacs took
+  ;; WHEN another click copies nothing, so the clipboard holds the same
+  ;; THEN the kill ring holds the link once
+  (canvas-browser-test--with-clipboard "https://example.org/a/link"
+    (canvas-browser--click 10 10)
+    (canvas-browser--click 20 20)
+    (should (equal kill-ring '("https://example.org/a/link")))))
+
+(ert-deftest canvas-browser-an-empty-clipboard-is-no-kill ()
+  ;; GIVEN a page, and a clipboard that holds nothing
+  ;; WHEN the page is clicked
+  ;; THEN nothing is killed
+  (canvas-browser-test--with-clipboard ""
+    (canvas-browser--click 10 10)
+    (should-not kill-ring)))
+
+(ert-deftest canvas-browser-a-page-that-cannot-read-the-clipboard-is-no-kill ()
+  ;; GIVEN a page that has no clipboard to read, as a page without https
+  ;;       has none, so that the question gives nothing
+  ;; WHEN the page is clicked
+  ;; THEN nothing is killed, AND the site may not read the clipboard
+  ;;      after the question
+  (canvas-browser-test--with-clipboard nil
+    (canvas-browser--click 10 10)
+    (should-not kill-ring)
+    (should (equal (car (last (canvas-browser-test--clipboard-commands)))
+                   '("prompt" "https://example.org")))))
+
+(ert-deftest canvas-browser-a-page-that-is-gone-is-not-asked ()
+  ;; GIVEN a page that was clicked
+  ;; WHEN its buffer is killed before Emacs looks at the clipboard
+  ;; THEN chromium is told nothing about the clipboard
+  (canvas-browser-test--with-clipboard "https://example.org/a/link"
+    (let ((buffer (generate-new-buffer " *gone*")))
+      (kill-buffer buffer)
+      (canvas-browser--look-at-clipboard buffer)
+      (should-not (canvas-browser-test--clipboard-commands))
+      (should-not kill-ring))))
+
 ;;;; The notifications of a page
 
 (defun canvas-browser-test--focus-told ()

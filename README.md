@@ -141,6 +141,17 @@ waits, the two keys are there in every dired buffer, so you can go to
 another directory first. For a snap chromium, a file that the snap
 cannot read is copied to `~/snap/chromium/common/canvas-browser-files`.
 
+### What a page copies
+
+A button of a page that copies, as "Copy link" does, puts its text on
+the clipboard of chromium. That clipboard is on the hidden display. So canvas-browser reads it a moment after each
+click, and text that is new there becomes the newest kill: `C-y` pastes
+it. The echo area says what was copied.
+
+A page can read the clipboard only with a permission. canvas-browser
+gives the site that permission for the one read, and takes it back.
+This works for a page that is served over https.
+
 ### Sending a page somewhere
 
 `>` sends the page to a receiver, and asks which one. While the caret

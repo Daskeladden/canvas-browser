@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+  <head><title>canvas-browser clipboard fixture</title></head>
+  <body>
+    <button id="modern" style="width: 200px; height: 40px"
+            onclick="navigator.clipboard.writeText('copied the new way').then(() => document.title = 'new way done', e => document.title = 'new way failed: ' + e.name)">Copy link</button>
+    <button id="old" style="width: 200px; height: 40px"
+            onclick="const t = document.createElement('textarea'); t.value = 'copied the old way'; document.body.appendChild(t); t.select(); document.title = 'old way ' + document.execCommand('copy'); t.remove()">Copy the old way</button>
+    <button id="nothing" style="width: 200px; height: 40px"
+            onclick="document.title = 'clicked'">Copies nothing</button>
+  </body>
+</html>

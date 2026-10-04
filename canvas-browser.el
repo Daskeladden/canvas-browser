@@ -1539,7 +1539,8 @@ click: asked sooner, it names what had the focus before it."
   (canvas-browser--tell "Input.dispatchMouseEvent"
                         (list :type "mouseReleased" :x x :y y
                               :button "left" :clickCount 1)
-                        (canvas-browser--follow-focus-later)))
+                        (canvas-browser--follow-focus-later))
+  (canvas-browser--look-at-clipboard-later))
 
 (defun canvas-browser--drag (x1 y1 x2 y2)
   "Drag the mouse over the page from the pixel X1 Y1 to X2 Y2.
@@ -4699,6 +4700,81 @@ gets it only while chromium reports on the scripts of the tab, which
   "Run SCRIPT in the page of this buffer, in CONTEXT, one of its frames."
   (canvas-browser--tell "Runtime.evaluate" (list :expression script :contextId context)))
 
+;;;; What a page copies
+
+(defun canvas-browser--set-permission (name origin setting &optional then)
+  "Tell chromium that the permission NAME of the site ORIGIN is SETTING.
+SETTING is \"granted\", \"denied\" or \"prompt\".  THEN is called once
+chromium has taken it."
+  (canvas-browser-cdp-send "Browser.setPermission"
+                           (list :permission (list :name name)
+                                 :setting setting
+                                 :origin origin)
+                           (and then (lambda (_result) (funcall then)))))
+
+(defvar canvas-browser--clipboard nil
+  "The text that the clipboard of chromium held when Emacs last read it.
+Chromium has one clipboard for all its pages.")
+
+(defconst canvas-browser--clipboard-delay 0.5
+  "The seconds between a click and the look at the clipboard.
+A page copies a moment after the click that asks it to.")
+
+(defconst canvas-browser--clipboard-script
+  "navigator.clipboard ? navigator.clipboard.readText().then(text => text, () => null) : null"
+  "The JavaScript that gives the text of the clipboard, or null.
+A page that is not served over https has no clipboard to read.")
+
+(defun canvas-browser--first-line (text)
+  "The first line of TEXT, cut to a length that the echo area shows."
+  (truncate-string-to-width (car (split-string text "\n")) 70 nil nil t))
+
+(defun canvas-browser--take-copy (text)
+  "Make TEXT the newest kill, when it is new on the clipboard of chromium."
+  (when (and (stringp text)
+             (not (string-empty-p text))
+             (not (equal text canvas-browser--clipboard)))
+    (setq canvas-browser--clipboard text)
+    (kill-new text)
+    (message "canvas-browser: copied %s" (canvas-browser--first-line text))))
+
+(defun canvas-browser--read-clipboard (origin)
+  "Read the clipboard of chromium in this page, of the site ORIGIN.
+A page may read the clipboard only when its site is allowed to.
+Chromium asks for that in its own window, where nobody sees the
+question, and a read that waits for the answer never ends.  So the site
+is allowed for this one read, and not after it."
+  (let ((forbid (lambda (&rest _)
+                  (canvas-browser--set-permission "clipboard-read" origin "prompt"))))
+    (canvas-browser--set-permission
+     "clipboard-read" origin "granted"
+     (canvas-browser--here
+      (lambda ()
+        (canvas-browser--tell
+         "Runtime.evaluate"
+         (list :expression canvas-browser--clipboard-script
+               :awaitPromise t :returnByValue t)
+         (lambda (result)
+           (funcall forbid)
+           (canvas-browser--take-copy (plist-get (plist-get result :result) :value)))
+         forbid))))))
+
+(defun canvas-browser--look-at-clipboard (buffer)
+  "Take what the page of BUFFER copied, if the buffer still holds a page."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and canvas-browser--session canvas-browser--url)
+        (canvas-browser--read-clipboard (canvas-browser--site-of canvas-browser--url))))))
+
+(defun canvas-browser--look-at-clipboard-later ()
+  "Look at the clipboard of chromium a moment from now.
+A button of a page that copies, as one that copies a link does, puts
+its text on the clipboard of chromium, which stands on a display that
+nobody sees.  Chromium tells nobody of it.  So Emacs looks after each
+click, and what is new there becomes the newest kill."
+  (run-at-time canvas-browser--clipboard-delay nil
+               #'canvas-browser--look-at-clipboard (current-buffer)))
+
 ;;;; The notifications of a page
 
 (defcustom canvas-browser-notification-functions '(canvas-browser-notification-message)
@@ -4906,11 +4982,8 @@ site acts on the click as it likes: a mail site opens the mail."
 (defun canvas-browser--set-notification-permission (origin allowed &optional then)
   "Tell chromium that the site ORIGIN may show notifications, or may not.
 THEN is called once chromium has taken it."
-  (canvas-browser-cdp-send "Browser.setPermission"
-                           (list :permission (list :name "notifications")
-                                 :setting (if allowed "granted" "denied")
-                                 :origin origin)
-                           (and then (lambda (_result) (funcall then)))))
+  (canvas-browser--set-permission "notifications" origin (if allowed "granted" "denied")
+                                  then))
 
 (defun canvas-browser--frame-may-notify (url)
   "Give a frame of this page that went to URL the name to call Emacs by.
