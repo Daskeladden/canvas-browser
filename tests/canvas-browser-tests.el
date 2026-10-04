@@ -3856,6 +3856,17 @@ The window manager says so on the root window, where Emacs reads it."
       (should (equal (plist-get down :modifiers) 2)))
     (should canvas-browser--field-mark)))
 
+(ert-deftest canvas-browser-the-text-of-a-page-is-searched-from-insert-state-too ()
+  ;; GIVEN a page whose field took the focus, so that the keys go to the
+  ;;       page, as an application does when it opens a talk
+  ;; WHEN the key that searches the text of the page is looked up
+  ;; THEN it searches the text of the page, as in normal state: without
+  ;;      it the key searches the page buffer, which holds no text
+  (canvas-browser-test--in-page
+    (should (eq (key-binding (kbd "M-s M-l")) #'canvas-browser-search-text))
+    (canvas-browser-insert-mode)
+    (should (eq (key-binding (kbd "M-s M-l")) #'canvas-browser-search-text))))
+
 (ert-deftest canvas-browser-the-keys-of-insert-state-are-bound-on-every-load ()
   ;; GIVEN a keymap of insert state from before a key was added, as a
   ;;       running Emacs keeps it when the file is loaded again

@@ -3577,7 +3577,12 @@ here, on every load."
   (define-key map (kbd "C-@") #'canvas-browser-field-set-mark)
   (define-key map (kbd "C-x h") #'canvas-browser-field-mark-whole)
   (define-key map (kbd "M-w") #'canvas-browser-field-copy)
-  (define-key map (kbd "C-w") #'canvas-browser-field-cut))
+  (define-key map (kbd "C-w") #'canvas-browser-field-cut)
+  ;; A page takes the focus for a field of its own, as an application
+  ;; does when it opens a talk.  Without this key here, the key of
+  ;; `consult-line' would then search the page buffer, which holds no
+  ;; text.
+  (define-key map (kbd "M-s M-l") #'canvas-browser-search-text))
 
 (canvas-browser--bind-insert-keys canvas-browser-insert-map)
 
