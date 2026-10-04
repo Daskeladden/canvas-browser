@@ -918,6 +918,168 @@ It is the call that the script ends with, which says what was asked."
       (should (> (buffer-modified-tick) before))
       (should-not (buffer-modified-p)))))
 
+;;;; The links of a page
+
+(defmacro canvas-browser-test--in-page-with-links (links followed &rest body)
+  "Run BODY in a page that gives LINKS, each (TEXT ADDRESS), as its links.
+The page answers FOLLOWED when it is asked to click a link: t, or nil
+for a link that it has let go of.  It answers a box to anything else,
+and what the reader is told goes to `said\='."
+  (declare (indent 2))
+  `(canvas-browser-test--in-page
+     (let ((said nil))
+       (ignore said)
+       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                  (lambda (method params &optional reply _session &rest _)
+                    (push (cons method params) canvas-browser-test--commands)
+                    (when reply
+                      (funcall reply
+                               (let ((script (or (plist-get params :expression) "")))
+                                 (list :result
+                                       (list :value
+                                             (cond ((string-search "__canvasBrowserLinks = " script)
+                                                    ,links)
+                                                   ((string-search ".click()" script) ,followed)
+                                                   (t '(10 20 300 24))))))))))
+                 ((symbol-function 'message)
+                  (lambda (format-string &rest args)
+                    (setq said (and format-string (apply #'format format-string args))))))
+         ,@body))))
+
+(defconst canvas-browser-test--links
+  '(("Home" "https://example.org/") ("Docs" "https://example.org/docs")
+    ("" "https://example.org/x") ("Home" "https://example.org/"))
+  "The links of a page of a test: two with a text, one without, and the first again.")
+
+(defmacro canvas-browser-test--choosing (nth &rest body)
+  "Run BODY with a reader who chooses the entry NTH of what is offered.
+There is no consult, so the reader is asked with `completing-read\='."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'completing-read)
+              (lambda (_prompt table &rest _)
+                (nth ,nth (all-completions "" table)))))
+     ,@body))
+
+(ert-deftest canvas-browser-the-links-of-a-page-are-offered-by-text-and-address ()
+  ;; GIVEN a page with links: two with a text, one without, and one
+  ;;       that stands in the page twice
+  ;; WHEN the links are made ready to choose from
+  ;; THEN each is offered once, as its text and its address, AND the
+  ;;      link without a text as its address alone
+  (canvas-browser-test--in-page-with-links canvas-browser-test--links t
+    (should (equal (mapcar #'car (canvas-browser--link-candidates))
+                   '("Home  https://example.org/" "Docs  https://example.org/docs"
+                     "https://example.org/x")))))
+
+(ert-deftest canvas-browser-a-link-that-is-chosen-is-clicked ()
+  ;; GIVEN a page with links, AND a reader who chooses the third
+  ;; WHEN the links are asked for
+  ;; THEN the page is asked to click its third link, as a gesture of
+  ;;      the reader, so that a link that opens a window is not held back
+  (canvas-browser-test--in-page-with-links canvas-browser-test--links t
+    (canvas-browser-test--choosing 2
+      (setq canvas-browser-test--commands nil)
+      (canvas-browser-links)
+      (let ((click (cl-find-if (lambda (command)
+                                 (string-search ".click()"
+                                                (or (plist-get (cdr command) :expression) "")))
+                               canvas-browser-test--commands)))
+        (should (string-suffix-p "(2)" (plist-get (cdr click) :expression)))
+        (should (eq (plist-get (cdr click) :userGesture) t))
+        (should-not (canvas-browser-test--sent-p "Page.navigate"))))))
+
+(ert-deftest canvas-browser-a-link-that-the-page-let-go-of-is-opened-by-its-address ()
+  ;; GIVEN a page that no longer has the link that the reader chooses
+  ;; WHEN the link is chosen
+  ;; THEN the page goes to the address of the link
+  (canvas-browser-test--in-page-with-links canvas-browser-test--links nil
+    (canvas-browser-test--choosing 1
+      (canvas-browser-links)
+      (should (equal (plist-get (canvas-browser-test--params "Page.navigate") :url)
+                     "https://example.org/docs")))))
+
+(ert-deftest canvas-browser-a-link-opens-in-a-buffer-of-its-own-with-a-prefix-argument ()
+  ;; GIVEN a page with links, AND a reader who chooses the second
+  ;; WHEN the links are asked for with a prefix argument
+  ;; THEN the address of the link opens in a page buffer of its own,
+  ;;      AND the link is not clicked in this page
+  (canvas-browser-test--in-page-with-links canvas-browser-test--links t
+    (let ((opened nil))
+      (cl-letf (((symbol-function 'canvas-browser) (lambda (url) (setq opened url))))
+        (canvas-browser-test--choosing 1
+          (canvas-browser-links t)
+          (should (equal opened "https://example.org/docs"))
+          (should-not (cl-some (lambda (command)
+                                 (string-search ".click()"
+                                                (or (plist-get (cdr command) :expression) "")))
+                               canvas-browser-test--commands)))))))
+
+(ert-deftest canvas-browser-a-page-without-links-says-so ()
+  ;; GIVEN a page that shows no link
+  ;; WHEN the links are asked for
+  ;; THEN that is a user error, and the reader is asked nothing
+  (canvas-browser-test--in-page-with-links nil t
+    (should (string-search "no link"
+                           (error-message-string
+                            (should-error (canvas-browser-links) :type 'user-error))))))
+
+(ert-deftest canvas-browser-the-page-shows-each-link-while-one-is-chosen ()
+  ;; GIVEN a page with links, and consult, which lets the reader move
+  ;;       through what is offered
+  ;; WHEN the reader moves to the second link, and picks it
+  ;; THEN the page first notes where it stands, AND it shows the second
+  ;;      link, but not the first, which consult names before the reader
+  ;;      moved, AND at the pick it forgets where it stood, AND the link
+  ;;      is clicked
+  ;; WHEN the reader gives up
+  ;; THEN the page goes back to where it stood, AND nothing is clicked
+  (canvas-browser-test--in-page-with-links canvas-browser-test--links t
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest options)
+                 (let ((state (plist-get options :state))
+                       (second (nth 1 candidates)))
+                   (should (eq (plist-get options :category) 'canvas-browser-link))
+                   (setq canvas-browser-test--commands nil)
+                   (funcall state 'setup nil)
+                   (funcall state 'preview (car candidates))
+                   (funcall state 'preview second)
+                   (funcall state 'return second)
+                   second))))
+      (canvas-browser-links)
+      (should (equal (canvas-browser-test--asked-of-the-page)
+                     '("window.__canvasBrowserFindOrigin = new Map()"
+                       "(1, 1500)" "(false)" "(1, 1500)" "(1)"))))
+    (cl-letf (((symbol-function 'consult--read)
+               (lambda (candidates &rest options)
+                 (let ((state (plist-get options :state)))
+                   (setq canvas-browser-test--commands nil)
+                   (funcall state 'setup nil)
+                   (funcall state 'preview (car candidates))
+                   (funcall state 'preview (nth 1 candidates))
+                   (funcall state 'return nil)
+                   nil))))
+      (canvas-browser-links)
+      (should (equal (car (last (canvas-browser-test--asked-of-the-page))) "(true)")))))
+
+(ert-deftest canvas-browser-a-link-that-is-offered-is-an-address-to-embark ()
+  ;; GIVEN a link as it is offered, with a text and without one
+  ;; WHEN embark asks what the link is
+  ;; THEN it is a URL, the address of the link, so that embark acts on
+  ;;      it as on any address
+  (should (equal (canvas-browser--embark-link 'canvas-browser-link
+                                              "Docs and more  https://example.org/docs")
+                 '(url . "https://example.org/docs")))
+  (should (equal (canvas-browser--embark-link 'canvas-browser-link "https://example.org/x")
+                 '(url . "https://example.org/x"))))
+
+(ert-deftest canvas-browser-the-key-a-asks-for-the-links ()
+  ;; GIVEN a page buffer whose keys are those of Emacs
+  ;; THEN a asks for the links of the page, AND the menu has it
+  (canvas-browser-test--in-page
+    (should (eq (key-binding (kbd "a")) #'canvas-browser-links)))
+  (should (eq (plist-get (canvas-browser-test--menu-entry "a") :command)
+              #'canvas-browser-links)))
+
 ;;;; The window, the header line and a chromium that died
 
 (ert-deftest canvas-browser-a-resized-window-lays-the-page-out-again ()
@@ -6013,6 +6175,7 @@ it showed in the window, when no window has that buffer."
 (defvar embark-keymap-alist)
 (defvar embark-general-map)
 (defvar embark-target-injection-hooks)
+(defvar embark-transformer-alist)
 
 (ert-deftest canvas-browser-embark-acts-on-the-address-of-the-page ()
   ;; GIVEN a page buffer that shows https://example.org
@@ -6090,6 +6253,7 @@ it showed in the window, when no window has that buffer."
     (kill-local-variable 'embark-target-finders)
     (let ((embark-keymap-alist nil)
           (embark-target-injection-hooks nil)
+          (embark-transformer-alist nil)
           (embark-general-map (make-sparse-keymap)))
       (canvas-browser--embark-setup))
     (should (equal (buffer-local-value 'embark-target-finders (current-buffer))
@@ -6103,12 +6267,16 @@ it showed in the window, when no window has that buffer."
   ;;      buffer of its own
   (let ((embark-keymap-alist nil)
         (embark-target-injection-hooks nil)
+        (embark-transformer-alist nil)
         (embark-general-map (make-sparse-keymap)))
     (canvas-browser--embark-setup)
     (should (equal (alist-get 'canvas-browser-text embark-keymap-alist)
                    '(canvas-browser-embark-text-map)))
     (should (eq (keymap-parent canvas-browser-embark-text-map) embark-general-map))
-    (should (eq (keymap-lookup canvas-browser-embark-text-map "s") #'canvas-browser))))
+    (should (eq (keymap-lookup canvas-browser-embark-text-map "s") #'canvas-browser))
+    ;; A link that `canvas-browser-links' offers is an address to embark.
+    (should (eq (alist-get 'canvas-browser-link embark-transformer-alist)
+                #'canvas-browser--embark-link))))
 
 (ert-deftest canvas-browser-embark-gives-a-page-the-actions-of-a-url-and-its-own ()
   ;; GIVEN embark with no keymaps of its own
@@ -6117,6 +6285,7 @@ it showed in the window, when no window has that buffer."
   ;;      any URL, so the actions on a URL stay
   (let ((embark-keymap-alist nil)
         (embark-target-injection-hooks nil)
+        (embark-transformer-alist nil)
         (embark-general-map (make-sparse-keymap)))
     (canvas-browser--embark-setup)
     (should (equal (alist-get 'canvas-browser-page embark-keymap-alist)
@@ -6132,6 +6301,7 @@ it showed in the window, when no window has that buffer."
   ;;      question of which receiver with the target
   (let ((embark-keymap-alist nil)
         (embark-target-injection-hooks nil)
+        (embark-transformer-alist nil)
         (embark-general-map (make-sparse-keymap)))
     (canvas-browser--embark-setup)
     (should (eq (keymap-lookup canvas-browser-embark-text-map ">")

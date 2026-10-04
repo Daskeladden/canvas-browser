@@ -3431,33 +3431,45 @@ none.  They come in the order of the page, so the headings of one
 column come before those of the next.  They are kept in the page as
 well, so that one of them is found later by the place it has there.")
 
-(defconst canvas-browser--heading-js (concat "
+(defun canvas-browser--kept-js (kept)
+  "The JavaScript function that shows an element that a page kept in KEPT.
+KEPT names what the page keeps its elements in, in its window.  The
+function takes the place of the element there, and for how many
+milliseconds to paint it.  It gives the box of the element, or null
+for an element that the page has thrown away."
+  (concat "
 (function (index, blink) {" canvas-browser--paint-js canvas-browser--flat-js "
-  const heading = (window.__canvasBrowserHeadings || [])[index];
-  if (!heading || !heading.isConnected) return null;
+  const element = (window." kept " || [])[index];
+  if (!element || !element.isConnected) return null;
   const range = document.createRange();
-  range.selectNodeContents(heading);
+  range.selectNodeContents(element);
   reveal(range);
   blinkOn(range, blink);
   return boxOf(range);
-})")
-  "The JavaScript function that shows a heading of a page.
-It takes the place of the heading among those that the page kept, and
-for how many milliseconds to paint it.  It gives the box of the
-heading, or null for a heading that the page has thrown away.")
+})"))
 
-(defun canvas-browser--show-heading (_name _position index)
-  "Show the heading at INDEX of this page, as imenu calls an entry of its index."
+(defconst canvas-browser--heading-js (canvas-browser--kept-js "__canvasBrowserHeadings")
+  "The JavaScript function that shows a heading of a page.
+See `canvas-browser--kept-js\='.")
+
+(defun canvas-browser--show-kept (script index gone)
+  "Show the element at INDEX of those that this page kept, with SCRIPT.
+SCRIPT is a function of `canvas-browser--kept-js\='.  GONE is what the
+reader is told when the page has thrown the element away."
   (canvas-browser--tell
    "Runtime.evaluate"
-   (list :expression (format "%s(%d, %d)" canvas-browser--heading-js index
-                             canvas-browser--locate-blink)
+   (list :expression (format "%s(%d, %d)" script index canvas-browser--locate-blink)
          :returnByValue t)
    (canvas-browser--here
     (lambda (result)
       (if-let* ((box (canvas-browser--value-of result)))
           (canvas-browser--land-anew box)
-        (message "canvas-browser: that heading has gone, the page has changed"))))))
+        (message "%s" gone))))))
+
+(defun canvas-browser--show-heading (_name _position index)
+  "Show the heading at INDEX of this page, as imenu calls an entry of its index."
+  (canvas-browser--show-kept canvas-browser--heading-js index
+                             "canvas-browser: that heading has gone, the page has changed"))
 
 (defun canvas-browser--show-message (_name _position lines)
   "Show the message whose text starts with LINES, as imenu calls an entry."
@@ -3611,15 +3623,16 @@ the menu, is named as the menu: it is the heading that the menu is of."
   (pcase-let ((`(,name ,position ,function . ,arguments) entry))
     (apply function name position arguments)))
 
-(defun canvas-browser--imenu-state ()
-  "The function that shows the entries of the index of this page to consult.
-consult calls it with what happens and an entry, (NAME . ENTRY) or nil:
-before the reader chooses, for each entry that the reader moves to, and
-at the end with the entry that was picked.  The page notes where it
-stands at the start and shows each entry.  At the end it stays at the
-picked entry, or goes back when none was picked.
+(defun canvas-browser--preview-state (show)
+  "The function that shows to consult what is offered of this page.
+SHOW shows one thing in the page: an entry of its index, a link.
+consult calls the function with what happens and a candidate, (NAME .
+THING) or nil: before the reader chooses, for each candidate that the
+reader moves to, and at the end with the one that was picked.  The page
+notes where it stands at the start and shows each thing.  At the end it
+stays at what was picked, or goes back when nothing was.
 
-The entry that consult shows first, before the reader moved, is not
+The candidate that consult shows first, before the reader moved, is not
 shown in the page: the page must not jump to its first heading because
 its index was opened."
   (let ((page (current-buffer))
@@ -3630,10 +3643,10 @@ its index was opened."
           ('setup (canvas-browser--keep-origins))
           ('preview (when candidate
                       (if opened
-                          (canvas-browser--pick-entry (cdr candidate))
+                          (funcall show (cdr candidate))
                         (setq opened t))))
           ('return (canvas-browser--end-origins (null candidate))
-                   (when candidate (canvas-browser--pick-entry (cdr candidate)))))))))
+                   (when candidate (funcall show (cdr candidate)))))))))
 
 (defun canvas-browser-imenu ()
   "Go to a heading or a message of this page, chosen from its index.
@@ -3651,9 +3664,132 @@ page buffer."
                        :require-match t
                        :sort nil
                        :lookup #'consult--lookup-cons
-                       :state (canvas-browser--imenu-state)
+                       :state (canvas-browser--preview-state #'canvas-browser--pick-entry)
                        :history 'canvas-browser-imenu-history))
     (call-interactively #'imenu)))
+
+;;;; The links of a page, to choose from
+
+(defconst canvas-browser--links-script
+  (concat "(function () {" canvas-browser--flat-js "
+     const found = [];
+     eachShown(document.body, e => {
+       if (e.nodeType !== 1 || e.tagName !== 'A' || !e.href) return;
+       if (/^javascript:/i.test(e.href)) return;
+       const picture = e.querySelector('img[alt]');
+       const text = (e.innerText || '').replace(/\\s+/g, ' ').trim()
+                 || e.getAttribute('aria-label') || e.title || (picture && picture.alt) || '';
+       found.push([e, text.slice(0, 120), e.href]);
+     });
+     window.__canvasBrowserLinks = found.map(link => link[0]);
+     return found.map(link => [link[1], link[2]]);
+   })()")
+  "The JavaScript that gives the links of a page, each as (TEXT ADDRESS).
+A link is one that the page shows, inside web components too, and that
+has an address to go to.  Its text is what it shows, or else what it is
+called for a screen reader, or the name of its picture.  The links come
+in the order of the page, and they are kept in the page as well, so
+that one of them is found later by the place it has there.")
+
+(defconst canvas-browser--link-js (canvas-browser--kept-js "__canvasBrowserLinks")
+  "The JavaScript function that shows a link of a page.
+See `canvas-browser--kept-js\='.")
+
+(defconst canvas-browser--follow-link-script "(function (index) {
+  const link = (window.__canvasBrowserLinks || [])[index];
+  if (!link || !link.isConnected) return null;
+  link.click();
+  return true;
+})(%d)"
+  "The JavaScript that clicks a link that the page kept; %d is its place.
+The answer is null for a link that the page has thrown away.")
+
+(defvar canvas-browser-link-history nil
+  "The links of pages that were chosen.")
+
+(defun canvas-browser--link-name (text url)
+  "What the link with TEXT to URL is offered as: its text and its address.
+The reader can then choose by either.  A link without a text is
+offered as its address."
+  (if (string-empty-p text)
+      url
+    (concat text "  " (propertize url 'face 'shadow))))
+
+(defun canvas-browser--link-candidates ()
+  "The links that this page shows, each (NAME INDEX URL), to choose from.
+INDEX is the place of the link among those that the page kept.  A link
+that stands in the page twice is offered once."
+  (let ((seen (make-hash-table :test 'equal)))
+    (cl-loop for (text url) in (canvas-browser--value-now canvas-browser--links-script)
+             for index from 0
+             for name = (canvas-browser--link-name text url)
+             unless (gethash name seen)
+             collect (progn (puthash name t seen)
+                            (list name index url)))))
+
+(defun canvas-browser--show-link (link)
+  "Show LINK, (INDEX URL), in this page."
+  (canvas-browser--show-kept canvas-browser--link-js (car link)
+                             "canvas-browser: that link has gone, the page has changed"))
+
+(defun canvas-browser--follow-link (link)
+  "Click LINK, (INDEX URL), in this page.
+The page takes the click as a gesture of the reader, so a link that
+opens a window is not held back as a popup.  When the page has thrown
+the link away, the page goes to its address."
+  (pcase-let ((`(,index ,url) link))
+    (canvas-browser--tell
+     "Runtime.evaluate"
+     (list :expression (format canvas-browser--follow-link-script index)
+           :returnByValue t :userGesture t)
+     (canvas-browser--here
+      (lambda (result)
+        (unless (canvas-browser--value-of result)
+          (canvas-browser-open-url url)))))))
+
+(defun canvas-browser--link-table (candidates)
+  "CANDIDATES as a completion table that keeps their order.
+It says that they are links, so that embark knows what to do with one."
+  (lambda (string predicate action)
+    (if (eq action 'metadata)
+        '(metadata (category . canvas-browser-link)
+                   (display-sort-function . identity)
+                   (cycle-sort-function . identity))
+      (complete-with-action action candidates string predicate))))
+
+(defun canvas-browser--read-link (candidates)
+  "Ask the reader for one of CANDIDATES, the links of this page.
+Give (INDEX URL) of the link that was chosen.  With consult, the page
+shows each link while the reader moves to it, and goes back to where it
+stood when the reader gives up."
+  (cdr (if (or (fboundp 'consult--read) (require 'consult nil t))
+           (consult--read candidates
+                          :prompt "Link: "
+                          :require-match t
+                          :sort nil
+                          :category 'canvas-browser-link
+                          :lookup #'consult--lookup-cons
+                          :state (canvas-browser--preview-state #'canvas-browser--show-link)
+                          :history 'canvas-browser-link-history)
+         (assoc (completing-read "Link: " (canvas-browser--link-table candidates)
+                                 nil t nil 'canvas-browser-link-history)
+                candidates))))
+
+(defun canvas-browser-links (&optional other)
+  "Follow a link of this page, chosen by its text or by its address.
+With consult, the page shows each link while you move to it, and goes
+back to where it stood when you give up.  The link that you choose is
+clicked, as a hint clicks it.  With a prefix argument, OTHER, its
+address opens in a page buffer of its own.  Embark acts on a link that
+is offered as on any address."
+  (interactive "P" canvas-browser-mode)
+  (let ((candidates (canvas-browser--link-candidates)))
+    (unless candidates
+      (user-error "canvas-browser: this page shows no link"))
+    (when-let* ((link (canvas-browser--read-link candidates)))
+      (if other
+          (canvas-browser (cadr link))
+        (canvas-browser--follow-link link)))))
 
 ;;;; The zoom and the picture
 
@@ -3813,6 +3949,7 @@ and the settings.  The widths line the columns of the two rows up."
    ("J" "bookmarks" canvas-browser-open-bookmark)]
   ["Page"
    ("f" "hints" canvas-browser-hints)
+   ("a" "links" canvas-browser-links)
    ("M-j" "jump" canvas-browser-caret-jump)
    ("TAB" "field" canvas-browser-next-field)
    ("E" "edit field" canvas-browser-edit-field)
@@ -3861,6 +3998,7 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "<remap> <avy-goto-char-timer>" #'canvas-browser-caret-jump
   "i" #'canvas-browser-insert-mode
   "f" #'canvas-browser-hints
+  "a" #'canvas-browser-links
   "S" #'canvas-browser-pick-part
   "C-g" #'canvas-browser-quit
   "TAB" #'canvas-browser-next-field
@@ -5781,6 +5919,12 @@ Those embark has for any URL come beside them, as for the page.")
 (defvar embark-keymap-alist)
 (defvar embark-general-map)
 (defvar embark-target-injection-hooks)
+(defvar embark-transformer-alist)
+
+(defun canvas-browser--embark-link (_type candidate)
+  "CANDIDATE, a link as `canvas-browser-links\=' offers it, as a URL for embark.
+The address is the last word of what is offered."
+  (cons 'url (car (last (split-string candidate " " t)))))
 
 (defun canvas-browser--embark-here ()
   "Have embark find its targets in this page buffer with one finder alone.
@@ -5801,6 +5945,8 @@ sends the target to a receiver.  A page has the actions of a URL too."
         '(canvas-browser-embark-page-map embark-url-map))
   (setf (alist-get 'canvas-browser-part embark-keymap-alist)
         '(canvas-browser-embark-part-map embark-url-map))
+  (setf (alist-get 'canvas-browser-link embark-transformer-alist)
+        #'canvas-browser--embark-link)
   ;; Embark answers the first question of an action with the target and
   ;; presses RET.  These actions ask which receiver, not for the target.
   (dolist (command '(canvas-browser-send-to canvas-browser-send-page-to

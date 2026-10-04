@@ -337,6 +337,14 @@ At an address with a thread translator, the index also has a menu
 text, with a reply under the message that it answers. Pick one, and
 the page shows where its text stands.
 
+### The links of a page
+
+`a` offers the links that the page shows, each by its text and its
+address, so you can choose by either. With consult, the page shows each
+link while you move to it. If you choose none, the page goes back to
+its place. The link that you choose is clicked, as a hint clicks it.
+`C-u a` opens its address in a page buffer of its own.
+
 ### Embark
 
 `embark-act` in a page buffer acts on the page. It has the actions of
@@ -347,6 +355,9 @@ the page is picked with `S`, that part is a target before the page, and
 target. `embark-cycle` reaches the targets after the first. On marked
 text, `s` searches for it in a page buffer of its own, and `>` sends it
 to a receiver.
+
+A link that `a` offers is a URL for `embark-act`, which has the actions
+of any URL for it in the minibuffer.
 
 ### Notifications
 
@@ -455,6 +466,7 @@ Normal state keeps the keys of Emacs:
 | `<prior>`, `<next>` | scroll a screen back and further down |
 | `<home>`, `<end>`, `C-<home>`, `C-<end>`, `M-<`, `M->` | go to the top and the foot of the page |
 | `f` | labels what a click can reach, fields inside web components included, and clicks the one you name; the labels stay until you name one or press `ESC` |
+| `a` | offers the links of the page by their text and address, and clicks the one you choose. `C-u a` opens it in a page buffer of its own |
 | `M-w` | labels the blocks of the page, and copies the picture of the one you name; `C-u M-w` copies the whole window |
 | `S` | outlines and labels the parts of the page, and picks the one you name: `>` sends its text, and the scroll keys move a part that scrolls on its own |
 | `v` | moves a caret through the text of the page with the motions of Emacs |

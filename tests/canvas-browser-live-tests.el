@@ -1631,6 +1631,35 @@ that holds its start, and whether the window shows that element."
                                       return [range.startContainer.parentElement.id, range.toString()]; })()")
                            '("given" "Dee")))))))))
 
+(ert-deftest canvas-browser-live-the-links-of-a-page-are-offered-shown-and-followed ()
+  ;; GIVEN the links fixture: a link with a text, one that shows a
+  ;;       picture, one that the page does not show, one that goes
+  ;;       nowhere, the first link again, a link in a web component, and
+  ;;       a link far down the page
+  ;; WHEN the links are made ready to choose from
+  ;; THEN each link that is shown and goes somewhere is offered once, by
+  ;;      its text or the name of its picture, with its address
+  ;; WHEN the far link is shown, as while the reader moves to it
+  ;; THEN the page scrolls to it
+  ;; WHEN the link with the picture is followed
+  ;; THEN the page is at the address of that link
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "links.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (let* ((links (canvas-browser--link-candidates))
+           (names (mapcar (lambda (link)
+                            (replace-regexp-in-string "file://[^#]*" "" (car link)))
+                          links)))
+      (should (equal names '("First link  #one" "The logo  #two" "In a component  #inner"
+                             "The far link  #far")))
+      (canvas-browser--show-link (cdr (nth 3 links)))
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (> (canvas-browser-live-test--page-says "scrollY") 0))))
+      (canvas-browser--follow-link (cdr (nth 1 links)))
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (equal (canvas-browser-live-test--page-says "location.hash")
+                                   "#two")))))))
+
 (defun canvas-browser-live-test--field-buffers ()
   "The buffers that hold the text of a field of a page."
   (seq-filter (lambda (buffer) (buffer-local-value 'canvas-browser-edit-field-mode buffer))
@@ -1924,7 +1953,7 @@ moment to answer the search first."
   (canvas-browser-live-test--in-fixture "outline.html"
     (canvas-browser-live-test--lay-out 800 600)
     (let* ((entries (canvas-browser--flat-index (funcall imenu-create-index-function)))
-           (state (canvas-browser--imenu-state)))
+           (state (canvas-browser--preview-state #'canvas-browser--pick-entry)))
       (should (equal (mapcar #'car entries)
                      '("Guide" "Guide/Install" "Guide/Install/From source" "Guide/Use"
                        "Guide/Use/Left" "Guide/Use/Left and low" "Guide/Use/Right"

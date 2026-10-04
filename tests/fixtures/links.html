@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head><title>canvas-browser links fixture</title></head>
+  <body style="margin: 0">
+    <p><a id="first" href="#one">First link</a></p>
+    <!-- A link that shows a picture and no text. -->
+    <p><a id="logo" href="#two"><img alt="The logo" width="16" height="16"
+          src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></a></p>
+    <p><a id="hidden" href="#hidden" style="display: none">Not shown</a></p>
+    <!-- A link that goes nowhere: a button in all but its tag. -->
+    <p><a id="script" href="javascript:void(0)">A script</a></p>
+    <p><a id="again" href="#one">First link</a></p>
+    <link-box id="shadowed"></link-box>
+    <div style="height: 3000px"></div>
+    <p><a id="far" href="#far">The far link</a></p>
+    <script>
+      // A link inside the shadow root of a web component.
+      customElements.define('link-box', class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({mode: 'open'}).innerHTML = '<a id="inner" href="#inner">In a component</a>';
+        }
+      });
+    </script>
+  </body>
+</html>
