@@ -1465,6 +1465,64 @@ test of what goes by site needs a page that a server gave."
            (progn ,@body)
          (delete-process ,server)))))
 
+(defun canvas-browser-live-test--shown-line (line)
+  "Press `M-.\=' on the first line of the text buffer that is LINE.
+The answer is where the hit stands in the page: the id of the element
+that holds its start, and whether the window shows that element."
+  (canvas-browser-text)
+  (let ((page (current-buffer)))
+    (with-current-buffer (canvas-browser--text-buffer)
+      (goto-char (point-min))
+      (should (re-search-forward (concat "^" (regexp-quote line) "$") nil t))
+      (canvas-browser-text-show-in-page))
+    (with-current-buffer page
+      (canvas-browser-live-test--wait 2 (lambda () nil))
+      (canvas-browser-live-test--page-says
+       "(() => { const hits = CSS.highlights.get('canvas-browser-find');
+                 if (!hits) return null;
+                 const range = [...hits][0];
+                 const box = range.getBoundingClientRect();
+                 return [range.startContainer.parentElement.id,
+                         box.top >= 0 && box.bottom <= innerHeight,
+                         range.toString()]; })()"))))
+
+(ert-deftest canvas-browser-live-a-line-of-the-text-is-shown-in-the-page ()
+  ;; GIVEN the locate fixture: the line Reply twice, the second far down
+  ;;       in a part that scrolls on its own; a sentence with a link in
+  ;;       it; a line that the page shows in capitals; and a line far
+  ;;       down the page
+  ;; WHEN M-. is pressed on each of them in the text of the page, on the
+  ;;      second Reply
+  ;; THEN the page paints that line where it stands, AND the window
+  ;;      shows it: the second Reply in the part, the sentence across
+  ;;      its link, the capitals, and the line far down
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (cl-letf (((symbol-function 'display-buffer) #'ignore)
+            ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (set-buffer buffer))))
+    (canvas-browser-live-test--in-fixture "locate.html"
+      (canvas-browser-live-test--lay-out 800 600)
+      (canvas-browser-text)
+      (let ((page (current-buffer)))
+        (with-current-buffer (canvas-browser--text-buffer)
+          (goto-char (point-min))
+          (re-search-forward "^Reply$")
+          (re-search-forward "^Reply$")
+          (canvas-browser-text-show-in-page))
+        (with-current-buffer page
+          (canvas-browser-live-test--wait 2 (lambda () nil))
+          (should (equal (canvas-browser-live-test--page-says
+                          "[...CSS.highlights.get('canvas-browser-find')][0].startContainer.parentElement.id")
+                         "second"))
+          (should (> (canvas-browser-live-test--page-says
+                      "document.getElementById('pane').scrollTop")
+                     0))))
+      (should (equal (canvas-browser-live-test--shown-line "A sentence with a link inside it.")
+                     '("sentence" t "A sentence with a link inside it.")))
+      (should (equal (canvas-browser-live-test--shown-line "LOUD WORDS")
+                     '("shout" t "loud words")))
+      (should (equal (canvas-browser-live-test--shown-line "The far end.")
+                     '("far" t "The far end."))))))
+
 (defun canvas-browser-live-test--click-on (id)
   "Click the element ID of this page."
   (let ((middle (canvas-browser-live-test--middle id)))

@@ -21,6 +21,7 @@
 (require 'transient)
 (require 'url-util)
 (require 'url-expand)
+(require 'xref)
 (require 'canvas-browser-cdp)
 (require 'canvas-browser-translate)
 (require 'canvas-browser-merge)
@@ -2534,16 +2535,24 @@ With no part picked, quit as `C-g\=' does in any buffer."
 (defvar-local canvas-browser--find-index 0
   "Which hit of the last search the page shows.")
 
-(defconst canvas-browser--find-script "
-(function (text, index) {
-  const style = 'canvas-browser-find-style';
-  if (!document.getElementById(style)) {
-    const sheet = document.createElement('style');
-    sheet.id = style;
-    sheet.textContent = '::highlight(canvas-browser-find) { background: #ffd54f; color: #000; }';
-    document.documentElement.appendChild(sheet);
-  }
-  if (!text) { CSS.highlights.delete('canvas-browser-find'); return {count: 0, index: 0}; }
+(defconst canvas-browser--paint-js "
+  const paint = ranges => {
+    const style = 'canvas-browser-find-style';
+    if (!document.getElementById(style)) {
+      const sheet = document.createElement('style');
+      sheet.id = style;
+      sheet.textContent = '::highlight(canvas-browser-find) { background: #ffd54f; color: #000; }';
+      document.documentElement.appendChild(sheet);
+    }
+    if (ranges.length) CSS.highlights.set('canvas-browser-find', new Highlight(...ranges));
+    else CSS.highlights.delete('canvas-browser-find');
+  };"
+  "The JavaScript that paints ranges of a page as hits, or none of them.
+The page paints them itself, with the highlight API of CSS.")
+
+(defconst canvas-browser--find-script (concat "
+(function (text, index) {" canvas-browser--paint-js "
+  if (!text) { paint([]); return {count: 0, index: 0}; }
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const ranges = [];
   const wanted = text.toLowerCase();
@@ -2556,13 +2565,13 @@ With no part picked, quit as `C-g\=' does in any buffer."
       if (range.getBoundingClientRect().width > 0) ranges.push(range);
     }
   }
-  if (ranges.length === 0) { CSS.highlights.delete('canvas-browser-find'); return {count: 0, index: 0}; }
+  paint(ranges);
+  if (ranges.length === 0) return {count: 0, index: 0};
   const at = ((index %% ranges.length) + ranges.length) %% ranges.length;
-  CSS.highlights.set('canvas-browser-find', new Highlight(...ranges));
   const rect = ranges[at].getBoundingClientRect();
   window.scrollBy(0, rect.top - innerHeight / 2);
   return {count: ranges.length, index: at};
-})(%s, %d)"
+})(%s, %d)")
   "The JavaScript that finds a string, paints every hit and scrolls to one.
 `window.find\=' answers in a headless chromium but leaves nothing to see,
 so the page paints the hits itself, with the highlight API of CSS.")
@@ -2754,12 +2763,217 @@ of the page has a translator."
                   (canvas-browser--text-to-read 'part #'canvas-browser--part-text)
                 (canvas-browser--text-to-read 'page #'canvas-browser--page-text)))
         (target (canvas-browser--text-buffer)))
-    (with-current-buffer target
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert text)
-        (goto-char (point-min))))
+    (canvas-browser--fill-text-buffer
+     target text (current-buffer) (plist-get canvas-browser--part :place))
     (display-buffer target)))
+
+;;;; From a line of the text to its place in the page
+
+(defvar-local canvas-browser--text-page nil
+  "The page buffer that the text of this buffer came from.")
+
+(defvar-local canvas-browser--text-place nil
+  "The place of the part that the text of this buffer is of, or nil.
+It is nil for the text of a whole page.")
+
+(defvar-keymap canvas-browser-text-mode-map
+  :doc "Keymap of the buffer that holds the text of a page."
+  "M-." #'canvas-browser-text-show-in-page)
+
+(define-minor-mode canvas-browser-text-mode
+  "The buffer holds the text of a page of canvas-browser.
+`M-.\=' shows where the line at point stands in the page, and the key
+that goes back in xref comes back to the line."
+  :lighter nil)
+
+(defun canvas-browser--fill-text-buffer (buffer text page place)
+  "Put TEXT in BUFFER as the text of PAGE, or of its part at PLACE."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert text)
+      (goto-char (point-min)))
+    (canvas-browser-text-mode 1)
+    (setq canvas-browser--text-page page
+          canvas-browser--text-place place)))
+
+(defconst canvas-browser--locate-js (concat "
+(function (root, wanted) {" canvas-browser--paint-js "
+  root = root && root.isConnected ? root : document.body;
+  const unread = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+  const nodes = [];
+  const visit = node => {
+    if (node.nodeType === 3) { if (node.textContent.trim()) nodes.push(node); return; }
+    if (node.nodeType === 1) {
+      if (unread.has(node.tagName)) return;
+      if (getComputedStyle(node).display !== 'contents'
+          && !node.checkVisibility({checkVisibilityCSS: true, visibilityProperty: true})) return;
+      if (node.shadowRoot) { visit(node.shadowRoot); return; }
+      if (node.tagName === 'SLOT') {
+        const given = node.assignedNodes({flatten: true});
+        if (given.length) { given.forEach(visit); return; }
+      }
+    } else if (node.nodeType !== 11) return;
+    node.childNodes.forEach(visit);
+  };
+  visit(root);
+  const above = node => node.parentNode || node.host;
+  const block = node => {
+    let e = above(node);
+    while (e && e.nodeType === 1 && /^(inline|contents)/.test(getComputedStyle(e).display)) e = above(e);
+    return e;
+  };
+  let flat = '', last = null;
+  const starts = [], drops = [];
+  for (const node of nodes) {
+    let text = node.textContent.replace(/\\s+/g, ' ');
+    const here = block(node);
+    if (flat && !flat.endsWith(' ') && !text.startsWith(' ') && here !== last) flat += ' ';
+    const drop = (!flat || flat.endsWith(' ')) && text.startsWith(' ') ? 1 : 0;
+    starts.push(flat.length);
+    drops.push(drop);
+    flat += text.slice(drop);
+    last = here;
+  }
+  const hay = flat.toLowerCase();
+  const point = at => {
+    let i = starts.length - 1;
+    while (i > 0 && starts[i] > at) i--;
+    const raw = nodes[i].textContent;
+    let left = at - starts[i] + drops[i], offset = 0;
+    while (left > 0 && offset < raw.length) {
+      if (/\\s/.test(raw[offset])) { while (offset < raw.length && /\\s/.test(raw[offset])) offset++; }
+      else offset++;
+      left--;
+    }
+    return [nodes[i], offset];
+  };
+  for (let found = 0; found < wanted.length; found++) {
+    const needle = wanted[found].text.toLowerCase();
+    const hits = [];
+    for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) hits.push(at);
+    if (!hits.length) continue;
+    const rank = Math.min(wanted[found].rank, hits.length - 1);
+    const [first, from] = point(hits[rank]);
+    const [final, to] = point(hits[rank] + needle.length);
+    const range = document.createRange();
+    range.setStart(first, from);
+    range.setEnd(final, to);
+    (first.parentElement || first.parentNode.host).scrollIntoView({block: 'center', inline: 'nearest'});
+    paint([range]);
+    return {found, count: hits.length, rank};
+  }
+  paint([]);
+  return {found: -1};
+})")
+  "The JavaScript function that shows where a line of text stands in a page.
+It takes an element and a list of lines, each with its text and its
+rank: how many times the text stands before the line.  It looks in the
+text that the element shows, through web components too, and takes the
+first line that stands there.  The text is compared without regard to
+case and with one space for white space, since a page can show its text
+in capitals and breaks its lines as it likes.  A line can lie in more
+than one piece of the page, as a sentence with a link in it does.  The
+hit of the rank is scrolled into view, also in a part that scrolls on
+its own, and painted.  It gives which line it took, how many hits that
+line has and which one it shows, or -1 for the line when the page holds
+none of them.")
+
+(defconst canvas-browser--locate-tries 5
+  "How many lines `M-.\=' in the text of a page tries, from point on.
+A line that a translator made, as the one that names who wrote a
+message, is not in the page.  The text of the message under it is.")
+
+(defun canvas-browser--squeeze (text)
+  "TEXT with one space for each run of white space, and none at its ends."
+  (string-trim (replace-regexp-in-string "[ \t\n\r\u00a0]+" " " text)))
+
+(defun canvas-browser--count-in (needle hay)
+  "How many times NEEDLE stands in HAY, without regard to case."
+  (let ((needle (downcase needle))
+        (hay (downcase hay))
+        (count 0)
+        (start 0))
+    (while (setq start (string-search needle hay start))
+      (setq count (1+ count)
+            start (1+ start)))
+    count))
+
+(defun canvas-browser--line-to-find ()
+  "The line at point as a page is asked for it, or nil for an empty line.
+It is a plist of its text and its rank: how many times that text stands
+in the buffer before the line."
+  (let ((text (canvas-browser--squeeze
+               (buffer-substring-no-properties (line-beginning-position)
+                                               (line-end-position)))))
+    (unless (string-empty-p text)
+      (list :text text
+            :rank (canvas-browser--count-in
+                   text (canvas-browser--squeeze
+                         (buffer-substring-no-properties (point-min)
+                                                         (line-beginning-position))))))))
+
+(defun canvas-browser--lines-to-find ()
+  "The line at point and those after it, as a page is asked for them.
+Empty lines are left out, and no more than
+`canvas-browser--locate-tries\=' lines are given."
+  (save-excursion
+    (let ((lines nil)
+          (more t))
+      (while (and more (< (length lines) canvas-browser--locate-tries))
+        (when-let* ((line (canvas-browser--line-to-find)))
+          (push line lines))
+        (setq more (and (zerop (forward-line 1)) (not (eobp)))))
+      (nreverse lines))))
+
+(defun canvas-browser--text-root-js (place)
+  "The JavaScript that names what a text was taken from, in this page.
+It is the part at PLACE, while the page still has that part picked, and
+else the whole page."
+  (if (and place (equal place (plist-get canvas-browser--part :place)))
+      (canvas-browser--part-js)
+    "document.body"))
+
+(defun canvas-browser--located (answer lines)
+  "Say what ANSWER, of the page, found of LINES."
+  (let ((found (or (plist-get answer :found) -1)))
+    (cond ((< found 0)
+           (message "canvas-browser: the page does not hold this line as it is written"))
+          ((> found 0)
+           (message "canvas-browser: this line is not in the page; shown is: %s"
+                    (canvas-browser--first-line (plist-get (nth found lines) :text))))
+          (t (message "canvas-browser: hit %d of %d"
+                      (1+ (plist-get answer :rank)) (plist-get answer :count))))))
+
+(defun canvas-browser--locate (lines place)
+  "Show in this page the first of LINES that it holds, of the text at PLACE."
+  (canvas-browser--tell
+   "Runtime.evaluate"
+   (list :expression (format "%s(%s, %s)" canvas-browser--locate-js
+                             (canvas-browser--text-root-js place)
+                             (json-encode (vconcat lines)))
+         :returnByValue t)
+   (lambda (result)
+     (canvas-browser--located (canvas-browser--value-of result) lines))))
+
+(defun canvas-browser-text-show-in-page ()
+  "Show where the line at point stands in the page that this text is of.
+The page buffer is shown, the page scrolls to the line and paints it.
+A line that stands in the page more than once is the one with the same
+rank as here.  When the page does not hold the line, as one that a
+translator made, the first line after it that the page holds is shown.
+The key that goes back in xref comes back here."
+  (interactive nil canvas-browser-text-mode)
+  (let ((page canvas-browser--text-page)
+        (place canvas-browser--text-place)
+        (lines (canvas-browser--lines-to-find)))
+    (unless (buffer-live-p page)
+      (user-error "canvas-browser: the page of this text is gone"))
+    (unless lines
+      (user-error "canvas-browser: no text here to look for"))
+    (xref-push-marker-stack)
+    (pop-to-buffer page)
+    (canvas-browser--locate lines place)))
 
 ;;;; The zoom and the picture
 

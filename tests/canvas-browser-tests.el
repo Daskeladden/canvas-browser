@@ -307,6 +307,168 @@ that moment now."
             (should (= (point) (point-min))))
         (kill-buffer text-buffer)))))
 
+(defmacro canvas-browser-test--with-text (text located &rest body)
+  "Run BODY in the text buffer of a page whose text is TEXT.
+The page answers LOCATED when it is asked where a line stands.  `page\='
+is the page buffer, and `shown\=' the buffer that was popped to last."
+  (declare (indent 2))
+  `(canvas-browser-test--in-page
+     (let ((page (current-buffer))
+           (shown nil))
+       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                  (lambda (method params &optional answer _session &rest _)
+                    (push (cons method params) canvas-browser-test--commands)
+                    (when answer
+                      (funcall answer
+                               (list :result
+                                     (list :value
+                                           (if (string-search
+                                                "wanted" (or (plist-get params :expression) ""))
+                                               ,located
+                                             ,text)))))))
+                 ((symbol-function 'display-buffer) #'ignore)
+                 ((symbol-function 'pop-to-buffer)
+                  (lambda (buffer &rest _) (setq shown buffer) (set-buffer buffer))))
+         (canvas-browser-text)
+         (let ((text-buffer (canvas-browser--text-buffer)))
+           (unwind-protect
+               (with-current-buffer text-buffer ,@body)
+             (kill-buffer text-buffer)))))))
+
+(defun canvas-browser-test--asked-for ()
+  "The script that last asked the page where a line stands."
+  (plist-get (canvas-browser-test--params "Runtime.evaluate") :expression))
+
+(defun canvas-browser-test--show-line (line)
+  "Press `M-.\=' on LINE of this text buffer; what the reader is told.
+The key must be the one of the text buffer: the key of xref would wait
+for an answer that a test cannot give."
+  (should (eq (key-binding (kbd "M-.")) 'canvas-browser-text-show-in-page))
+  (goto-char (point-min))
+  (forward-line (1- line))
+  (let ((said nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (setq said (apply #'format format-string args)))))
+      (call-interactively (key-binding (kbd "M-."))))
+    said))
+
+(ert-deftest canvas-browser-a-line-of-the-text-is-shown-in-its-page ()
+  ;; GIVEN the text of a page, where the line Reply stands twice
+  ;; WHEN M-. is pressed on the second one
+  ;; THEN the page is asked for that line as the second time it stands
+  ;;      there, in the whole page, AND the page buffer is shown, AND the
+  ;;      reader is told which hit of how many it is
+  (canvas-browser-test--with-text "Reply\nHello there\nReply\n" '(:found 0 :count 2 :rank 1)
+    (let ((said (canvas-browser-test--show-line 3)))
+      (should (eq shown page))
+      (should (string-search "(document.body, [{\"text\":\"Reply\",\"rank\":1}])"
+                             (canvas-browser-test--asked-for)))
+      (should (string-search "2 of 2" said)))))
+
+(ert-deftest canvas-browser-the-way-back-from-the-page-is-the-key-of-xref ()
+  ;; GIVEN the text of a page, with point on its third line
+  ;; WHEN M-. is pressed, and then the key that goes back in xref
+  ;; THEN point is on that line of the text buffer again
+  (canvas-browser-test--with-text "Reply\nHello there\nReply\n" '(:found 0 :count 2 :rank 1)
+    (let ((text-buffer (current-buffer)))
+      (canvas-browser-test--show-line 3)
+      (set-buffer page)
+      (xref-go-back)
+      (should (eq (current-buffer) text-buffer))
+      (should (= (line-number-at-pos) 3)))))
+
+(ert-deftest canvas-browser-a-line-is-asked-for-without-its-white-space ()
+  ;; GIVEN the text of a page with a line that is indented and has two
+  ;;       spaces between its words, and a line after it
+  ;; WHEN M-. is pressed on the first
+  ;; THEN the page is asked for the words with one space between them,
+  ;;      AND for the line after it as a second try
+  (canvas-browser-test--with-text "  Hello   there \nGood day\n" '(:found 0 :count 1 :rank 0)
+    (canvas-browser-test--show-line 1)
+    (should (string-search (concat "[{\"text\":\"Hello there\",\"rank\":0},"
+                                   "{\"text\":\"Good day\",\"rank\":0}]")
+                           (canvas-browser-test--asked-for)))))
+
+(ert-deftest canvas-browser-an-empty-line-of-the-text-shows-the-line-after-it ()
+  ;; GIVEN the text of a page with an empty line between two lines
+  ;; WHEN M-. is pressed on the empty line
+  ;; THEN the page is asked for the line after it
+  (canvas-browser-test--with-text "one\n\ntwo\n" '(:found 0 :count 1 :rank 0)
+    (canvas-browser-test--show-line 2)
+    (should (string-search "[{\"text\":\"two\",\"rank\":0}]"
+                           (canvas-browser-test--asked-for)))))
+
+(ert-deftest canvas-browser-the-last-line-of-the-text-is-shown-from-its-end ()
+  ;; GIVEN the text of a page that ends without a line break, with point
+  ;;       at its end, where a search for the last line leaves it
+  ;; WHEN M-. is pressed
+  ;; THEN the page is asked for the last line
+  (canvas-browser-test--with-text "one\ntwo" '(:found 0 :count 1 :rank 0)
+    (should (eq (key-binding (kbd "M-.")) 'canvas-browser-text-show-in-page))
+    (goto-char (point-max))
+    (canvas-browser-text-show-in-page)
+    (should (string-search "[{\"text\":\"two\",\"rank\":0}]"
+                           (canvas-browser-test--asked-for)))))
+
+(ert-deftest canvas-browser-a-line-that-the-page-does-not-hold-is-said ()
+  ;; GIVEN the text of a page, and a page that holds none of its lines
+  ;;       as they are written, as the lines that a translator made
+  ;; WHEN M-. is pressed on a line
+  ;; THEN the reader is told that the page does not hold it
+  (canvas-browser-test--with-text "alice at noon\n" '(:found -1)
+    (should (string-search "does not hold" (canvas-browser-test--show-line 1)))))
+
+(ert-deftest canvas-browser-a-line-found-further-down-is-said ()
+  ;; GIVEN the text of a page whose first line the page does not hold,
+  ;;       and whose second line it holds
+  ;; WHEN M-. is pressed on the first
+  ;; THEN the reader is told that the line after it is shown
+  (canvas-browser-test--with-text "alice at noon\nHello there\n" '(:found 1 :count 1 :rank 0)
+    (should (string-search "Hello there" (canvas-browser-test--show-line 1)))))
+
+(ert-deftest canvas-browser-a-line-of-a-part-is-looked-for-in-the-part ()
+  ;; GIVEN a page where a part is picked, and the text of that part
+  ;; WHEN M-. is pressed on a line of it
+  ;; THEN the page is asked for the line in that part
+  ;; WHEN the part is no longer picked
+  ;; THEN the page is asked for it in the whole page
+  (canvas-browser-test--in-page
+    (let ((page (current-buffer)))
+      (cl-letf (((symbol-function 'display-buffer) #'ignore)
+                ((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) (set-buffer buffer))))
+        (canvas-browser-test--with-part '(:x 0 :y 40 :w 600 :h 500) "the part"
+          (canvas-browser-text)
+          (let ((text-buffer (canvas-browser--text-buffer)))
+            (unwind-protect
+                (progn
+                  (with-current-buffer text-buffer (canvas-browser-text-show-in-page))
+                  (should (string-search "window.__canvasBrowserParts[1]), [{"
+                                         (canvas-browser-test--asked-for)))
+                  (with-current-buffer page (setq canvas-browser--part nil))
+                  (with-current-buffer text-buffer (canvas-browser-text-show-in-page))
+                  (should (string-search "(document.body, " (canvas-browser-test--asked-for))))
+              (kill-buffer text-buffer))))))))
+
+(ert-deftest canvas-browser-a-text-whose-page-is-gone-says-so ()
+  ;; GIVEN the text of a page whose buffer was killed since
+  ;; WHEN M-. is pressed on a line
+  ;; THEN it is an error that says the page is gone
+  (let ((text-buffer nil))
+    (canvas-browser-test--in-page
+      (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                 (lambda (_method _params &optional answer _session &rest _)
+                   (when answer (funcall answer '(:result (:value "one\ntwo"))))))
+                ((symbol-function 'display-buffer) #'ignore))
+        (canvas-browser-text)
+        (setq text-buffer (canvas-browser--text-buffer))))
+    (unwind-protect
+        (with-current-buffer text-buffer
+          (should (string-search "gone"
+                                 (cadr (should-error (canvas-browser-text-show-in-page)
+                                                     :type 'user-error)))))
+      (kill-buffer text-buffer))))
+
 ;;;; The window, the header line and a chromium that died
 
 (ert-deftest canvas-browser-a-resized-window-lays-the-page-out-again ()

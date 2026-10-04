@@ -428,6 +428,7 @@ Normal state keeps the keys of Emacs:
 | `i` | sends the keys to the page, as a click in a field does |
 | `t` | puts the text of the page, or of the part picked with `S`, in an ordinary buffer |
 | `M-s M-l` | searches that text with `consult-line`, also while the keys go to the page |
+| `M-.` in that text | shows the page at the line: the page scrolls to it and paints it, and `M-,` comes back to the text |
 | `e` | opens the same URL in eww |
 | a click | clicks the page at that pixel, and types there if it is a field |
 | a drag | marks what lies between its two ends, once the button is let go |
