@@ -359,6 +359,15 @@ comes back to it from any buffer. If no buffer shows the page any more,
 the page opens again. A page that loaded again knows how far it was
 scrolled as a whole, but not how far each part was.
 
+### History
+
+`H` offers the pages that you visited, the newest first, each by its
+title and its address. The page that you choose opens in this buffer.
+`C-u H` opens it in a page buffer of its own, and so does
+`M-x canvas-browser-history` in any other buffer. The key of
+`consult-history` asks for this history too in a page buffer. The
+history is kept in the file that `canvas-browser-history-file` names.
+
 ### Embark
 
 `embark-act` in a page buffer acts on the page. It has the actions of
@@ -470,6 +479,7 @@ Normal state keeps the keys of Emacs:
 |---|---|
 | `o` | opens a URL in this buffer, or searches for the words you type |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
+| `H` | offers the pages that you visited, the newest first, and opens the one you choose |
 | `C-SPC`, `C-u C-SPC`, `C-x C-x` | set a mark where the page stands, go back to the newest mark, and swap the two |
 | `C-x r SPC`, `C-x r j` | keep the place of the page in a register, and come back to it from any buffer |
 | `y` | copies the address of this page, as `f y` copies the address of a link |
@@ -846,6 +856,8 @@ chromium a window on.
 | `canvas-browser-line-height` | 40 | pixels that `n` and `p` scroll |
 | `canvas-browser-search-url` | DuckDuckGo | where words are searched for |
 | `canvas-browser-spots-delay` | 0.3 | seconds of quiet before the pointer areas are read |
+| `canvas-browser-history-length` | 1000 | how many visited pages the history keeps, or nil for none |
+| `canvas-browser-history-file` | under `~/.local/share` | the file that keeps the history between sessions, or nil |
 | `canvas-browser-field-history-delay` | 1 | seconds of quiet before the field is read into its buffer, or nil to keep no history of what is typed in a page |
 
 A page that stops answering for a few seconds says so in the echo area,

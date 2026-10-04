@@ -3,6 +3,11 @@
 (require 'cl-lib)
 (require 'canvas-browser)
 
+;; The pages that a test opens are no visits of the reader.  The history
+;; stays in the session of the test, and the file of the reader is left
+;; alone.
+(setq canvas-browser-history-file nil)
+
 (defun canvas-browser-live-test--wait (seconds test)
   "Wait up to SECONDS until TEST answers; whether it did."
   (let ((deadline (+ (float-time) seconds)))

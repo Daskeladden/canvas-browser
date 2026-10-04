@@ -856,6 +856,7 @@ again, whatever the page calls itself, so the page is asked."
        (when (and (buffer-live-p buffer) (stringp title) (not (string-empty-p title)))
          (with-current-buffer buffer
            (setq canvas-browser--title title)
+           (canvas-browser--remember-page)
            (force-mode-line-update)))))))
 
 (defun canvas-browser--detached (params)
@@ -943,7 +944,10 @@ it, since the host finds it by that name."
           ;; The part that was picked belonged to the page before.
           (canvas-browser--set-part nil)
           (setq canvas-browser--url url
-                canvas-browser--title (and (stringp title) (not (string-empty-p title)) title)))
+                canvas-browser--title (and (stringp title) (not (string-empty-p title)) title))
+          ;; A page that moves without a load, as an application does,
+          ;; is a visit as well.
+          (canvas-browser--remember-page))
         (unless canvas-browser--host
           (let ((name (canvas-browser--buffer-name canvas-browser--url)))
             ;; A name made unique with <2> is the name already.
@@ -3981,6 +3985,122 @@ buffer that shows the page, or else in one that opens its address."
                  (or (canvas-browser-position-title position)
                      (canvas-browser-position-url position)))))
 
+;;;; The history of the pages that were visited
+
+(defcustom canvas-browser-history-length 1000
+  "How many pages the history keeps: those that were visited last.
+With nil no visit is kept."
+  :type '(choice (integer :tag "Pages") (const :tag "Keep no history" nil))
+  :group 'canvas-browser)
+
+(defcustom canvas-browser-history-file
+  (expand-file-name "canvas-browser/history.eld"
+                    (or (getenv "XDG_DATA_HOME") (expand-file-name "~/.local/share")))
+  "The file that keeps the history between two sessions of Emacs.
+With nil the history lasts as long as the session."
+  :type '(choice file (const :tag "Keep the history in the session only" nil))
+  :group 'canvas-browser)
+
+(defvar canvas-browser--visited 'unread
+  "The pages that were visited, the newest first, each (URL TITLE TIME).
+TIME is the time of the last visit, in seconds.  It is `unread\=' until
+the file of the history was read.")
+
+(defvar canvas-browser--history-timer nil
+  "The timer that writes the history to its file, while a visit waits for that.")
+
+(defun canvas-browser--read-history ()
+  "The history that its file keeps, or nil without a file."
+  (let ((file canvas-browser-history-file))
+    (when (and file (file-readable-p file))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (read (current-buffer))))))
+
+(defun canvas-browser--visited ()
+  "The pages that were visited, the newest first, each (URL TITLE TIME).
+The file of the history is read the first time."
+  (when (eq canvas-browser--visited 'unread)
+    (setq canvas-browser--visited (canvas-browser--read-history)))
+  canvas-browser--visited)
+
+(defun canvas-browser--write-history ()
+  "Write the history to its file, for the reader alone to read.
+A history that was never read is not written: it would take the place
+of the one in the file."
+  (when canvas-browser--history-timer
+    (cancel-timer canvas-browser--history-timer)
+    (setq canvas-browser--history-timer nil))
+  (when (and canvas-browser-history-file (listp canvas-browser--visited))
+    (make-directory (file-name-directory canvas-browser-history-file) t)
+    (with-file-modes #o600
+      (with-temp-file canvas-browser-history-file
+        (let ((print-length nil) (print-level nil))
+          (prin1 canvas-browser--visited (current-buffer)))))
+    (set-file-modes canvas-browser-history-file #o600)))
+
+(defun canvas-browser--write-history-if-changed ()
+  "Write the history to its file when a visit still waits for that."
+  (when canvas-browser--history-timer
+    (canvas-browser--write-history)))
+
+(add-hook 'kill-emacs-hook #'canvas-browser--write-history-if-changed)
+
+(defun canvas-browser--save-history-later ()
+  "Write the history to its file once Emacs has been idle for a while."
+  (when (and canvas-browser-history-file (not canvas-browser--history-timer))
+    (setq canvas-browser--history-timer
+          (run-with-idle-timer 10 nil #'canvas-browser--write-history))))
+
+(defun canvas-browser--visit-p ()
+  "Whether the page of this buffer is one to keep in the history.
+It is one that the reader opened, at an address to come back to.  A
+page that another buffer embeds is part of that buffer."
+  (and canvas-browser-history-length
+       canvas-browser--url
+       (not canvas-browser--host)
+       (string-match-p "\\`\\(?:https?\\|file\\):" canvas-browser--url)))
+
+(defun canvas-browser--remember-page ()
+  "Note the page of this buffer as the newest visit of the history.
+A page that was visited before stands there once, with its newest title
+and time."
+  (when (canvas-browser--visit-p)
+    (let ((url canvas-browser--url))
+      (setq canvas-browser--visited
+            (seq-take (cons (list url (or canvas-browser--title url) (float-time))
+                            (seq-remove (lambda (visit) (equal (car visit) url))
+                                        (canvas-browser--visited)))
+                      canvas-browser-history-length))
+      (canvas-browser--save-history-later))))
+
+(defun canvas-browser--history-candidates ()
+  "The pages of the history, each (NAME . URL), the newest first.
+NAME is the title and the address, as a link is offered."
+  (mapcar (lambda (visit)
+            (pcase-let ((`(,url ,title . ,_) visit))
+              (cons (canvas-browser--link-name (if (equal title url) "" title) url) url)))
+          (canvas-browser--visited)))
+
+;;;###autoload
+(defun canvas-browser-history (&optional other)
+  "Open a page that was visited, chosen by its title or by its address.
+The newest visit comes first.  In a page buffer the page opens there.
+With a prefix argument, OTHER, or in any other buffer, it opens in a
+page buffer of its own.  Embark acts on a page that is offered as on
+any address.  The key of `consult-history\\=' runs this command in a page
+buffer."
+  (interactive "P")
+  (let* ((candidates (or (canvas-browser--history-candidates)
+                         (user-error "canvas-browser: no page was visited yet")))
+         (url (cdr (assoc (completing-read "Visited page: "
+                                           (canvas-browser--link-table candidates)
+                                           nil t nil 'canvas-browser-link-history)
+                          candidates))))
+    (if (and (derived-mode-p 'canvas-browser-mode) (not other))
+        (canvas-browser-open-url url)
+      (canvas-browser url))))
+
 ;;;; The zoom and the picture
 
 (defcustom canvas-browser-zoom-step 1.2
@@ -4136,7 +4256,8 @@ and the settings.  The widths line the columns of the two rows up."
    ("b" "back" canvas-browser-back)
    ("F" "forward" canvas-browser-forward)
    ("B" "bookmark" canvas-browser-bookmark)
-   ("J" "bookmarks" canvas-browser-open-bookmark)]
+   ("J" "bookmarks" canvas-browser-open-bookmark)
+   ("H" "history" canvas-browser-history)]
   ["Page"
    ("f" "hints" canvas-browser-hints)
    ("a" "links" canvas-browser-links)
@@ -4181,6 +4302,7 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   ">" #'canvas-browser-send-to
   "B" #'canvas-browser-bookmark
   "J" #'canvas-browser-open-bookmark
+  "H" #'canvas-browser-history
   "v" #'canvas-browser-caret-mode
   "M-j" #'canvas-browser-caret-jump
   ;; The key of avy jumps in the page, wherever it is bound, and even
@@ -4205,6 +4327,7 @@ keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
   "<remap> <set-mark-command>" #'canvas-browser-set-mark
   "<remap> <exchange-point-and-mark>" #'canvas-browser-exchange-position-and-mark
   "<remap> <point-to-register>" #'canvas-browser-position-to-register
+  "<remap> <consult-history>" #'canvas-browser-history
   "<remap> <imenu>" #'canvas-browser-imenu
   "<remap> <consult-imenu>" #'canvas-browser-imenu
   "z" #'canvas-keys-zoom-fit
@@ -4828,6 +4951,7 @@ here, on every load."
   (define-key map (kbd "M-s M-l") #'canvas-browser-search-text)
   (define-key map (kbd "C-c '") #'canvas-browser-edit-field)
   (define-key map [remap point-to-register] #'canvas-browser-position-to-register)
+  (define-key map [remap consult-history] #'canvas-browser-history)
   (define-key map [remap imenu] #'canvas-browser-imenu)
   (define-key map [remap consult-imenu] #'canvas-browser-imenu))
 

@@ -3,6 +3,11 @@
 (require 'cl-lib)
 (require 'canvas-browser)
 
+;; The pages that a test opens are no visits of the reader.  The history
+;; stays in the session of the test, and the file of the reader is left
+;; alone.
+(setq canvas-browser-history-file nil)
+
 (defvar smear-cursor-mode)
 
 (defvar canvas-browser-test--commands nil
@@ -1335,6 +1340,137 @@ Each is the end of the script that asked: (\"NAME\", X, Y)."
                               (buffer-local-value 'canvas-browser--position-wanted new))
                              300)))
           (kill-buffer new))))))
+
+;;;; The history of the pages that were visited
+
+(defmacro canvas-browser-test--with-history (&rest body)
+  "Run BODY with a history of its own, which starts empty and has no file."
+  (declare (indent 0))
+  `(let ((canvas-browser--visited nil)
+         (canvas-browser-history-file nil)
+         (canvas-browser-history-length 3))
+     ,@body))
+
+(defun canvas-browser-test--visit (url title)
+  "Have this page buffer stand at URL with TITLE, and note the visit."
+  (setq canvas-browser--url url
+        canvas-browser--title title)
+  (canvas-browser--remember-page))
+
+(defun canvas-browser-test--history ()
+  "The history, the newest visit first, each as its address and its title."
+  (mapcar (lambda (visit) (list (nth 0 visit) (nth 1 visit))) (canvas-browser--visited)))
+
+(ert-deftest canvas-browser-a-page-that-has-loaded-is-in-the-history ()
+  ;; GIVEN a page buffer at an address, and a history that is empty
+  ;; WHEN the page has loaded and has told its title
+  ;; THEN the history holds the page: its address, its title and the
+  ;;      time of the visit
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--answering "The title of the page"
+        (canvas-browser--loaded nil)
+        (should (equal (canvas-browser-test--history)
+                       '(("https://example.org" "The title of the page"))))
+        (should (numberp (nth 2 (car (canvas-browser--visited)))))))))
+
+(ert-deftest canvas-browser-the-newest-visit-is-the-first-of-the-history ()
+  ;; GIVEN a history that keeps three pages
+  ;; WHEN four pages are visited, and then the third once more
+  ;; THEN the history holds the three that were visited last, the newest
+  ;;      first, AND the page that was visited twice stands there once
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (dolist (name '("a" "b" "c" "d"))
+        (canvas-browser-test--visit (concat "https://example.org/" name) name))
+      (canvas-browser-test--visit "https://example.org/c" "c again")
+      (should (equal (canvas-browser-test--history)
+                     '(("https://example.org/c" "c again") ("https://example.org/d" "d")
+                       ("https://example.org/b" "b")))))))
+
+(ert-deftest canvas-browser-not-every-page-is-a-visit ()
+  ;; GIVEN a page that another buffer embeds, AND a page without an
+  ;;       address to come back to, AND a history that is turned off
+  ;; WHEN each is noted
+  ;; THEN the history stays empty
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (let ((canvas-browser--host (current-buffer)))
+        (canvas-browser-test--visit "https://example.org/embedded" "Embedded"))
+      (canvas-browser-test--visit "about:blank" "about:blank")
+      (let ((canvas-browser-history-length nil))
+        (canvas-browser-test--visit "https://example.org/off" "Off"))
+      (should-not (canvas-browser-test--history)))))
+
+(ert-deftest canvas-browser-the-history-is-kept-in-a-file ()
+  ;; GIVEN a history with a file, and a visit
+  ;; WHEN the history is written, and read in an Emacs that has not read
+  ;;      it yet
+  ;; THEN the visit is there again, AND only the reader can read the
+  ;;      file
+  (let ((file (make-temp-file "canvas-browser-history-")))
+    (unwind-protect
+        (canvas-browser-test--with-history
+          (let ((canvas-browser-history-file file))
+            (canvas-browser-test--in-page
+              (cl-letf (((symbol-function 'run-with-idle-timer) #'ignore))
+                (canvas-browser-test--visit "https://example.org/a" "A page")))
+            (canvas-browser--write-history)
+            (should (= (file-modes file) #o600))
+            (setq canvas-browser--visited 'unread)
+            (should (equal (canvas-browser-test--history)
+                           '(("https://example.org/a" "A page"))))))
+      (delete-file file))))
+
+(ert-deftest canvas-browser-a-page-of-the-history-opens-again ()
+  ;; GIVEN a history of two pages, AND a reader who chooses the older
+  ;; WHEN the history is asked for in a page buffer
+  ;; THEN the pages are offered by title and address, the newest first,
+  ;;      AND this page goes to the address that was chosen
+  ;; WHEN it is asked for with a prefix argument, or in a buffer that is
+  ;;      no page
+  ;; THEN the address opens in a page buffer of its own
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit "https://example.org/a" "First")
+      (canvas-browser-test--visit "https://example.org/b" "Second")
+      (let ((offered nil) (opened nil))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _)
+                     (setq offered (all-completions "" table))
+                     (nth 1 offered)))
+                  ((symbol-function 'canvas-browser) (lambda (url) (push url opened))))
+          (canvas-browser-history)
+          (should (equal offered '("Second  https://example.org/b" "First  https://example.org/a")))
+          (should (equal (plist-get (canvas-browser-test--params "Page.navigate") :url)
+                         "https://example.org/a"))
+          (should-not opened)
+          (canvas-browser-history t)
+          (with-temp-buffer
+            (canvas-browser-history))
+          (should (equal opened '("https://example.org/a" "https://example.org/a"))))))))
+
+(ert-deftest canvas-browser-an-empty-history-says-so ()
+  ;; GIVEN a history without a visit
+  ;; WHEN it is asked for
+  ;; THEN that is a user error
+  (canvas-browser-test--with-history
+    (should (string-search "no page"
+                           (error-message-string
+                            (should-error (canvas-browser-history) :type 'user-error))))))
+
+(ert-deftest canvas-browser-the-key-of-the-history ()
+  ;; GIVEN a page buffer whose keys are those of Emacs
+  ;; THEN H asks for the history, AND the menu has it
+  ;; AND the key of consult-history, whatever it is, asks for it too, in
+  ;;     normal state and in insert state: the history of a page buffer
+  ;;     is that of its pages
+  (canvas-browser-test--in-page
+    (should (eq (key-binding (kbd "H")) #'canvas-browser-history))
+    (dolist (map (list canvas-browser-mode-map canvas-browser-insert-map))
+      (should (eq (lookup-key map [remap consult-history]) #'canvas-browser-history))))
+  (should (eq (plist-get (canvas-browser-test--menu-entry "H") :command)
+              #'canvas-browser-history)))
 
 ;;;; The window, the header line and a chromium that died
 
