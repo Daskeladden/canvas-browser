@@ -846,36 +846,221 @@ for an answer that a test cannot give."
 
 ;;;; Find in page
 
-(ert-deftest canvas-browser-find-paints-the-hit-and-steps-through-them ()
-  ;; GIVEN a page buffer
-  ;; WHEN a string is searched for, and then stepped forwards and back
-  ;; THEN the page is asked to find and paint that string, and the number
-  ;;      of the hit follows the steps, since window.find leaves nothing
-  ;;      to see in a headless chromium
-  (canvas-browser-test--in-page
-    (canvas-browser-find "parser")
-    (should (string-search "\"parser\"" (plist-get (canvas-browser-test--params "Runtime.evaluate")
-                                                   :expression)))
-    (should (equal canvas-browser--find-index 0))
-    (canvas-browser-find-next)
-    (should (equal canvas-browser--find-index 1))
-    (canvas-browser-find-previous)
-    (canvas-browser-find-previous)
-    (should (equal canvas-browser--find-index -1))))
+(defmacro canvas-browser-test--finding (answer &rest body)
+  "Run BODY in a page that answers each search with ANSWER.
+ANSWER is evaluated at each search.  What the reader is told goes to
+`said\='."
+  (declare (indent 1))
+  `(canvas-browser-test--in-page
+     (let ((said nil))
+       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                  (lambda (method params &optional reply _session &rest _)
+                    (push (cons method params) canvas-browser-test--commands)
+                    (when reply (funcall reply (list :result (list :value ,answer))))))
+                 ((symbol-function 'message)
+                  (lambda (format-string &rest args)
+                    (setq said (and format-string (apply #'format format-string args))))))
+         ,@body))))
+
+(defun canvas-browser-test--search-asked ()
+  "What the page was last asked to search for: the arguments, as text."
+  (let ((expression (plist-get (canvas-browser-test--params "Runtime.evaluate") :expression)))
+    (and (string-match "})(\\(.*\\))\\'" expression)
+         (match-string 1 expression))))
+
+(ert-deftest canvas-browser-find-asks-the-page-and-steps-through-the-hits ()
+  ;; GIVEN a page that holds a string three times
+  ;; WHEN the string is searched for, and then stepped forwards and back
+  ;; THEN the page is asked for the string from where it stands, AND each
+  ;;      step is asked from the hit before it, AND the reader is told
+  ;;      which hit of how many is shown
+  (let ((answer '(:count 3 :index 0 :anchor 120)))
+    (canvas-browser-test--finding answer
+      (canvas-browser-find "parser")
+      (should (equal (canvas-browser-test--search-asked) "\"parser\", false, null, 0"))
+      (should (string-search "1 of 3" said))
+      (setq answer '(:count 3 :index 1 :anchor 300))
+      (canvas-browser-find-next)
+      (should (equal (canvas-browser-test--search-asked) "\"parser\", false, 120, 1"))
+      (should (string-search "2 of 3" said))
+      (canvas-browser-find-previous)
+      (should (equal (canvas-browser-test--search-asked) "\"parser\", false, 300, -1")))))
 
 (ert-deftest canvas-browser-find-says-when-a-page-holds-nothing ()
   ;; GIVEN a page that answers with no hits
   ;; WHEN a string is searched for
   ;; THEN the reader is told that the page holds it nowhere
+  (canvas-browser-test--finding '(:count 0)
+    (canvas-browser-find "nothing here")
+    (should (string-search "no hit" said))))
+
+(ert-deftest canvas-browser-find-can-search-for-a-regexp ()
+  ;; GIVEN a page that was searched for a string
+  ;; WHEN the search is switched to a regexp
+  ;; THEN the page is asked again, for the same text as a regexp, AND the
+  ;;      next search of this page is for a regexp too
+  (canvas-browser-test--finding '(:count 2 :index 0 :anchor 7)
+    (canvas-browser-find "a|b")
+    (canvas-browser-find-toggle-regexp)
+    (should (equal (canvas-browser-test--search-asked) "\"a|b\", true, 7, 0"))
+    (should canvas-browser--find-regexp)
+    (canvas-browser-find-toggle-regexp)
+    (should (equal (canvas-browser-test--search-asked) "\"a|b\", false, 7, 0"))))
+
+(ert-deftest canvas-browser-find-says-what-is-wrong-with-a-regexp ()
+  ;; GIVEN a search for a regexp that is not finished, as it is while it
+  ;;       is typed
+  ;; WHEN the page answers that it cannot read it
+  ;; THEN the reader is told what the page says
+  (canvas-browser-test--finding '(:error "Unterminated group")
+    (setq canvas-browser--find-regexp t)
+    (canvas-browser-find "fil(")
+    (should (string-search "Unterminated group" said))))
+
+(ert-deftest canvas-browser-find-follows-what-is-typed ()
+  ;; GIVEN a search of a page that stands at a hit
+  ;; WHEN more is typed
+  ;; THEN the page is asked for the longer text from that hit on, as
+  ;;      isearch goes on from where it stands
+  ;; WHEN all of it is deleted
+  ;; THEN the page is asked for nothing, which takes the paint away, AND
+  ;;      the reader is not told of a miss
+  (let ((answer '(:count 5 :index 2 :anchor 40)))
+    (canvas-browser-test--finding answer
+      (canvas-browser--find-typed "pa")
+      (canvas-browser--find-typed "par")
+      (should (equal (canvas-browser-test--search-asked) "\"par\", false, 40, 0"))
+      (setq answer '(:count 0)
+            said nil)
+      (canvas-browser--find-typed "")
+      (should (equal (canvas-browser-test--search-asked) "\"\", false, 40, 0"))
+      (should-not said))))
+
+(ert-deftest canvas-browser-an-answer-to-an-older-search-is-dropped ()
+  ;; GIVEN two searches sent one after the other, as fast typing sends
+  ;;       them
+  ;; WHEN the answer to the first comes after the answer to the second
+  ;; THEN the page is known to stand where the second answer said
   (canvas-browser-test--in-page
-    (let ((said nil))
+    (let ((answers nil))
       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
                  (lambda (_method _params &optional answer _session &rest _)
-                   (when answer (funcall answer '(:result (:value (:count 0 :index 0)))))))
-                ((symbol-function 'message)
-                 (lambda (format &rest args) (setq said (apply #'format format args)))))
-        (canvas-browser-find "nothing here")
-        (should (string-search "no " said))))))
+                   (push answer answers)))
+                ((symbol-function 'message) #'ignore))
+        (canvas-browser--find-typed "p")
+        (canvas-browser--find-typed "pa")
+        (funcall (nth 0 answers) '(:result (:value (:count 2 :index 1 :anchor 90))))
+        (funcall (nth 1 answers) '(:result (:value (:count 9 :index 0 :anchor 5))))
+        (should (equal canvas-browser--find-anchor 90))
+        (should (equal canvas-browser--find-index 1))))))
+
+(ert-deftest canvas-browser-a-search-that-is-given-up-puts-the-page-back ()
+  ;; GIVEN a search that scrolled the page
+  ;; WHEN it ends with C-g
+  ;; THEN the page is told to scroll back and to take the paint away,
+  ;;      AND the string is not kept as the last search
+  ;; WHEN a search ends with RET
+  ;; THEN the page is told to stay, AND the string is the last search
+  (canvas-browser-test--finding '(:count 1 :index 0 :anchor 3)
+    (canvas-browser--find-typed "par")
+    (canvas-browser--find-end "par" t)
+    (should (string-search "(true)" (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                               :expression)))
+    (should-not canvas-browser--last-search)
+    (canvas-browser--find-typed "par")
+    (canvas-browser--find-end "par" nil)
+    (should (string-search "(false)" (plist-get (canvas-browser-test--params "Runtime.evaluate")
+                                                :expression)))
+    (should (equal canvas-browser--last-search "par"))))
+
+(ert-deftest canvas-browser-a-step-with-nothing-typed-takes-the-last-search ()
+  ;; GIVEN a page that was searched for a string before
+  ;; WHEN a new search steps on with nothing typed yet, as C-s C-s does
+  ;;      in isearch
+  ;; THEN the last string is what to type, AND the page is not asked
+  ;; GIVEN something is typed
+  ;; THEN the step is asked of the page
+  (canvas-browser-test--finding '(:count 3 :index 1 :anchor 50)
+    (setq canvas-browser--last-search "parser")
+    (setq canvas-browser-test--commands nil)
+    (should (equal (canvas-browser--find-step 1 "") "parser"))
+    (should-not (canvas-browser-test--params "Runtime.evaluate"))
+    (should-not (canvas-browser--find-step 1 "par"))
+    (should (equal (canvas-browser-test--search-asked) "\"par\", false, null, 1"))))
+
+(defun canvas-browser-test--searches-asked ()
+  "Every search and every end of one that the page was asked for, oldest first.
+Each is the text of its arguments."
+  (delq nil
+        (mapcar (lambda (command)
+                  (let ((expression (or (plist-get (cdr command) :expression) "")))
+                    (and (equal (car command) "Runtime.evaluate")
+                         (string-match "})(\\(.*\\))\\'" expression)
+                         (match-string 1 expression))))
+                (reverse canvas-browser-test--commands))))
+
+(defun canvas-browser-test--type (keys)
+  "Press KEYS in this page buffer, as the reader does; a quit ends them."
+  (switch-to-buffer (current-buffer))
+  (setq canvas-browser-test--commands nil)
+  (condition-case nil
+      (execute-kbd-macro (kbd keys))
+    (quit nil)))
+
+(ert-deftest canvas-browser-a-search-is-typed-in-the-minibuffer ()
+  ;; GIVEN a page buffer
+  ;; WHEN C-s is pressed, two letters are typed, C-s is pressed again,
+  ;;      and then RET
+  ;; THEN the page is asked for the first letter, then for both, then
+  ;;      for the next hit of both, AND it is told that the search ended
+  ;;      where it stands, AND what was typed is the last search
+  (canvas-browser-test--finding '(:count 3 :index 0 :anchor 10)
+    (canvas-browser-test--type "C-s p a C-s RET")
+    (should (equal (canvas-browser-test--searches-asked)
+                   '("\"p\", false, null, 0"
+                     "\"pa\", false, 10, 0"
+                     "\"pa\", false, 10, 1"
+                     "false")))
+    (should (equal canvas-browser--last-search "pa"))))
+
+(ert-deftest canvas-browser-a-search-is-given-up-with-the-quit-key ()
+  ;; GIVEN a page buffer where a search is typed
+  ;; WHEN C-g is pressed
+  ;; THEN the page is told to go back to where it stood
+  (canvas-browser-test--finding '(:count 3 :index 0 :anchor 10)
+    (canvas-browser-test--type "C-s p C-g")
+    (should (equal (canvas-browser-test--searches-asked)
+                   '("\"p\", false, null, 0" "true")))))
+
+(ert-deftest canvas-browser-a-search-takes-the-last-one-up-with-the-search-key ()
+  ;; GIVEN a page that was searched for a string before
+  ;; WHEN C-s is pressed twice, and then RET
+  ;; THEN the last string is typed for the reader, AND the page is asked
+  ;;      for it
+  (canvas-browser-test--finding '(:count 3 :index 0 :anchor 10)
+    (setq canvas-browser--last-search "parser")
+    (canvas-browser-test--type "C-s C-s RET")
+    (should (equal (canvas-browser-test--searches-asked)
+                   '("\"parser\", false, null, 0" "false")))))
+
+(ert-deftest canvas-browser-a-search-switches-to-a-regexp-while-it-is-typed ()
+  ;; GIVEN a page buffer where a search is typed
+  ;; WHEN M-r is pressed, and then RET
+  ;; THEN the page is asked for what was typed as a regexp
+  (canvas-browser-test--finding '(:count 3 :index 0 :anchor 10)
+    (canvas-browser-test--type "C-s a M-r RET")
+    (should (equal (canvas-browser-test--searches-asked)
+                   '("\"a\", false, null, 0" "\"a\", true, 10, 0" "false")))))
+
+(ert-deftest canvas-browser-the-keys-of-a-search-are-those-of-isearch ()
+  ;; GIVEN the keys of a search of a page
+  ;; THEN C-s and C-r step to the next hit and the one before, AND M-r
+  ;;      switches between a string and a regexp, AND the other keys are
+  ;;      those of the minibuffer
+  (should (eq (lookup-key canvas-browser-find-map (kbd "C-s")) #'canvas-browser-find-next))
+  (should (eq (lookup-key canvas-browser-find-map (kbd "C-r")) #'canvas-browser-find-previous))
+  (should (eq (lookup-key canvas-browser-find-map (kbd "M-r")) #'canvas-browser-find-toggle-regexp))
+  (should (eq (keymap-parent canvas-browser-find-map) minibuffer-local-map)))
 
 ;;;; The map of canvas-minimap
 

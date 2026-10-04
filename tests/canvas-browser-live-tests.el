@@ -1523,6 +1523,94 @@ that holds its start, and whether the window shows that element."
       (should (equal (canvas-browser-live-test--shown-line "The far end.")
                      '("far" t "The far end."))))))
 
+(defun canvas-browser-live-test--hits ()
+  "What the page paints of a search: how many hits, and where the one shown is.
+It is (COUNT ID TEXT): the id of the element that holds the start of
+the hit that is shown, and the text of that hit.  The page is given a
+moment to answer the search first."
+  (canvas-browser-live-test--wait 1 (lambda () nil))
+  (canvas-browser-live-test--page-says
+   "(() => { const all = CSS.highlights.get('canvas-browser-find');
+             const current = CSS.highlights.get('canvas-browser-find-current');
+             if (!all || !current) return [0, null, null];
+             const range = [...current][0];
+             return [all.size, range.startContainer.parentElement.id, range.toString()]; })()"))
+
+(defun canvas-browser-live-test--pane-top ()
+  "How far the part of the locate fixture that scrolls is scrolled."
+  (canvas-browser-live-test--page-says "document.getElementById('pane').scrollTop"))
+
+(ert-deftest canvas-browser-live-a-search-steps-through-the-hits-of-a-page ()
+  ;; GIVEN the locate fixture, where Reply stands twice, the second time
+  ;;       far down in a part that scrolls on its own
+  ;; WHEN the page is searched for it, and the search steps on twice
+  ;; THEN both hits are painted and the first is shown, then the second,
+  ;;      for which the part scrolls, then the first again
+  ;; WHEN the search is given up
+  ;; THEN the part is back where it was, AND nothing is painted
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "locate.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser-find "Reply")
+    (should (equal (canvas-browser-live-test--hits) '(2 "first" "Reply")))
+    (canvas-browser-find-next)
+    (should (equal (canvas-browser-live-test--hits) '(2 "second" "Reply")))
+    (should (> (canvas-browser-live-test--pane-top) 0))
+    (canvas-browser-find-next)
+    (should (equal (canvas-browser-live-test--hits) '(2 "first" "Reply")))
+    (canvas-browser-find-previous)
+    (should (equal (canvas-browser-live-test--hits) '(2 "second" "Reply")))
+    (canvas-browser--find-end "Reply" t)
+    (should (equal (car (canvas-browser-live-test--hits)) 0))
+    (should (= (canvas-browser-live-test--pane-top) 0))))
+
+(ert-deftest canvas-browser-live-a-search-follows-what-is-typed ()
+  ;; GIVEN the locate fixture
+  ;; WHEN a search is typed letter by letter
+  ;; THEN each longer text is searched for from the hit before, AND a
+  ;;      text that crosses a link is found in one piece
+  ;; WHEN the text has a capital letter
+  ;; THEN the search is exact about case, AND it finds the text that the
+  ;;      page shows in capitals
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "locate.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (canvas-browser--find-typed "fil")
+    (should (equal (car (canvas-browser-live-test--hits)) 20))
+    (canvas-browser--find-typed "filler 2")
+    (should (equal (canvas-browser-live-test--hits) '(2 "" "filler 2")))
+    (setq canvas-browser--find-anchor nil)
+    (canvas-browser--find-typed "with a link inside")
+    (should (equal (canvas-browser-live-test--hits) '(1 "sentence" "with a link inside")))
+    (canvas-browser--find-typed "reply")
+    (should (equal (car (canvas-browser-live-test--hits)) 2))
+    (canvas-browser--find-typed "REPLY")
+    (should (equal (car (canvas-browser-live-test--hits)) 0))
+    (canvas-browser--find-typed "LOUD")
+    (should (equal (canvas-browser-live-test--hits) '(1 "shout" "loud")))))
+
+(ert-deftest canvas-browser-live-a-search-for-a-regexp ()
+  ;; GIVEN the locate fixture, with twenty lines of filler
+  ;; WHEN the page is searched for a regexp that names ten of them
+  ;; THEN ten hits are painted
+  ;; WHEN the regexp is not finished
+  ;; THEN the search says what is wrong, AND the page is as it was
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-fixture "locate.html"
+    (canvas-browser-live-test--lay-out 800 600)
+    (setq canvas-browser--find-regexp t)
+    (canvas-browser-find "filler 1\\d")
+    (should (equal (canvas-browser-live-test--hits) '(10 "" "filler 10")))
+    (let ((said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (setq said (and format-string (apply #'format format-string args))))))
+        (canvas-browser-find "filler (")
+        (canvas-browser-live-test--wait 1 (lambda () nil)))
+      (should (string-search "regexp, " said))
+      (should (string-search "nterminated" said)))
+    (should (equal (car (canvas-browser-live-test--hits)) 10))))
+
 (defun canvas-browser-live-test--click-on (id)
   "Click the element ID of this page."
   (let ((middle (canvas-browser-live-test--middle id)))

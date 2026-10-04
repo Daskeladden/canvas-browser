@@ -2535,82 +2535,342 @@ With no part picked, quit as `C-g\=' does in any buffer."
 (defvar-local canvas-browser--find-index 0
   "Which hit of the last search the page shows.")
 
+(defvar-local canvas-browser--find-regexp nil
+  "Whether this page is searched for a regexp, and not for a string.")
+
+(defvar-local canvas-browser--find-anchor nil
+  "Where the hit that the page shows starts, as the page counts its text.
+The page gives it with each answer, and the next search goes on from
+it.  It is nil for a search that starts where the window stands.")
+
+(defvar-local canvas-browser--find-ticket 0
+  "The number of the newest search that this page was asked for.")
+
+(defvar canvas-browser-find-history nil
+  "What the pages were searched for.")
+
 (defconst canvas-browser--paint-js "
-  const paint = ranges => {
+  const paint = (ranges, current) => {
     const style = 'canvas-browser-find-style';
     if (!document.getElementById(style)) {
       const sheet = document.createElement('style');
       sheet.id = style;
-      sheet.textContent = '::highlight(canvas-browser-find) { background: #ffd54f; color: #000; }';
+      sheet.textContent = '::highlight(canvas-browser-find) { background: #ffd54f; color: #000; }' +
+        '::highlight(canvas-browser-find-current) { background: #ff6d00; color: #000; }';
       document.documentElement.appendChild(sheet);
     }
     if (ranges.length) CSS.highlights.set('canvas-browser-find', new Highlight(...ranges));
     else CSS.highlights.delete('canvas-browser-find');
+    if (current) {
+      const mark = new Highlight(current);
+      mark.priority = 1;
+      CSS.highlights.set('canvas-browser-find-current', mark);
+    } else CSS.highlights.delete('canvas-browser-find-current');
   };"
-  "The JavaScript that paints ranges of a page as hits, or none of them.
-The page paints them itself, with the highlight API of CSS.")
+  "The JavaScript that paints ranges of a page as hits, and one as the hit shown.
+The page paints them itself, with the highlight API of CSS:
+`window.find\\=' answers in a headless chromium but leaves nothing to
+see.")
+
+(defconst canvas-browser--flat-js "
+  const flatten = root => {
+    const unread = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
+    const nodes = [];
+    const visit = node => {
+      if (node.nodeType === 3) { if (node.textContent.trim()) nodes.push(node); return; }
+      if (node.nodeType === 1) {
+        if (unread.has(node.tagName)) return;
+        if (getComputedStyle(node).display !== 'contents'
+            && !node.checkVisibility({checkVisibilityCSS: true, visibilityProperty: true})) return;
+        if (node.shadowRoot) { visit(node.shadowRoot); return; }
+        if (node.tagName === 'SLOT') {
+          const given = node.assignedNodes({flatten: true});
+          if (given.length) { given.forEach(visit); return; }
+        }
+      } else if (node.nodeType !== 11) return;
+      node.childNodes.forEach(visit);
+    };
+    visit(root);
+    const above = node => node.parentNode || node.host;
+    const block = node => {
+      let e = above(node);
+      while (e && e.nodeType === 1 && /^(inline|contents)/.test(getComputedStyle(e).display)) e = above(e);
+      return e;
+    };
+    let flat = '', last = null;
+    const starts = [], drops = [];
+    const shaped = node => {
+      const shape = getComputedStyle(above(node).nodeType === 1 ? above(node) : above(node).host).textTransform;
+      const text = node.textContent.replace(/\\s+/g, ' ');
+      return shape === 'uppercase' ? text.toUpperCase() : shape === 'lowercase' ? text.toLowerCase() : text;
+    };
+    for (const node of nodes) {
+      const text = shaped(node);
+      const here = block(node);
+      if (flat && !flat.endsWith(' ') && !text.startsWith(' ') && here !== last) flat += ' ';
+      const drop = (!flat || flat.endsWith(' ')) && text.startsWith(' ') ? 1 : 0;
+      starts.push(flat.length);
+      drops.push(drop);
+      flat += text.slice(drop);
+      last = here;
+    }
+    const point = at => {
+      let i = starts.length - 1;
+      while (i > 0 && starts[i] > at) i--;
+      const raw = nodes[i].textContent;
+      let left = at - starts[i] + drops[i], offset = 0;
+      while (left > 0 && offset < raw.length) {
+        if (/\\s/.test(raw[offset])) { while (offset < raw.length && /\\s/.test(raw[offset])) offset++; }
+        else offset++;
+        left--;
+      }
+      return [nodes[i], offset];
+    };
+    const range = (from, to) => {
+      const [first, start] = point(from), [final, end] = point(to);
+      const r = document.createRange();
+      r.setStart(first, start);
+      r.setEnd(final, end);
+      return r;
+    };
+    return {flat, range};
+  };
+  const reveal = range => {
+    const element = range.startContainer.parentElement || range.startContainer.parentNode.host;
+    const origin = window.__canvasBrowserFindOrigin;
+    if (origin) {
+      for (let e = element; e; e = e.parentNode || e.host)
+        if (e.nodeType === 1 && !origin.has(e)) origin.set(e, [e.scrollLeft, e.scrollTop]);
+      if (!origin.has(window)) origin.set(window, [scrollX, scrollY]);
+    }
+    const box = range.getBoundingClientRect();
+    const inside = box.top >= 0 && box.bottom <= innerHeight;
+    element.scrollIntoView({block: inside ? 'nearest' : 'center', inline: 'nearest'});
+  };"
+  "The JavaScript that reads the text of a part of a page as one line.
+`flatten\\=' gives the text that an element shows, through web
+components too, with one space for white space, and a way to make a
+range of the page of a stretch of that text.  So a stretch can lie in
+more than one piece of the page, as a sentence with a link in it does.
+Text that the page shows in capitals is in capitals there.
+`reveal\\=' scrolls a range into view, also in a part that scrolls on
+its own, and moves nothing when the range is in view already.  While a
+search runs, it notes where each thing stood before it scrolled it.")
 
 (defconst canvas-browser--find-script (concat "
-(function (text, index) {" canvas-browser--paint-js "
-  if (!text) { paint([]); return {count: 0, index: 0}; }
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  const ranges = [];
-  const wanted = text.toLowerCase();
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    const line = node.textContent.toLowerCase();
-    for (let at = line.indexOf(wanted); at !== -1; at = line.indexOf(wanted, at + wanted.length)) {
-      const range = document.createRange();
-      range.setStart(node, at);
-      range.setEnd(node, at + text.length);
-      if (range.getBoundingClientRect().width > 0) ranges.push(range);
+(function (text, regexp, anchor, step) {" canvas-browser--paint-js canvas-browser--flat-js "
+  if (!text) { paint([], null); return {count: 0}; }
+  const view = flatten(document.body);
+  const bare = regexp ? text.replace(/\\\\./g, '') : text;
+  const exact = /[A-Z]/.test(bare);
+  const hits = [];
+  if (regexp) {
+    let pattern;
+    try { pattern = new RegExp(text, exact ? 'gu' : 'giu'); }
+    catch (error) { return {error: error.message.replace(/^Invalid regular expression: /, '')}; }
+    for (const match of view.flat.matchAll(pattern)) {
+      if (match[0].length) hits.push([match.index, match.index + match[0].length]);
+      if (hits.length >= 2000) break;
     }
+  } else {
+    const hay = exact ? view.flat : view.flat.toLowerCase();
+    const needle = exact ? text : text.toLowerCase();
+    for (let at = hay.indexOf(needle); at !== -1 && hits.length < 2000;
+         at = hay.indexOf(needle, at + needle.length))
+      hits.push([at, at + needle.length]);
   }
-  paint(ranges);
-  if (ranges.length === 0) return {count: 0, index: 0};
-  const at = ((index %% ranges.length) + ranges.length) %% ranges.length;
-  const rect = ranges[at].getBoundingClientRect();
-  window.scrollBy(0, rect.top - innerHeight / 2);
-  return {count: ranges.length, index: at};
-})(%s, %d)")
-  "The JavaScript that finds a string, paints every hit and scrolls to one.
-`window.find\=' answers in a headless chromium but leaves nothing to see,
-so the page paints the hits itself, with the highlight API of CSS.")
+  if (!hits.length) { paint([], null); return {count: 0}; }
+  const ranges = hits.map(hit => view.range(hit[0], hit[1]));
+  let index = anchor === null
+    ? ranges.findIndex(range => range.getBoundingClientRect().bottom >= 0)
+    : hits.findIndex(hit => hit[0] >= anchor);
+  if (index < 0) index = 0;
+  index = (((index + step) %% hits.length) + hits.length) %% hits.length;
+  if (!window.__canvasBrowserFindOrigin) window.__canvasBrowserFindOrigin = new Map();
+  reveal(ranges[index]);
+  paint(ranges, ranges[index]);
+  return {count: hits.length, index, anchor: hits[index][0]};
+})(%s, %s, %s, %d)")
+  "The JavaScript that searches a page and shows one of its hits.
+It takes the text, whether the text is a regexp, where the search stands
+and how many hits to step from there.  A search that stands nowhere yet
+starts at the first hit that the window shows or that lies below it.
+The text is looked for without regard to case, unless it has a capital
+letter, as isearch does.  A regexp is one of JavaScript.  Every hit is
+painted, and the one that is shown in a colour of its own.")
 
-(defun canvas-browser--find (string index)
-  "Search the page for STRING and show the hit at INDEX."
-  (unless (and string (not (string-empty-p string)))
-    (user-error "canvas-browser: nothing has been searched for yet"))
-  (setq canvas-browser--last-search string
-        canvas-browser--find-index index)
-  (canvas-browser-cdp-send
-   "Runtime.evaluate"
-   (list :expression (format canvas-browser--find-script (json-encode string) index)
-         :returnByValue t)
-   #'canvas-browser--found
-   canvas-browser--session))
+(defconst canvas-browser--find-end-script "
+(function (back) {
+  const origin = window.__canvasBrowserFindOrigin;
+  delete window.__canvasBrowserFindOrigin;
+  if (!back) return;
+  CSS.highlights.delete('canvas-browser-find');
+  CSS.highlights.delete('canvas-browser-find-current');
+  if (origin) for (const [thing, [left, top]] of origin) thing.scrollTo(left, top);
+})(%s)"
+  "The JavaScript that ends a search of a page.
+With true, the page scrolls back to where it stood when the search
+began, and the paint is taken away: the search was given up.")
 
-(defun canvas-browser--found (result)
-  "Say what RESULT, the answer of the search, found."
-  (let* ((value (plist-get (plist-get result :result) :value))
-         (count (or (plist-get value :count) 0)))
-    (if (zerop count)
-        (message "canvas-browser: no hit for %s" canvas-browser--last-search)
-      (message "canvas-browser: hit %d of %d" (1+ (plist-get value :index)) count))))
+(defvar canvas-browser--find-page nil
+  "The page buffer that is being searched from the minibuffer, or nil.")
 
-(defun canvas-browser-find (string)
-  "Search the page for STRING, and paint every hit."
-  (interactive (list (read-string "Find in page: " nil nil canvas-browser--last-search)))
+(defvar canvas-browser--find-overlay nil
+  "The overlay that says in the minibuffer what a search found.")
+
+(defun canvas-browser--find-say (text)
+  "Tell the reader TEXT about a search, or nothing for nil.
+While the page is searched from the minibuffer, it stands after what is
+typed there, and stays.  Else it is a message."
+  (if (and canvas-browser--find-page (active-minibuffer-window))
+      (with-current-buffer (window-buffer (active-minibuffer-window))
+        (unless (overlayp canvas-browser--find-overlay)
+          (setq canvas-browser--find-overlay (make-overlay (point-max) (point-max) nil t t)))
+        (move-overlay canvas-browser--find-overlay (point-max) (point-max) (current-buffer))
+        (overlay-put canvas-browser--find-overlay 'after-string
+                     (and text (propertize (format " [%s]" text)
+                                           'face 'minibuffer-prompt 'cursor t))))
+    (when text (message "canvas-browser: %s" text))))
+
+(defun canvas-browser--found-text (value string)
+  "What to tell the reader of VALUE, the answer of a search for STRING.
+It is nil for a search for nothing."
+  (let ((count (or (plist-get value :count) 0))
+        (mode (if canvas-browser--find-regexp "regexp, " "")))
+    (cond ((plist-get value :error) (format "%s%s" mode (plist-get value :error)))
+          ((string-empty-p string) nil)
+          ((zerop count) (format "%sno hit" mode))
+          (t (format "%shit %d of %d" mode (1+ (plist-get value :index)) count)))))
+
+(defun canvas-browser--found (value string ticket)
+  "Take VALUE, the answer of the page to the search for STRING with TICKET.
+An answer to an older search than the newest one is dropped: it says
+where the page stood, not where it stands."
+  (when (= ticket canvas-browser--find-ticket)
+    (when (plist-get value :anchor)
+      (setq canvas-browser--find-anchor (plist-get value :anchor)
+            canvas-browser--find-index (plist-get value :index)))
+    (canvas-browser--find-say (canvas-browser--found-text value string))))
+
+(defun canvas-browser--find (string step)
+  "Search this page for STRING, and show the hit STEP hits from where it stands."
+  (setq canvas-browser--last-search string)
+  (let ((ticket (cl-incf canvas-browser--find-ticket)))
+    (canvas-browser--tell
+     "Runtime.evaluate"
+     (list :expression (format canvas-browser--find-script
+                               (json-encode string)
+                               (if canvas-browser--find-regexp "true" "false")
+                               (or canvas-browser--find-anchor "null")
+                               step)
+           :returnByValue t)
+     (canvas-browser--here
+      (lambda (result)
+        (canvas-browser--found (plist-get (plist-get result :result) :value) string ticket))))))
+
+(defun canvas-browser--find-typed (string)
+  "Search this page for STRING, which was typed so far, from where it stands."
   (canvas-browser--find string 0))
 
+(defun canvas-browser--find-step (step typed)
+  "Step STEP hits in the search of this page for TYPED.
+With nothing typed, give the last search of the page instead, to type:
+so the key that steps takes the last search up again, as in isearch.
+Else give nil."
+  (if (and (string-empty-p typed) canvas-browser--last-search)
+      canvas-browser--last-search
+    (canvas-browser--find typed step)
+    nil))
+
+(defun canvas-browser--find-end (string given-up)
+  "End the search of this page for STRING.
+With GIVEN-UP, the page goes back to where it stood and loses its paint.
+Else STRING is kept as the last search, and the page stays."
+  (setq canvas-browser--last-search (and (not given-up) (not (string-empty-p string)) string))
+  (canvas-browser--tell "Runtime.evaluate"
+                        (list :expression (format canvas-browser--find-end-script
+                                                  (if given-up "true" "false")))))
+
+(defun canvas-browser--in-found-page (function)
+  "Call FUNCTION in the page that is searched: with what is typed, or with nil.
+From the minibuffer of a search it is called in the page of that search
+with the text of the minibuffer, and what it gives is typed there when
+it is a string.  In a page buffer it is called with nil."
+  (if (and canvas-browser--find-page (minibufferp))
+      (let ((typed (minibuffer-contents-no-properties)))
+        (when-let* ((text (with-current-buffer canvas-browser--find-page
+                            (funcall function typed))))
+          (insert text)))
+    (funcall function nil)))
+
 (defun canvas-browser-find-next ()
-  "Show the next hit of the last search."
+  "Show the next hit of the search of this page."
   (interactive)
-  (canvas-browser--find canvas-browser--last-search (1+ canvas-browser--find-index)))
+  (canvas-browser--in-found-page
+   (lambda (typed)
+     (canvas-browser--find-step 1 (or typed canvas-browser--last-search "")))))
 
 (defun canvas-browser-find-previous ()
-  "Show the hit before this one."
+  "Show the hit before the one that the page shows."
   (interactive)
-  (canvas-browser--find canvas-browser--last-search (1- canvas-browser--find-index)))
+  (canvas-browser--in-found-page
+   (lambda (typed)
+     (canvas-browser--find-step -1 (or typed canvas-browser--last-search "")))))
+
+(defun canvas-browser-find-toggle-regexp ()
+  "Search this page for a regexp, or for a string again.
+The regexp is one of JavaScript, which the page reads: a group is
+\\(a|b), not \\\\(a\\\\|b\\\\)."
+  (interactive)
+  (canvas-browser--in-found-page
+   (lambda (typed)
+     (setq canvas-browser--find-regexp (not canvas-browser--find-regexp))
+     (canvas-browser--find (or typed canvas-browser--last-search "") 0)
+     nil)))
+
+(defvar-keymap canvas-browser-find-map
+  :doc "Keymap of the minibuffer while a page is searched."
+  :parent minibuffer-local-map
+  "C-s" #'canvas-browser-find-next
+  "C-r" #'canvas-browser-find-previous
+  "M-r" #'canvas-browser-find-toggle-regexp)
+
+(defun canvas-browser--find-read ()
+  "Read what to search this page for, and search it while it is typed.
+The answer is what was typed.  `C-g\\=' is a quit, as in any minibuffer."
+  (let ((canvas-browser--find-page (current-buffer)))
+    (minibuffer-with-setup-hook
+        (lambda ()
+          (add-hook 'after-change-functions
+                    (lambda (&rest _)
+                      (let ((typed (minibuffer-contents-no-properties)))
+                        (with-current-buffer canvas-browser--find-page
+                          (canvas-browser--find-typed typed))))
+                    nil t))
+      (read-from-minibuffer "Find in page: " nil canvas-browser-find-map nil
+                            'canvas-browser-find-history))))
+
+(defun canvas-browser-find (&optional string)
+  "Search the page while you type, as isearch searches a buffer.
+Each letter that you type shows the next hit from where the page
+stands, and every hit is painted.  `C-s\\=' and `C-r\\=' step to the next
+hit and to the one before, and with nothing typed `C-s\\=' takes the
+last search up again.  `M-r\\=' switches between a string and a regexp
+of JavaScript.  `RET\\=' ends the search where it stands, and `C-g\\='
+puts the page back where it was.  Capital letters make the search
+exact about case.
+
+From Lisp, with STRING, the page is searched for it at once."
+  (interactive)
+  (setq canvas-browser--find-anchor nil)
+  (if string
+      (canvas-browser--find string 0)
+    (let ((typed ""))
+      (condition-case nil
+          (progn (setq typed (canvas-browser--find-read))
+                 (canvas-browser--find-end typed nil))
+        (quit (canvas-browser--find-end typed t)
+              (signal 'quit nil))))))
 
 ;;;; Dark mode
 
@@ -2798,72 +3058,21 @@ that goes back in xref comes back to the line."
           canvas-browser--text-place place)))
 
 (defconst canvas-browser--locate-js (concat "
-(function (root, wanted) {" canvas-browser--paint-js "
-  root = root && root.isConnected ? root : document.body;
-  const unread = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE']);
-  const nodes = [];
-  const visit = node => {
-    if (node.nodeType === 3) { if (node.textContent.trim()) nodes.push(node); return; }
-    if (node.nodeType === 1) {
-      if (unread.has(node.tagName)) return;
-      if (getComputedStyle(node).display !== 'contents'
-          && !node.checkVisibility({checkVisibilityCSS: true, visibilityProperty: true})) return;
-      if (node.shadowRoot) { visit(node.shadowRoot); return; }
-      if (node.tagName === 'SLOT') {
-        const given = node.assignedNodes({flatten: true});
-        if (given.length) { given.forEach(visit); return; }
-      }
-    } else if (node.nodeType !== 11) return;
-    node.childNodes.forEach(visit);
-  };
-  visit(root);
-  const above = node => node.parentNode || node.host;
-  const block = node => {
-    let e = above(node);
-    while (e && e.nodeType === 1 && /^(inline|contents)/.test(getComputedStyle(e).display)) e = above(e);
-    return e;
-  };
-  let flat = '', last = null;
-  const starts = [], drops = [];
-  for (const node of nodes) {
-    let text = node.textContent.replace(/\\s+/g, ' ');
-    const here = block(node);
-    if (flat && !flat.endsWith(' ') && !text.startsWith(' ') && here !== last) flat += ' ';
-    const drop = (!flat || flat.endsWith(' ')) && text.startsWith(' ') ? 1 : 0;
-    starts.push(flat.length);
-    drops.push(drop);
-    flat += text.slice(drop);
-    last = here;
-  }
-  const hay = flat.toLowerCase();
-  const point = at => {
-    let i = starts.length - 1;
-    while (i > 0 && starts[i] > at) i--;
-    const raw = nodes[i].textContent;
-    let left = at - starts[i] + drops[i], offset = 0;
-    while (left > 0 && offset < raw.length) {
-      if (/\\s/.test(raw[offset])) { while (offset < raw.length && /\\s/.test(raw[offset])) offset++; }
-      else offset++;
-      left--;
-    }
-    return [nodes[i], offset];
-  };
+(function (root, wanted) {" canvas-browser--paint-js canvas-browser--flat-js "
+  const view = flatten(root && root.isConnected ? root : document.body);
+  const hay = view.flat.toLowerCase();
   for (let found = 0; found < wanted.length; found++) {
     const needle = wanted[found].text.toLowerCase();
     const hits = [];
     for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) hits.push(at);
     if (!hits.length) continue;
     const rank = Math.min(wanted[found].rank, hits.length - 1);
-    const [first, from] = point(hits[rank]);
-    const [final, to] = point(hits[rank] + needle.length);
-    const range = document.createRange();
-    range.setStart(first, from);
-    range.setEnd(final, to);
-    (first.parentElement || first.parentNode.host).scrollIntoView({block: 'center', inline: 'nearest'});
-    paint([range]);
+    const range = view.range(hits[rank], hits[rank] + needle.length);
+    reveal(range);
+    paint([range], null);
     return {found, count: hits.length, rank};
   }
-  paint([]);
+  paint([], null);
   return {found: -1};
 })")
   "The JavaScript function that shows where a line of text stands in a page.

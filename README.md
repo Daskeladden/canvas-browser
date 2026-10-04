@@ -423,7 +423,8 @@ Normal state keeps the keys of Emacs:
 | `v` | moves a caret through the text of the page with the motions of Emacs |
 | `M-j` | puts the caret on text you type, as `avy-goto-char-timer` puts point |
 | `TAB`, `S-TAB` | go to the next and the previous field, and type there |
-| `C-s`, `C-r` | search the page, and step to the next hit and the one before |
+| `C-s` | searches the page while you type, as isearch does. `C-s` and `C-r` step to the next hit and the one before. `M-r` switches to a regexp of JavaScript. `RET` stays at the hit, and `C-g` goes back to where the page was |
+| `C-r` | steps to the hit before, in the last search |
 | `d` | turns dark mode on or off, for this page and the next ones |
 | `i` | sends the keys to the page, as a click in a field does |
 | `t` | puts the text of the page, or of the part picked with `S`, in an ordinary buffer |
