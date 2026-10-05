@@ -337,6 +337,16 @@ At an address with a thread translator, the index also has a menu
 text, with a reply under the message that it answers. Pick one, and
 the page shows where its text stands.
 
+### A search of every page
+
+`M-x canvas-browser-search-pages` searches the text of every page that
+is open. The lines stand under the titles of their pages, and you
+choose one as with `consult-line`. With consult, the window shows the
+page of each line while you move to it, at that line. If you choose
+none, the window shows what it showed before. `M-s M-p` runs this
+command in a page buffer, and so does the key of `consult-line-multi`.
+The menu has it too.
+
 ### The links of a page
 
 `a` offers the links that the page shows, each by its text and its
@@ -518,6 +528,7 @@ Normal state keeps the keys of Emacs:
 | `C-x u` | shows the history of the field, with a package that shows the undo history on that key. Without one, it is undo |
 | `t` | puts the text of the page, or of the part picked with `S`, in an ordinary buffer |
 | `M-s M-l` | searches that text with `consult-line`, also while the keys go to the page |
+| `M-s M-p` | searches the text of every page that is open, and shows the page at the line you choose |
 | `M-.` in that text | shows the page at the line: the page scrolls to it and paints it for a moment, and `M-,` comes back to the text |
 | `e` | opens the same URL in eww |
 | a click | clicks the page at that pixel, and types there if it is a field |

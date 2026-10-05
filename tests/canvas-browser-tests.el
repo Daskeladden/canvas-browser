@@ -1623,6 +1623,158 @@ Each is the end of the script that asked: (\"NAME\", X, Y)."
   (with-temp-buffer
     (should-not (canvas-browser-org-store-link))))
 
+;;;; A search of every page
+
+(defmacro canvas-browser-test--with-two-pages (&rest body)
+  "Run BODY with two page buffers, `first\=' and `second\='.
+The first is called First page and holds the lines alpha and beta.  The
+second is called Second page and holds alpha, an empty line and gamma.
+What the reader is told goes to `said\='.  The buffers of the pages and
+of their texts are killed afterwards."
+  (declare (indent 0))
+  `(canvas-browser-test--with-chromium
+     (let ((first (generate-new-buffer " *canvas-browser-test-first*"))
+           (second (generate-new-buffer " *canvas-browser-test-second*"))
+           (said nil))
+       (ignore said)
+       (unwind-protect
+           (progn
+             (dolist (page (list first second))
+               (with-current-buffer page
+                 (canvas-browser-mode)
+                 (canvas-browser--open "https://example.org" 800 600)))
+             (with-current-buffer first
+               (setq canvas-browser--title "First page"
+                     canvas-browser--url "https://example.org/one"))
+             (with-current-buffer second
+               (setq canvas-browser--title "Second page"
+                     canvas-browser--url "https://example.org/two"))
+             (cl-letf (((symbol-function 'canvas-browser--page-text)
+                        (lambda ()
+                          (if (eq (current-buffer) first) "alpha\nbeta\n" "alpha\n\ngamma\n")))
+                       ((symbol-function 'message)
+                        (lambda (format-string &rest args)
+                          (setq said (and format-string (apply #'format format-string args))))))
+               ,@body))
+         (dolist (name '("*canvas-browser-text: First page*" "*canvas-browser-text: Second page*"))
+           (when (get-buffer name) (kill-buffer name)))
+         (mapc #'kill-buffer (list first second))))))
+
+(defun canvas-browser-test--seen (name)
+  "NAME as the reader sees it: without the part that is not shown."
+  (let ((seen ""))
+    (dotimes (i (length name))
+      (unless (get-text-property i 'invisible name)
+        (setq seen (concat seen (string (aref name i))))))
+    seen))
+
+(defun canvas-browser-test--asked-to-find (text)
+  "Whether a page was asked where the line TEXT stands."
+  (cl-some (lambda (command)
+             (string-search (format "\"text\":\"%s\"" text)
+                            (or (plist-get (cdr command) :expression) "")))
+           canvas-browser-test--commands))
+
+(ert-deftest canvas-browser-the-lines-of-every-page-are-offered-under-its-title ()
+  ;; GIVEN two page buffers, with the same line in both
+  ;; WHEN the lines of the pages are made ready to choose from, in the
+  ;;      first page
+  ;; THEN the lines that hold text are offered, those of this page
+  ;;      first, AND the same words in two pages are two things to
+  ;;      choose, AND each line stands under the title of its page
+  (canvas-browser-test--with-two-pages
+    (with-current-buffer first
+      (let ((hits (canvas-browser--pages-hits)))
+        (should (equal (mapcar (lambda (hit) (canvas-browser-test--seen (car hit))) hits)
+                       '("alpha" "beta" "alpha" "gamma")))
+        (should-not (equal (car (nth 0 hits)) (car (nth 2 hits))))
+        (should (equal (mapcar (lambda (hit) (canvas-browser--hit-group (car hit) nil)) hits)
+                       '("First page" "First page" "Second page" "Second page")))))))
+
+(ert-deftest canvas-browser-a-line-that-is-chosen-is-shown-in-its-page ()
+  ;; GIVEN two page buffers, AND a reader who chooses a line of the
+  ;;       second while the first is current, without consult
+  ;; WHEN the pages are searched
+  ;; THEN the second page is shown in the window, AND it is asked where
+  ;;      the line stands, AND it has a mark where it stood
+  (canvas-browser-test--with-two-pages
+    (with-current-buffer first
+      (let ((shown nil))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _) (nth 3 (all-completions "" table))))
+                  ((symbol-function 'pop-to-buffer-same-window)
+                   (lambda (buffer &rest _) (setq shown buffer))))
+          (setq canvas-browser-test--commands nil)
+          (canvas-browser-search-pages)
+          (should (eq shown second))
+          (should (canvas-browser-test--asked-to-find "gamma"))
+          (should (buffer-local-value 'canvas-browser--mark-ring second)))))))
+
+(ert-deftest canvas-browser-the-window-shows-the-page-of-each-line-while-one-is-chosen ()
+  ;; GIVEN a window on the first of two pages, and consult, which shows
+  ;;       each thing that the reader moves to
+  ;; WHEN the reader moves to a line of the second page
+  ;; THEN the window shows the second page, which is asked where the
+  ;;      line stands
+  ;; WHEN the reader gives up
+  ;; THEN the window shows the first page again, AND the second page is
+  ;;      told to go back to where it stood, AND it keeps no mark
+  ;; WHEN the reader picks the line
+  ;; THEN the window stays on the second page, with a mark where it stood
+  (canvas-browser-test--with-two-pages
+    (let* ((window (selected-window))
+           (before (window-buffer window))
+           (pick nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'consult--read)
+                     (lambda (candidates &rest options)
+                       (let ((state (plist-get options :state))
+                             (gamma (nth 3 candidates)))
+                         (funcall state 'setup nil)
+                         (funcall state 'preview (car candidates))
+                         (setq canvas-browser-test--commands nil)
+                         (funcall state 'preview gamma)
+                         (should (eq (window-buffer window) second))
+                         (should (canvas-browser-test--asked-to-find "gamma"))
+                         (funcall state 'return (and pick gamma))
+                         (and pick gamma))))
+                    ((symbol-function 'pop-to-buffer-same-window)
+                     (lambda (buffer &rest _) (set-window-buffer window buffer))))
+            (set-window-buffer window first)
+            (with-current-buffer first
+              (canvas-browser-search-pages))
+            (should (eq (window-buffer window) first))
+            (should (member "(true)" (canvas-browser-test--asked-of-the-page)))
+            (should-not (buffer-local-value 'canvas-browser--mark-ring second))
+            (setq pick t)
+            (with-current-buffer first
+              (canvas-browser-search-pages))
+            (should (eq (window-buffer window) second))
+            (should (buffer-local-value 'canvas-browser--mark-ring second)))
+        (set-window-buffer window before)))))
+
+(ert-deftest canvas-browser-a-search-without-a-page-says-so ()
+  ;; GIVEN no page buffer
+  ;; WHEN the pages are searched
+  ;; THEN that is a user error
+  (canvas-browser-test--with-chromium
+    (with-temp-buffer
+      (should (string-search "no page"
+                             (error-message-string
+                              (should-error (canvas-browser-search-pages) :type 'user-error)))))))
+
+(ert-deftest canvas-browser-the-key-that-searches-every-page ()
+  ;; GIVEN a page buffer, in normal state and in insert state
+  ;; THEN M-s M-p searches the pages, beside M-s M-l for the lines of
+  ;;      this page, AND so does the key of consult-line-multi, whatever
+  ;;      it is, AND the menu has it
+  (canvas-browser-test--in-page
+    (dolist (map (list canvas-browser-mode-map canvas-browser-insert-map))
+      (should (eq (lookup-key map (kbd "M-s M-p")) #'canvas-browser-search-pages))
+      (should (eq (lookup-key map [remap consult-line-multi]) #'canvas-browser-search-pages))))
+  (should (eq (plist-get (canvas-browser-test--menu-entry "A") :command)
+              #'canvas-browser-search-pages)))
+
 ;;;; The window, the header line and a chromium that died
 
 (ert-deftest canvas-browser-a-resized-window-lays-the-page-out-again ()

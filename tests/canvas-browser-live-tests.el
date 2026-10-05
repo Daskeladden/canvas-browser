@@ -1731,6 +1731,46 @@ that holds its start, and whether the window shows that element."
                               "canvas-browser locate fixture")
                        (> (canvas-browser-live-test--page-says "scrollY") 1000)))))))
 
+(ert-deftest canvas-browser-live-a-line-of-another-page-is-found-and-shown ()
+  ;; GIVEN two page buffers: one at the locate fixture, where the test
+  ;;       stands, and one at the outline fixture, whose last heading is
+  ;;       far down the page
+  ;; WHEN the lines of every page are made ready to choose from
+  ;; THEN the lines of both pages are there, each under the title of
+  ;;      its page
+  ;; WHEN the line of that last heading is shown
+  ;; THEN the outline page scrolls to it, AND the locate page stays
+  ;;      where it is
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (cl-letf (((symbol-function 'pop-to-buffer) (lambda (buffer &rest _) buffer)))
+    (canvas-browser-live-test--in-fixture "locate.html"
+      (canvas-browser-live-test--lay-out 800 600)
+      (let* ((address (concat "file://" (expand-file-name "outline.html" "tests/fixtures/")))
+             (other (canvas-browser address)))
+        (unwind-protect
+            (progn
+              (with-current-buffer other
+                (should (canvas-browser-live-test--wait
+                         30 (lambda () (and canvas-browser--session canvas-browser--title
+                                            (canvas-browser-live-test--loaded-p address))))))
+              (let* ((hits (canvas-browser--pages-hits))
+                     (groups (delete-dups
+                              (mapcar (lambda (hit) (canvas-browser--hit-group (car hit) nil))
+                                      hits)))
+                     (end (seq-find (lambda (hit) (string-prefix-p "The end" (car hit))) hits)))
+                (should (equal groups '("canvas-browser locate fixture"
+                                        "canvas-browser outline fixture")))
+                (should (eq (cadr end) other))
+                (canvas-browser--show-hit (cdr end))
+                (with-current-buffer other
+                  (should (canvas-browser-live-test--wait
+                           5 (lambda () (> (canvas-browser-live-test--page-says "scrollY") 0)))))
+                (should (equal (canvas-browser-live-test--page-says "scrollY") 0))))
+          (dolist (name '("*canvas-browser-text: canvas-browser locate fixture*"
+                          "*canvas-browser-text: canvas-browser outline fixture*"))
+            (when (get-buffer name) (kill-buffer name)))
+          (kill-buffer other))))))
+
 (defun canvas-browser-live-test--field-buffers ()
   "The buffers that hold the text of a field of a page."
   (seq-filter (lambda (buffer) (buffer-local-value 'canvas-browser-edit-field-mode buffer))

@@ -3137,19 +3137,26 @@ script failed in the page."
   (get-buffer-create (format "*canvas-browser-text: %s*"
                              (or canvas-browser--title canvas-browser--url))))
 
-(defun canvas-browser-text ()
-  "Put the text of the page in a buffer, where the keys of Emacs work.
-When a part of the page is picked, with `S\\=', it is the text of that
-part.  It is the text that `>\\=' sends: translated, when the address
-of the page has a translator."
-  (interactive)
+(defun canvas-browser--read-text ()
+  "Put the text of this page in the buffer that holds it, and give that buffer.
+When a part of the page is picked, it is the text of that part.  It is
+the text that `>\\=' sends: translated, when the address of the page has
+a translator."
   (let ((text (if canvas-browser--part
                   (canvas-browser--text-to-read 'part #'canvas-browser--part-text)
                 (canvas-browser--text-to-read 'page #'canvas-browser--page-text)))
         (target (canvas-browser--text-buffer)))
     (canvas-browser--fill-text-buffer
      target text (current-buffer) (plist-get canvas-browser--part :place))
-    (display-buffer target)))
+    target))
+
+(defun canvas-browser-text ()
+  "Put the text of the page in a buffer, where the keys of Emacs work.
+When a part of the page is picked, with `S\\=', it is the text of that
+part.  It is the text that `>\\=' sends: translated, when the address
+of the page has a translator."
+  (interactive)
+  (display-buffer (canvas-browser--read-text)))
 
 ;;;; From a line of the text to its place in the page
 
@@ -4132,6 +4139,188 @@ buffer."
         (canvas-browser-open-url url)
       (canvas-browser url))))
 
+;;;; A search of every page
+
+(defvar canvas-browser-search-history nil
+  "The lines that were chosen in a search of every page.")
+
+(defun canvas-browser--pages ()
+  "The page buffers that the reader opened, this one first when it is one.
+A page that another buffer embeds is part of that buffer."
+  (let ((pages (seq-filter (lambda (buffer)
+                             (and (eq (buffer-local-value 'major-mode buffer)
+                                      'canvas-browser-mode)
+                                  (not (buffer-local-value 'canvas-browser--host buffer))))
+                           (buffer-list))))
+    (if (memq (current-buffer) pages)
+        (cons (current-buffer) (remq (current-buffer) pages))
+      pages)))
+
+(defun canvas-browser--unshown-number (number)
+  "NUMBER as letters that no keyboard types, and that are not shown.
+They are private letters of Unicode.  With them at its end, a line that
+stands in two pages is two things to choose from, and what the reader
+types still matches only what the reader sees."
+  (let ((letters nil))
+    (while (progn (push (+ #xF0000 (% number 4096)) letters)
+                  (> (setq number (/ number 4096)) 0)))
+    (propertize (apply #'string letters) 'invisible t)))
+
+(defun canvas-browser--hit-name (text title number)
+  "TEXT, a line of the page called TITLE, as it is offered: the hit NUMBER."
+  (propertize (concat text (canvas-browser--unshown-number number))
+              'canvas-browser-page-title title))
+
+(defun canvas-browser--hit-group (name transform)
+  "The title of the page of NAME, a line as it is offered.
+With TRANSFORM it is NAME itself.  This is how a completion asks under
+which heading a candidate stands."
+  (if transform
+      name
+    (get-text-property 0 'canvas-browser-page-title name)))
+
+(defun canvas-browser--page-hits (page first)
+  "The lines of the text of PAGE that hold text, each (NAME PAGE LINE).
+LINE is the number of the line in the text.  FIRST is the number of the
+first of these hits among those of all pages."
+  (with-current-buffer page
+    (let ((title (or canvas-browser--title canvas-browser--url))
+          (hits nil)
+          (line 0))
+      (with-current-buffer (canvas-browser--read-text)
+        (save-excursion
+          (goto-char (point-min))
+          (while (not (eobp))
+            (setq line (1+ line))
+            (let ((text (buffer-substring-no-properties (line-beginning-position)
+                                                        (line-end-position))))
+              (unless (string-blank-p text)
+                (push (list (canvas-browser--hit-name text title (+ first (length hits)))
+                            page line)
+                      hits)))
+            (forward-line 1))))
+      (nreverse hits))))
+
+(defun canvas-browser--pages-hits ()
+  "The lines of every page to choose from, those of this page first.
+A page that does not answer is left out, and the reader is told."
+  (let ((hits nil))
+    (dolist (page (or (canvas-browser--pages)
+                      (user-error "canvas-browser: no page is open to search")))
+      (condition-case failure
+          (setq hits (nconc hits (canvas-browser--page-hits page (length hits))))
+        (error (message "canvas-browser: %s is left out of the search: %s"
+                        (buffer-name page) (error-message-string failure)))))
+    hits))
+
+(defun canvas-browser--show-hit (hit)
+  "Show in its page where the line of HIT, (PAGE LINE), stands."
+  (pcase-let* ((`(,page ,line) hit)
+               (text (with-current-buffer page (canvas-browser--text-buffer)))
+               (ways (with-current-buffer text
+                       (save-excursion
+                         (goto-char (point-min))
+                         (forward-line (1- line))
+                         (canvas-browser--lines-to-find)))))
+    (with-current-buffer page
+      (canvas-browser--locate ways (buffer-local-value 'canvas-browser--text-place text)))))
+
+(defun canvas-browser--settle-pages (touched picked)
+  "End the showing of lines in the pages TOUCHED, of which PICKED is to stay.
+Every other page goes back to where it stood and loses the mark that it
+got there.  PICKED is nil when no line was picked."
+  (dolist (page touched)
+    (when (buffer-live-p page)
+      (with-current-buffer page
+        (if (eq page picked)
+            (canvas-browser--end-origins nil)
+          (canvas-browser--end-origins t)
+          (canvas-browser--drop-mark))))))
+
+(defun canvas-browser--pages-state ()
+  "The function that shows to consult the lines of every page.
+consult calls it with what happens and a candidate, (NAME PAGE LINE) or
+nil.  The window that the reader came from shows the page of each line
+that the reader moves to, at that line.  A page notes where it stands
+before it is first shown so, and gets a mark there.  At the end the page
+of the line that was picked stays as it is.  Every other page goes back,
+and without a pick the window shows what it showed before.
+
+The line that consult names first, before the reader moved, is not
+shown: the page must not jump because the search was opened."
+  (let ((window (selected-window))
+        (before (window-buffer (selected-window)))
+        (touched nil)
+        (opened nil))
+    (cl-flet ((touch (page)
+                (unless (memq page touched)
+                  (push page touched)
+                  (with-current-buffer page
+                    (canvas-browser--push-mark t)
+                    (canvas-browser--keep-origins)))))
+      (lambda (action candidate)
+        (pcase action
+          ('preview (when candidate
+                      (if (not opened)
+                          (setq opened t)
+                        (touch (cadr candidate))
+                        (when (window-live-p window)
+                          (set-window-buffer window (cadr candidate)))
+                        (canvas-browser--show-hit (cdr candidate)))))
+          ('return (let ((picked (cadr candidate)))
+                     (when picked (touch picked))
+                     (canvas-browser--settle-pages touched picked)
+                     (when (and (not picked) (window-live-p window) (buffer-live-p before))
+                       (set-window-buffer window before)))))))))
+
+(defun canvas-browser--hit-table (hits)
+  "HITS as a completion table that keeps their order.
+It says under which title each line stands: that of its page."
+  (lambda (string predicate action)
+    (if (eq action 'metadata)
+        '(metadata (group-function . canvas-browser--hit-group)
+                   (display-sort-function . identity)
+                   (cycle-sort-function . identity))
+      (complete-with-action action hits string predicate))))
+
+(defun canvas-browser--read-hit (hits)
+  "Ask the reader for one of HITS, lines of pages; give (PAGE LINE), or nil.
+With consult, the window shows the page of each line while the reader
+moves to it.  The page of the line that is picked has a mark where it
+stood."
+  (cdr (if (or (fboundp 'consult--read) (require 'consult nil t))
+           (consult--read hits
+                          :prompt "Line of a page: "
+                          :require-match t
+                          :sort nil
+                          :group #'canvas-browser--hit-group
+                          :lookup #'consult--lookup-cons
+                          :state (canvas-browser--pages-state)
+                          :history 'canvas-browser-search-history)
+         (when-let* ((hit (assoc (completing-read "Line of a page: "
+                                                  (canvas-browser--hit-table hits)
+                                                  nil t nil 'canvas-browser-search-history)
+                                 hits)))
+           (with-current-buffer (cadr hit)
+             (canvas-browser--push-mark t))
+           hit))))
+
+;;;###autoload
+(defun canvas-browser-search-pages ()
+  "Search the text of every page that is open, and go to the line you choose.
+The lines stand under the titles of their pages, those of this page
+first.  With consult, the window shows the page of each line while you
+move to it, at that line, and shows what it showed before when you give
+up.  The page of the line that you choose is shown at the line, with a
+mark where it stood.  `M-s M-p\\=' runs this command in a page buffer,
+and so does the key of `consult-line-multi\\='."
+  (interactive)
+  (let ((hits (or (canvas-browser--pages-hits)
+                  (user-error "canvas-browser: the pages that are open hold no text"))))
+    (when-let* ((hit (canvas-browser--read-hit hits)))
+      (pop-to-buffer-same-window (car hit))
+      (canvas-browser--show-hit hit))))
+
 ;;;; The zoom and the picture
 
 (defcustom canvas-browser-zoom-step 1.2
@@ -4301,6 +4490,7 @@ and the settings.  The widths line the columns of the two rows up."
    ("s" "find" canvas-browser-find)
    ("t" "text" canvas-browser-text)
    ("L" "lines" canvas-browser-search-text)
+   ("A" "all pages" canvas-browser-search-pages)
    ("e" "eww" canvas-browser-open-in-eww)
    ("y" "copy URL" canvas-browser-copy-url)
    (">" "send to" canvas-browser-send-to)]
@@ -4357,12 +4547,14 @@ keys zoom the page.  `g\\=' is `revert-buffer\\=', which reads it again.")
   "t" #'canvas-browser-text
   "e" #'canvas-browser-open-in-eww
   "M-s M-l" #'canvas-browser-search-text
+  "M-s M-p" #'canvas-browser-search-pages
   "C-c '" #'canvas-browser-edit-field
   "C-c C-l" #'org-store-link
   "<remap> <set-mark-command>" #'canvas-browser-set-mark
   "<remap> <exchange-point-and-mark>" #'canvas-browser-exchange-position-and-mark
   "<remap> <point-to-register>" #'canvas-browser-position-to-register
   "<remap> <consult-history>" #'canvas-browser-history
+  "<remap> <consult-line-multi>" #'canvas-browser-search-pages
   "<remap> <imenu>" #'canvas-browser-imenu
   "<remap> <consult-imenu>" #'canvas-browser-imenu
   "z" #'canvas-keys-zoom-fit
@@ -4984,10 +5176,12 @@ here, on every load."
   ;; `consult-line' would then search the page buffer, which holds no
   ;; text.
   (define-key map (kbd "M-s M-l") #'canvas-browser-search-text)
+  (define-key map (kbd "M-s M-p") #'canvas-browser-search-pages)
   (define-key map (kbd "C-c '") #'canvas-browser-edit-field)
   (define-key map (kbd "C-c C-l") #'org-store-link)
   (define-key map [remap point-to-register] #'canvas-browser-position-to-register)
   (define-key map [remap consult-history] #'canvas-browser-history)
+  (define-key map [remap consult-line-multi] #'canvas-browser-search-pages)
   (define-key map [remap imenu] #'canvas-browser-imenu)
   (define-key map [remap consult-imenu] #'canvas-browser-imenu))
 
