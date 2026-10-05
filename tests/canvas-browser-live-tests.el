@@ -2146,6 +2146,32 @@ moment to answer the search first."
           (canvas-browser-notification-open got))
         (should (canvas-browser-live-test--said-p "granted shown clicked"))))))
 
+(ert-deftest canvas-browser-live-a-notification-that-its-page-closed-can-still-be-opened ()
+  ;; GIVEN the notify fixture, served as a site that may show
+  ;;       notifications
+  ;; WHEN the page shows a notification and closes it at once, twice, as
+  ;;      a chat site closes one when its own toast ends
+  ;; THEN the hook has the notification, AND the page hears that it was
+  ;;      shown, and once that it was closed
+  ;; WHEN the notification is opened afterwards
+  ;; THEN the page hears that it was clicked.  Emacs keeps a notification
+  ;;      for the reader after its site took it back, so the click must
+  ;;      still find what the site listens on
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--serving origin
+    (let* ((got nil)
+           (canvas-browser-notification-sites (list (cons origin t)))
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (canvas-browser-live-test--at (concat origin "/notify.html")
+        (canvas-browser-live-test--page-says "notifyBriefly(); true")
+        (should (canvas-browser-live-test--wait 10 (lambda () got)))
+        (should (equal (plist-get got :title) "New message"))
+        (should (canvas-browser-live-test--said-p "granted shown closed"))
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (canvas-browser-notification-open got))
+        (should (canvas-browser-live-test--said-p "granted shown closed clicked"))))))
+
 (ert-deftest canvas-browser-live-a-site-is-left-alone-until-the-reader-allows-it ()
   ;; GIVEN the notify fixture, served as a site that nothing is kept about
   ;; THEN the page has the notifications of chromium itself, and no name

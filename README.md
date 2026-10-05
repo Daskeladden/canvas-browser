@@ -425,7 +425,8 @@ are the address and the title of the page, and `:buffer` is the page
 buffer.
 `(canvas-browser-notification-open NOTIFICATION)` shows that page and
 tells it that the notification was clicked. A mail page then opens the
-mail. As the package comes, one function says the notification in the
+mail. A site can close its notification after a moment, as a chat site
+does. You can open the notification after that too. As the package comes, one function says the notification in the
 echo area. This adds a desktop notification through D-Bus, with a click
 that opens the page:
 

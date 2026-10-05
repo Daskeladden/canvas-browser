@@ -13,6 +13,16 @@
         shown.onclick = () => said.push('clicked');
         shown.onerror = () => said.push('error');
       }
+      // A site that takes its notification back as soon as it shows, as
+      // a chat does when its own toast ends.  It listens for the click
+      // the way such a site does.
+      async function notifyBriefly() {
+        said.push(await Notification.requestPermission());
+        const shown = new Notification('New message', {body: 'From bob'});
+        shown.addEventListener('click', () => said.push('clicked'));
+        shown.onclose = () => said.push('closed');
+        shown.onshow = () => { said.push('shown'); shown.close(); shown.close(); };
+      }
     </script>
   </head>
   <body>

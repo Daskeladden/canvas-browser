@@ -6939,6 +6939,7 @@ its answer."
     else if ((tries || 0) < 20) setTimeout(() => tell(message, (tries || 0) + 1), 250);
   };
   const shown = new Map();
+  const kept = 100;
   let next = 0;
   const fire = (target, type) => {
     const event = new Event(type);
@@ -6948,11 +6949,13 @@ its answer."
   const show = (title, options, target) => {
     const id = ++next;
     shown.set(id, target);
+    if (shown.size > kept) shown.delete(shown.keys().next().value);
     tell({event: 'show', id, title: String(title), body: String(options.body || ''),
           tag: String(options.tag || ''), icon: String(options.icon || '')});
     return id;
   };
   class Shown extends EventTarget {
+    #closed = false;
     constructor(title, options) {
       super();
       options = options || {};
@@ -6964,7 +6967,11 @@ its answer."
       if (may) this.shownAs = show(title, options, this);
       queueMicrotask(() => fire(this, may ? 'show' : 'error'));
     }
-    close() { if (shown.delete(this.shownAs)) fire(this, 'close'); }
+    close() {
+      if (!this.shownAs || this.#closed) return;
+      this.#closed = true;
+      fire(this, 'close');
+    }
     static get permission() { return real.permission; }
     static get maxActions() { return real.maxActions; }
     static requestPermission(then) {
@@ -6996,6 +7003,11 @@ nobody sees.  So on a site that may show notifications, the page gets a
 the page asks its service worker to show is taken the same way.  One
 that a service worker shows on its own, while no page asks, is not: the
 script is in pages only.
+
+A site may close its notification after a moment, as a chat site does
+when its own toast ends.  Emacs keeps a notification for the reader
+until it is opened, so the script keeps what a click goes to after the
+site closed it, for the newest hundred notifications of a page.
 
 The script goes into every page, and does nothing on a site that may
 not show notifications.  Such a site finds its browser as chromium made
