@@ -2172,6 +2172,44 @@ moment to answer the search first."
           (canvas-browser-notification-open got))
         (should (canvas-browser-live-test--said-p "granted shown closed clicked"))))))
 
+(ert-deftest canvas-browser-live-a-notification-from-before-a-reload-says-that-it-is-lost ()
+  ;; GIVEN the notify fixture, served as a site that may show
+  ;;       notifications, which shows a notification, is loaded again,
+  ;;       and shows a second one
+  ;; WHEN the first notification, from before the page was loaded
+  ;;      again, is opened
+  ;; THEN the reader is told that the page has it no more, AND the page
+  ;;      hears no click: the second notification is another one
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--serving origin
+    (let* ((got nil)
+           (canvas-browser-notification-sites (list (cons origin t)))
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (canvas-browser-live-test--at (concat origin "/notify.html")
+        (canvas-browser-live-test--page-says "notify(); true")
+        (should (canvas-browser-live-test--wait 10 (lambda () got)))
+        (let ((first got)
+              (said nil))
+          (setq got nil)
+          (canvas-browser--tell "Page.reload" nil)
+          (should (canvas-browser-live-test--wait
+                   10 (lambda ()
+                        (equal (canvas-browser-live-test--page-says
+                                "typeof said === 'object' ? 'loaded ' + said.length : 'loading'")
+                               "loaded 0"))))
+          (canvas-browser-live-test--page-says "notify(); true")
+          (should (canvas-browser-live-test--wait 10 (lambda () got)))
+          (should (canvas-browser-live-test--said-p "granted shown"))
+          (cl-letf (((symbol-function 'pop-to-buffer) #'ignore)
+                    ((symbol-function 'message)
+                     (lambda (format &rest args) (setq said (apply #'format format args)))))
+            (canvas-browser-notification-open first)
+            (should (canvas-browser-live-test--wait 10 (lambda () said))))
+          (should (string-search "no more" said))
+          (should (equal (canvas-browser-live-test--page-says "said.join(' ')")
+                         "granted shown")))))))
+
 (ert-deftest canvas-browser-live-a-site-is-left-alone-until-the-reader-allows-it ()
   ;; GIVEN the notify fixture, served as a site that nothing is kept about
   ;; THEN the page has the notifications of chromium itself, and no name

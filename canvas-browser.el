@@ -6810,10 +6810,6 @@ gets it only while chromium reports on the scripts of the tab, which
 `Runtime.enable' turns on, or when the name is given again."
   (canvas-browser--tell "Runtime.addBinding" (list :name name)))
 
-(defun canvas-browser--evaluate-in (context script)
-  "Run SCRIPT in the page of this buffer, in CONTEXT, one of its frames."
-  (canvas-browser--tell "Runtime.evaluate" (list :expression script :contextId context)))
-
 ;;;; What a page copies
 
 (defun canvas-browser--set-permission (name origin setting &optional then)
@@ -7056,16 +7052,38 @@ It is the plist that `canvas-browser-notification-functions\\=' get."
                                          (plist-get notification :body)))
                         ": ")))
 
+(defun canvas-browser--notification-lost (notification)
+  "Say that the page of NOTIFICATION has the notification no more.
+A page that was loaded again since it showed the notification has
+nothing left to click.  The reader sees the page, and without this
+word a click that did nothing looks like a fault."
+  (message "canvas-browser: %s has that notification no more; this is its page as it is now"
+           (plist-get notification :source)))
+
 (defun canvas-browser--click-in-page (notification)
-  "Tell the page of NOTIFICATION, which it showed itself, that it was clicked."
-  (let ((buffer (plist-get notification :buffer)))
-    (unless (buffer-live-p buffer)
-      (user-error "canvas-browser: the page of that notification is gone"))
-    (pop-to-buffer buffer)
-    (with-current-buffer buffer
-      (canvas-browser--evaluate-in
-       (plist-get notification :context)
-       (format "window.__canvasBrowserNotifications.click(%d)" (plist-get notification :id))))))
+  "Tell the page of NOTIFICATION, which it showed itself, that it was clicked.
+The page answers whether it still knows the notification.  A page whose
+buffer is gone cannot be told: a page of its site is shown, and the
+reader is told that the notification went with its page."
+  (let ((buffer (plist-get notification :buffer))
+        (lost (lambda (&rest _) (canvas-browser--notification-lost notification))))
+    (if (not (buffer-live-p buffer))
+        (progn
+          (canvas-browser--show-site (plist-get notification :origin))
+          (message "canvas-browser: the page of that notification is gone; this is a page of %s"
+                   (plist-get notification :source)))
+      (pop-to-buffer buffer)
+      (with-current-buffer buffer
+        (canvas-browser--tell
+         "Runtime.evaluate"
+         (list :expression (format "window.__canvasBrowserNotifications.click(%d)"
+                                   (plist-get notification :id))
+               :contextId (plist-get notification :context)
+               :returnByValue t)
+         (lambda (result)
+           (unless (eq t (plist-get (plist-get result :result) :value))
+             (funcall lost)))
+         lost)))))
 
 (defconst canvas-browser--click-wait 2
   "Seconds a site has to open a page of its own after a click on its notification.")

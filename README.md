@@ -426,7 +426,10 @@ buffer.
 `(canvas-browser-notification-open NOTIFICATION)` shows that page and
 tells it that the notification was clicked. A mail page then opens the
 mail. A site can close its notification after a moment, as a chat site
-does. You can open the notification after that too. As the package comes, one function says the notification in the
+does. You can open the notification after that too. If the page was
+loaded again since, it has the notification no more. Then you see the
+page, and the echo area says so. If the page buffer is gone, a page of
+the site opens. As the package comes, one function says the notification in the
 echo area. This adds a desktop notification through D-Bus, with a click
 that opens the page:
 

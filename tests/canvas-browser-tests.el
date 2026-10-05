@@ -8333,18 +8333,59 @@ The question goes to `asked', and what is kept to `saved'."
         (should (string-search "click(3)" (plist-get params :expression)))
         (should (equal (plist-get params :contextId) 9))))))
 
-(ert-deftest canvas-browser-a-notification-of-a-page-that-is-gone-cannot-be-opened ()
+;; What `canvas-browser-notification-open' says to the reader, for GOT.
+(defun canvas-browser-test--open-saying (got)
+  "Open the notification GOT with no window to show it in; what was said."
+  (let ((said nil))
+    (cl-letf (((symbol-function 'pop-to-buffer) #'ignore)
+              ((symbol-function 'message)
+               (lambda (format &rest args) (setq said (apply #'format format args)))))
+      (canvas-browser-notification-open got))
+    said))
+
+(ert-deftest canvas-browser-a-notification-of-a-page-that-is-gone-opens-its-site ()
   ;; GIVEN a notification whose page buffer was killed since
   ;; WHEN it is opened
-  ;; THEN an error says that the page is gone
-  (let ((got nil))
+  ;; THEN the site of the notification is opened in a page buffer, since
+  ;;      its page is not there to show, AND the reader is told that the
+  ;;      notification went with its page
+  (let ((got nil)
+        (opened nil))
     (canvas-browser-test--in-page
       (let ((canvas-browser-notification-functions
              (list (lambda (notification) (setq got notification)))))
         (canvas-browser-test--page-tells canvas-browser-test--new-mail)))
-    (should (string-search "is gone"
-                           (cadr (should-error (canvas-browser-notification-open got)
-                                               :type 'user-error))))))
+    (cl-letf (((symbol-function 'canvas-browser) (lambda (url &rest _) (setq opened url))))
+      (should (string-search "is gone" (canvas-browser-test--open-saying got))))
+    (should (equal opened "https://example.org"))))
+
+(ert-deftest canvas-browser-a-notification-that-its-page-has-no-more-says-so ()
+  ;; GIVEN a notification that a page showed, AND a page that answers
+  ;;       that it does not know the notification, as one that was
+  ;;       loaded again since
+  ;; WHEN the notification is opened
+  ;; THEN the reader is told that the page has it no more, where a
+  ;;      click that did nothing looked like a fault
+  (canvas-browser-test--in-page
+    (let* ((got nil)
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (canvas-browser-test--page-tells canvas-browser-test--new-mail 9)
+      (canvas-browser-test--answering :false
+        (should (string-search "no more" (canvas-browser-test--open-saying got)))))))
+
+(ert-deftest canvas-browser-a-notification-that-its-page-still-has-is-clicked-without-a-word ()
+  ;; GIVEN a notification that a page showed, AND a page that answers
+  ;;       that it clicked the notification
+  ;; WHEN the notification is opened
+  ;; THEN nothing is said
+  (canvas-browser-test--in-page
+    (let* ((got nil)
+           (canvas-browser-notification-functions
+            (list (lambda (notification) (setq got notification)))))
+      (canvas-browser-test--page-tells canvas-browser-test--new-mail 9)
+      (canvas-browser-test--answering t
+        (should-not (canvas-browser-test--open-saying got))))))
 
 (ert-deftest canvas-browser-a-site-that-is-allowed-shows-notifications-at-once ()
   ;; GIVEN a page of a site that nothing is kept about
