@@ -319,7 +319,17 @@ The display listens on its socket alone, never on the network."
   (append (list (canvas-browser-cdp--executable)
                 "--remote-debugging-port=0"
                 "--remote-allow-origins=*"
-                (format "--user-data-dir=%s" (canvas-browser-cdp--profile)))
+                (format "--user-data-dir=%s" (canvas-browser-cdp--profile))
+                ;; What:  the address of a push subscription is on the
+                ;;        production host of Google, fcm.googleapis.com.
+                ;; Why:   a chromium that Google did not build hands it
+                ;;        out on a test host, jmt17.google.com.  A site
+                ;;        that accepts only the production host refuses
+                ;;        the subscription, without a word to the user,
+                ;;        and never sends a notification.
+                ;; Note:  Google delivers through both hosts, so a site
+                ;;        that took the old address still reaches us.
+                "--enable-features=PushMessagingGcmEndpointWebpushPath")
           (canvas-browser-cdp--extension-flags)
           (if canvas-browser-headless
               (list "--headless=new")

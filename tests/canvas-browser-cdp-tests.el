@@ -245,6 +245,18 @@
       ;; headless chromium is given no display of its own.
       (should (equal (canvas-browser-cdp--environment) process-environment)))))
 
+(ert-deftest canvas-browser-cdp-a-push-subscription-gets-an-address-that-sites-accept ()
+  ;; GIVEN a chromium that Google did not build, which hands out the
+  ;;       address of a push subscription on a test host of Google
+  ;; WHEN its command line is made, with a window and without one
+  ;; THEN the feature is on that puts the address on the production
+  ;;      host, the only one that some sites send a notification to
+  (cl-letf (((symbol-function 'executable-find) (lambda (name) (concat "/usr/bin/" name))))
+    (dolist (headless '(nil t))
+      (let ((canvas-browser-headless headless))
+        (should (member "--enable-features=PushMessagingGcmEndpointWebpushPath"
+                        (canvas-browser-cdp--command-line)))))))
+
 (ert-deftest canvas-browser-cdp-start-runs-chromium-headless-once ()
   ;; GIVEN a stubbed process and websocket
   ;; WHEN the client starts twice and then stops
