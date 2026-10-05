@@ -61,6 +61,30 @@ that moment now."
   "The parameters of the last METHOD that was sent."
   (cdr (cl-find method canvas-browser-test--commands :key #'car :test #'equal)))
 
+;;;; The docstrings
+
+(ert-deftest canvas-browser-no-docstring-shows-a-stray-equals-sign ()
+  ;; GIVEN every function and every variable of the package that has a
+  ;;       docstring, those of its tests aside, which no reader looks up
+  ;; WHEN the docstring is read as the source has it
+  ;; THEN no quoted word ends in an equals sign.  The escape that keeps
+  ;;      the quote after a key straight is a backslash and an equals
+  ;;      sign, and the source of a string needs two backslashes for
+  ;;      it: with one, the reader of the help sees the equals sign, as
+  ;;      in C-c C-c=
+  (let ((wrong nil))
+    (mapatoms
+     (lambda (symbol)
+       (when (and (string-prefix-p "canvas-browser" (symbol-name symbol))
+                  (not (string-match-p "\\`canvas-browser-\\(?:live-\\)?test-"
+                                       (symbol-name symbol))))
+         (dolist (doc (list (and (fboundp symbol)
+                                 (ignore-errors (documentation symbol t)))
+                            (documentation-property symbol 'variable-documentation t)))
+           (when (and (stringp doc) (string-match-p "[^ \n\\\\]='" doc))
+             (cl-pushnew symbol wrong))))))
+    (should-not wrong)))
+
 ;;;; The page and its frames
 
 (ert-deftest canvas-browser-opening-a-page-sizes-it-and-starts-the-screencast ()

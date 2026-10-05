@@ -108,7 +108,7 @@ page of no width paints nothing: chromium answers a picture of it with
 
 (defun canvas-browser--adopt (width height)
   "Give this buffer a canvas WIDTH by HEIGHT, and show it.
-A window with no size yet gets a page of `canvas-browser--least-size\=',
+A window with no size yet gets a page of `canvas-browser--least-size\\=',
 which the next window change makes right."
   (setq width (max width canvas-browser--least-size)
         height (max height canvas-browser--least-size))
@@ -317,9 +317,9 @@ the page as it was, and painting it would take the window backwards.")
 
 (defun canvas-browser--crisp-wait (now)
   "Seconds to wait before the still picture, NOW being the time.
-The picture waits `canvas-browser-crisp-delay\=' after the last command, so
+The picture waits `canvas-browser-crisp-delay\\=' after the last command, so
 that scrolling and typing are never interrupted by one, and
-`canvas-browser-live-interval\=' after the last picture, so that a page
+`canvas-browser-live-interval\\=' after the last picture, so that a page
 which never stops moving is drawn afresh at a steady rate rather than at
 every frame.  The frames themselves do not put it off: a page with a
 spinner on it never falls quiet, and waiting for quiet would leave it
@@ -402,7 +402,7 @@ video or a canvas draws itself, and where a GIF turns.")
          (with-current-buffer buffer (canvas-browser--took-live boxes)))))))
 
 (defun canvas-browser--grow-box (box)
-  "BOX grown by `canvas-browser-live-pad\=', and kept inside the window."
+  "BOX grown by `canvas-browser-live-pad\\=', and kept inside the window."
   (let* ((pad canvas-browser-live-pad)
          (x (max 0 (- (plist-get box :x) pad)))
          (y (max 0 (- (plist-get box :y) pad))))
@@ -522,7 +522,7 @@ A frame painted then would paint over them.")
   "Paint DATA, the base64 of a frame, once Emacs has a moment for it.
 A smooth scroll and a page that animates send frames faster than they
 can be drawn; only the newest of them is worth drawing, and no faster
-than `canvas-browser-frame-interval\=' allows."
+than `canvas-browser-frame-interval\\=' allows."
   (setq canvas-browser--pending data)
   (unless (or canvas-browser--hinting canvas-browser--paint-timer)
     (setq canvas-browser--paint-timer
@@ -605,10 +605,10 @@ and while it moves to a page of another kind, as a sign-in does.")
 
 (defun canvas-browser--tell-again (method params &optional wanted left)
   "Send METHOD with PARAMS in this page, and again while chromium refuses it.
-It is sent again only for the refusal of `canvas-browser--not-active\=',
+It is sent again only for the refusal of `canvas-browser--not-active\\=',
 which passes: a moment later, as long as WANTED still holds, in the
 same session, and LEFT times at most, which is
-`canvas-browser--retries\=' at the start.  WANTED is a function called
+`canvas-browser--retries\\=' at the start.  WANTED is a function called
 in this buffer, or nil for a command that is always wanted.  Any other
 refusal, and the last of these, is said to the reader."
   (let ((buffer (current-buffer))
@@ -681,13 +681,13 @@ chromium sends the keys and the wheel to none of them."
 
 (defun canvas-browser--wake (focus)
   "Draw this page again: it is shown once more.
-FOCUS is as in `canvas-browser--awaken\='."
+FOCUS is as in `canvas-browser--awaken\\='."
   (canvas-browser--awaken focus)
   (unless canvas-browser--screencast
     (canvas-browser--start-screencast)))
 
 (defvar canvas-browser--rest-target nil
-  "The id of the empty tab that `canvas-browser--rest\=' puts in front, or nil.")
+  "The id of the empty tab that `canvas-browser--rest\\=' puts in front, or nil.")
 
 (defun canvas-browser--make-rest ()
   "Make the empty tab that stands in front of the pages that are put away.
@@ -924,7 +924,7 @@ open on a display nobody sees."
 
 (defun canvas-browser--target-changed (params)
   "Keep the address and the title of the page PARAMS names, if it is ours.
-A page buffer takes the name of the address it shows, so that `C-x b\='
+A page buffer takes the name of the address it shows, so that `C-x b\\='
 says what each page is; an embedded page keeps the name its host gave
 it, since the host finds it by that name."
   (let* ((info (plist-get params :targetInfo))
@@ -979,7 +979,7 @@ empty tab that stands in front of the pages that are put away."
   "Show the page of PARAMS in a buffer of its own, if it belongs here.
 A window that one of our pages opened does, and so does a tab that
 chromium opened on its own at a web address.  A frame, a worker, or a
-page that a page of nobody\='s here opened is left alone."
+page that a page of nobody\\='s here opened is left alone."
   (let* ((info (plist-get params :targetInfo))
          (target (plist-get info :targetId))
          (opener (canvas-browser--buffer-of-target (plist-get info :openerId))))
@@ -1225,7 +1225,7 @@ land in the field before it."
    })(%s)"
   "The JavaScript that gives the text marked in the field with the focus.
 With true, the mark is dropped as well, and the caret stays where it
-was, as it does after `M-w\=' in a buffer.")
+was, as it does after `M-w\\=' in a buffer.")
 
 (defun canvas-browser-field-set-mark ()
   "Set the mark in the field, so that the motions after it mark a region.
@@ -1237,7 +1237,7 @@ Pressed again, it drops the mark."
     (message "Mark set")))
 
 (defun canvas-browser-field-mark-whole ()
-  "Mark all of the field, as `C-x h\=' marks all of a buffer.
+  "Mark all of the field, as `C-x h\\=' marks all of a buffer.
 Control and A go to the page, which is how a browser marks all of a
 field, so an editor that a page built itself takes it as well."
   (interactive)
@@ -1289,8 +1289,8 @@ buffer with the text."
 
 (defun canvas-browser-insert-quit ()
   "Drop the mark of the field when it is set, else give the keys back to Emacs.
-This is `C-g\=' while typing into the page, as it is in a buffer: a
-region goes first, and the second `C-g\=' leaves."
+This is `C-g\\=' while typing into the page, as it is in a buffer: a
+region goes first, and the second `C-g\\=' leaves."
   (interactive)
   (if canvas-browser--field-mark
       (canvas-browser--field-drop-mark)
@@ -1382,7 +1382,7 @@ selection."
   "Delete forward in the field, and kill a newline if a line break went.
 The field tells that by its text, which is shorter after the key.  At
 the end of the field nothing goes, and nothing is killed.  APPEND is as
-in `canvas-browser--kill-text\='."
+in `canvas-browser--kill-text\\='."
   (canvas-browser--field-length
    (lambda (before)
      (canvas-browser--key
@@ -1396,7 +1396,7 @@ in `canvas-browser--kill-text\='."
 
 (defun canvas-browser--kill-marked (append)
   "Kill what is marked in the field, or the line break if nothing is.
-APPEND is as in `canvas-browser--kill-text\='."
+APPEND is as in `canvas-browser--kill-text\\='."
   (canvas-browser--evaluate
    (format canvas-browser--field-region-js "false")
    (canvas-browser--here
@@ -1408,7 +1408,7 @@ APPEND is as in `canvas-browser--kill-text\='."
 
 (defun canvas-browser-kill-line ()
   "Kill from the cursor to the end of the line of the field.
-At the end of a line, the line break goes, as with `C-k\=' in a buffer,
+At the end of a line, the line break goes, as with `C-k\\=' in a buffer,
 and two of them in a row make one kill.  Shift and End mark the rest of
 the line, and Delete follows once the page has told of the mark."
   (interactive)
@@ -1427,8 +1427,8 @@ the line, and Delete follows once the page has told of the mark."
 
 (defun canvas-browser-copy-url ()
   "Copy the address of this page to the kill ring.
-The key is `y\=', which copies the address of a link after `f\=' as well.
-`w\=', the key of eww, is a key of every canvas buffer."
+The key is `y\\=', which copies the address of a link after `f\\=' as well.
+`w\\=', the key of eww, is a key of every canvas buffer."
   (interactive)
   (unless canvas-browser--url
     (user-error "canvas-browser: this page has no address yet"))
@@ -1497,7 +1497,7 @@ at all."
 (defun canvas-browser-wheel (event)
   "Scroll where EVENT, a turn of the wheel over the canvas, points.
 The turn goes to the page at that very pixel, so the part under the
-pointer scrolls, as it does in a window of chromium\='s own.  Emacs reports
+pointer scrolls, as it does in a window of chromium\\='s own.  Emacs reports
 a fast turn as a double or a triple event, and each one scrolls a line."
   (interactive "e")
   (let ((turn (event-basic-type event)))
@@ -1514,7 +1514,7 @@ a fast turn as a double or a triple event, and each one scrolls a line."
      (e.tagName === 'INPUT' &&
       !['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image',
         'range', 'color', 'hidden'].includes((e.type || 'text').toLowerCase())));"
-  "The JavaScript of `takesTyping\=', whether an element is a field to type in.")
+  "The JavaScript of `takesTyping\\=', whether an element is a field to type in.")
 
 (defconst canvas-browser--focus-script
   (concat "(function () {" canvas-browser--takes-typing-js "
@@ -1553,7 +1553,7 @@ The focus of a document is the web component that holds the field, or
 the frame; the field itself is the focus of the component\'s shadow root,
 or of the frame\'s document, so the script follows it down, and a frame
 moves the box by where the frame stands.  A frame of another site cannot
-be looked into, and `i\=' sends the keys there.")
+be looked into, and `i\\=' sends the keys there.")
 
 (defun canvas-browser--click (x y)
   "Click the page at the pixel X Y, and type there if it takes typing.
@@ -1628,7 +1628,7 @@ and the first and the last follow one another.")
 
 (defun canvas-browser--go-to-field (step)
   "Focus the field STEP fields on from the one with the focus, and type there.
-Only fields count, as with the `gi\=' of Vimium: a page puts buttons
+Only fields count, as with the `gi\\=' of Vimium: a page puts buttons
 between its fields, as Reddit puts the one that shows the password
 between the name and the password, and a tab of the browser's own stops
 at every one."
@@ -1670,7 +1670,7 @@ drawn from where the focus was to where it is."
 It is called in the page buffer with the two boxes, plists of x, y, w
 and h in the pixels of the page, when a click or a tab moves the focus,
 and when the caret of the page moves.
-The default flies smear-cursor\='s cursor from one to the other while
+The default flies smear-cursor\\='s cursor from one to the other while
 smear-cursor is on, and with it off does nothing.  nil never flies."
   :type '(choice (const nil) function)
   :group 'canvas-browser)
@@ -1707,7 +1707,7 @@ Nil when the position is on something else in the window."
 
 (defun canvas-browser-drag (event)
   "Drag the mouse over the page as EVENT, a drag on the canvas, did.
-The page marks the text between the two ends.  In a field, `M-w\=' then
+The page marks the text between the two ends.  In a field, `M-w\\=' then
 copies it."
   (interactive "e")
   (let ((from (canvas-browser--page-pixel (event-start event)))
@@ -1947,7 +1947,7 @@ and a buffer killed before then gets none."
   (canvas-browser--evaluate canvas-browser--boxes-script answer))
 
 (defun canvas-browser--hint-letters (count)
-  "COUNT hints of `canvas-browser-hint-keys\=', all of one length.
+  "COUNT hints of `canvas-browser-hint-keys\\=', all of one length.
 The length is the shortest that names COUNT boxes, so no hint is the
 start of another, and a box past the last hint of two letters gets one
 of three rather than none."
@@ -2069,7 +2069,7 @@ says that `?' lists them."
   "Read letters until they name one of HINTS; (PLACE . ACTION), or nil.
 Before the first letter, a key of ACTIONS picks what the hint does, as
 the dispatch of avy does, and the prompt then names it; ACTION is that
-entry, or nil for none.  `?\=' lists the actions in the prompt, as it
+entry, or nil for none.  `?\\=' lists the actions in the prompt, as it
 does in avy.  `ESC\\=' gives nil, and so does a key that is no
 character, which is then run as the next key.  The hints are read while
 chromium's answer is handled, between two commands, and Emacs counts
@@ -2346,7 +2346,7 @@ open it in a buffer of its own or in eww."
 
 (defun canvas-browser--act-on-page (action)
   "Do to the whole page what ACTION does to a thing that a hint names.
-ACTION is a function of `canvas-browser--hint-actions\=', or nil for a
+ACTION is a function of `canvas-browser--hint-actions\\=', or nil for a
 copy of its picture."
   (pcase action
     ((or 'nil 'canvas-browser--copy-picture) (canvas-browser--copy-window-picture))
@@ -2359,9 +2359,9 @@ copy of its picture."
 (defun canvas-browser-copy-block ()
   "Label the page and its blocks, and copy the picture of the one you name.
 The whole page carries the first letter, in the top corner, as it does
-when a part is picked.  A key of `canvas-browser--hint-actions\=' pressed
-before the letters copies something else, such as the text with `w\='.
-This is what `M-w\=' does in a page; with a prefix it copies the whole
+when a part is picked.  A key of `canvas-browser--hint-actions\\=' pressed
+before the letters copies something else, such as the text with `w\\='.
+This is what `M-w\\=' does in a page; with a prefix it copies the whole
 window at once."
   (interactive)
   (canvas-browser--blocks
@@ -2443,7 +2443,7 @@ It answers false when that part has gone, which a new page or a page that
 drew itself again both do.")
 
 (defun canvas-browser--scroll-part (mode value)
-  "Scroll the part picked: MODE is `by\=', `to\=' or `end\=', by or to VALUE.
+  "Scroll the part picked: MODE is `by\\=', `to\\=' or `end\\=', by or to VALUE.
 A part the page has thrown away is forgotten, and the keys go back to the
 whole page: a key that silently does nothing reads as a broken key."
   (let ((buffer (current-buffer)))
@@ -2533,7 +2533,7 @@ nothing in the page, so no frame would come to paint."
 (defun canvas-browser--page-box ()
   "A box for the whole page, in the top corner, where few parts begin.
 The page is labelled along with its parts, so that the keys go back to it
-by a letter as well, the way every window `ace-window\=' labels carries
+by a letter as well, the way every window `ace-window\\=' labels carries
 one, whether the keys are in it or not."
   (list :x (max 0 (- (car canvas-browser--size) 30)) :y 0 :w 30 :h 24))
 
@@ -2554,12 +2554,12 @@ one, whether the keys are in it or not."
   "Outline and label the parts of the page, and pick the one you name.
 A part is what scrolls on its own, or what the page marks as a part: its
 main content, a sidebar, a header, an article.  The keys then act on
-that part, the way `ace-window\=' hands the keys to the window you
+that part, the way `ace-window\\=' hands the keys to the window you
 name.  The part keeps an outline while it is picked.  The scroll keys
-move it when it scrolls on its own, and `>\=' sends its text and not
+move it when it scrolls on its own, and `>\\=' sends its text and not
 that of the whole page.  The whole page carries the first letter, which
-is the way back to it, and so is `C-g\=' once a part is picked.
-`ESC\=' names nothing, and leaves what was picked as it was.  The wheel
+is the way back to it, and so is `C-g\\=' once a part is picked.
+`ESC\\=' names nothing, and leaves what was picked as it was.  The wheel
 needs none of this: it scrolls whatever the pointer is over."
   (interactive)
   (canvas-browser--parts
@@ -2574,7 +2574,7 @@ needs none of this: it scrolls whatever the pointer is over."
 
 (defun canvas-browser-quit ()
   "Give the keys back to the whole page when a part of it is picked.
-With no part picked, quit as `C-g\=' does in any buffer."
+With no part picked, quit as `C-g\\=' does in any buffer."
   (interactive)
   (if canvas-browser--part
       (canvas-browser--took-part nil nil)
@@ -2893,7 +2893,7 @@ Else give nil."
 
 (defun canvas-browser--keep-origins ()
   "Have this page note where it stands before something scrolls it.
-`canvas-browser--end-origins\=' can then put it back."
+`canvas-browser--end-origins\\=' can then put it back."
   (canvas-browser--tell "Runtime.evaluate"
                         (list :expression "window.__canvasBrowserFindOrigin = new Map()")))
 
@@ -3000,7 +3000,7 @@ From Lisp, with STRING, the page is searched for it at once."
 
 (defcustom canvas-browser-dark nil
   "Whether a page is shown dark.
-`canvas-browser-toggle-dark\=' sets it, and `C-x C-s\=' in the menu keeps
+`canvas-browser-toggle-dark\\=' sets it, and `C-x C-s\\=' in the menu keeps
 it, so that the pages you open after it are shown the same way."
   :type 'boolean
   :group 'canvas-browser)
@@ -3026,7 +3026,7 @@ picture with its own dark turned off, and leaves the page that way."
                         (list :enabled (if canvas-browser-dark t :json-false))))
 
 (defun canvas-browser-search-text ()
-  "Put the text of the page in a buffer and search it with `consult-line\='.
+  "Put the text of the page in a buffer and search it with `consult-line\\='.
 Without consult, isearch takes over in that buffer."
   (interactive)
   (canvas-browser-text)
@@ -3139,8 +3139,8 @@ script failed in the page."
 
 (defun canvas-browser-text ()
   "Put the text of the page in a buffer, where the keys of Emacs work.
-When a part of the page is picked, with `S\=', it is the text of that
-part.  It is the text that `>\=' sends: translated, when the address
+When a part of the page is picked, with `S\\=', it is the text of that
+part.  It is the text that `>\\=' sends: translated, when the address
 of the page has a translator."
   (interactive)
   (let ((text (if canvas-browser--part
@@ -3166,7 +3166,7 @@ It is nil for the text of a whole page.")
 
 (define-minor-mode canvas-browser-text-mode
   "The buffer holds the text of a page of canvas-browser.
-`M-.\=' shows where the line at point stands in the page, and the key
+`M-.\\=' shows where the line at point stands in the page, and the key
 that goes back in xref comes back to the line."
   :lighter nil)
 
@@ -3228,7 +3228,7 @@ none of them.")
 The reader came to see where the line is, not to keep it marked.")
 
 (defconst canvas-browser--locate-tries 5
-  "How many lines `M-.\=' in the text of a page tries, from point on.
+  "How many lines `M-.\\=' in the text of a page tries, from point on.
 A line that a translator made, as the one that names who wrote a
 message, is not in the page.  The text of the message under it is.")
 
@@ -3261,7 +3261,7 @@ the same letters out of a text.")
   "TEXT without what stands in it for a picture of the page.
 The text of a page names a picture in brackets, as [image], and has an
 emoji that the page draws as a picture as the emoji itself.  Each has
-the text property `canvas-browser-for-picture\='.  Brackets and emoji
+the text property `canvas-browser-for-picture\\='.  Brackets and emoji
 that are words of the page itself have not, and stay."
   (let ((kept nil)
         (start 0)
@@ -3286,7 +3286,7 @@ is counted as the page compares, without regard to white space."
 
 (defun canvas-browser--line-to-find ()
   "The ways to ask a page for the line at point, or nil for an empty line.
-Each is a plist of `canvas-browser--to-find\='.  The first is the line
+Each is a plist of `canvas-browser--to-find\\='.  The first is the line
 as it is written.  A line that names pictures has a second way, without
 them: the page shows a picture there and has no text for it."
   (let* ((line (buffer-substring (line-beginning-position) (line-end-position)))
@@ -3311,7 +3311,7 @@ them: the page shows a picture there and has no text for it."
 (defun canvas-browser--stretch-way (text line before)
   "The way to ask a page for TEXT, which starts with LINE, or nil.
 BEFORE is the text before it, for its rank.  TEXT is cut to
-`canvas-browser--locate-stretch\=' letters.  The way says with :paint
+`canvas-browser--locate-stretch\\=' letters.  The way says with :paint
 how much of it is LINE.  It is nil for an empty LINE, and when the cut
 TEXT holds no more than LINE."
   (let ((line (canvas-browser--squeeze line))
@@ -3335,7 +3335,7 @@ stands for a picture."
 
 (defun canvas-browser--lines-with-text ()
   "The line at point and the lines after it, those that hold text.
-No more than `canvas-browser--locate-tries\=' lines are read."
+No more than `canvas-browser--locate-tries\\=' lines are read."
   (save-excursion
     (let ((end (save-excursion (forward-line canvas-browser--locate-tries) (point))))
       (seq-remove #'string-blank-p
@@ -3372,9 +3372,9 @@ and then it holds only a stretch that ends before the next message."
 
 (defun canvas-browser--lines-to-find ()
   "The line at point and those after it, as a page is asked for them.
-The first ways are those of `canvas-browser--stretch-to-find\='.  Then
+The first ways are those of `canvas-browser--stretch-to-find\\='.  Then
 come the lines one by one: empty lines are left out, and no more than
-`canvas-browser--locate-tries\=' lines are given.  Each way to ask is
+`canvas-browser--locate-tries\\=' lines are given.  Each way to ask is
 a plist, which also says with :line which line it is of: 0 for the line
 at point, or the first after it that holds text."
   (save-excursion
@@ -3400,7 +3400,7 @@ else the whole page."
 
 (defun canvas-browser--located (answer lines)
   "Say what ANSWER, of the page, found of LINES.
-LINES are the ways to ask that `canvas-browser--lines-to-find\=' gave."
+LINES are the ways to ask that `canvas-browser--lines-to-find\\=' gave."
   (let* ((found (or (plist-get answer :found) -1))
          (way (and (>= found 0) (nth found lines))))
     (canvas-browser--land-anew (plist-get answer :box))
@@ -3493,11 +3493,11 @@ for an element that the page has thrown away."
 
 (defconst canvas-browser--heading-js (canvas-browser--kept-js "__canvasBrowserHeadings")
   "The JavaScript function that shows a heading of a page.
-See `canvas-browser--kept-js\='.")
+See `canvas-browser--kept-js\\='.")
 
 (defun canvas-browser--show-kept (script index gone)
   "Show the element at INDEX of those that this page kept, with SCRIPT.
-SCRIPT is a function of `canvas-browser--kept-js\='.  GONE is what the
+SCRIPT is a function of `canvas-browser--kept-js\\='.  GONE is what the
 reader is told when the page has thrown the element away."
   (canvas-browser--tell
    "Runtime.evaluate"
@@ -3528,7 +3528,7 @@ reader is told when the page has thrown the element away."
   "How many letters of the text of a message stand in its name in an index.")
 
 (defun canvas-browser--text-start (text)
-  "The first line of TEXT, cut to `canvas-browser--name-length\=' letters."
+  "The first line of TEXT, cut to `canvas-browser--name-length\\=' letters."
   (let ((line (canvas-browser--squeeze (car (split-string text "\n")))))
     (if (> (length line) canvas-browser--name-length)
         (concat (substring line 0 canvas-browser--name-length) "…")
@@ -3740,7 +3740,7 @@ that one of them is found later by the place it has there.")
 
 (defconst canvas-browser--link-js (canvas-browser--kept-js "__canvasBrowserLinks")
   "The JavaScript function that shows a link of a page.
-See `canvas-browser--kept-js\='.")
+See `canvas-browser--kept-js\\='.")
 
 (defconst canvas-browser--follow-link-script "(function (index) {
   const link = (window.__canvasBrowserLinks || [])[index];
@@ -3957,7 +3957,7 @@ It was set before a jump that did not happen after all."
 
 (defun canvas-browser-pop-mark ()
   "Go to the newest mark of this page, and turn the ring of its marks.
-The next time goes to the mark before it, as `C-u C-SPC\=' does in a
+The next time goes to the mark before it, as `C-u C-SPC\\=' does in a
 buffer."
   (interactive nil canvas-browser-mode)
   (let ((mark (canvas-browser--newest-mark)))
@@ -3968,7 +3968,7 @@ buffer."
   "Mark where this page stands, to come back to it later.
 A mark keeps how far the page and each of its parts are scrolled.  With
 a prefix argument, BACK, go to the newest mark instead, as
-`canvas-browser-pop-mark\=' does.  A jump in the page sets the mark too:
+`canvas-browser-pop-mark\\=' does.  A jump in the page sets the mark too:
 to the top or the end, to an entry of the index, to the hit of a
 search."
   (interactive "P" canvas-browser-mode)
@@ -3987,7 +3987,7 @@ search."
 
 (defun canvas-browser-position-to-register (register)
   "Keep where this page stands in REGISTER.
-`jump-to-register\=' comes back to it from any buffer: in the page
+`jump-to-register\\=' comes back to it from any buffer: in the page
 buffer that shows the page, or else in one that opens its address."
   (interactive (list (register-read-with-preview "Position of the page to register: "))
                canvas-browser-mode)
@@ -4034,7 +4034,7 @@ With nil the history lasts as long as the session."
 
 (defvar canvas-browser--visited 'unread
   "The pages that were visited, the newest first, each (URL TITLE TIME).
-TIME is the time of the last visit, in seconds.  It is `unread\=' until
+TIME is the time of the last visit, in seconds.  It is `unread\\=' until
 the file of the history was read.")
 
 (defvar canvas-browser--history-timer nil
@@ -4160,8 +4160,8 @@ picture asked for before that is of the layout the page had."
      canvas-browser--session)))
 
 (defun canvas-browser--zoom-by-key (direction)
-  "Zoom the page: DIRECTION is `in\=', `out\=' or `reset\='.
-It is this buffer's `canvas-keys-zoom-function\='."
+  "Zoom the page: DIRECTION is `in\\=', `out\\=' or `reset\\='.
+It is this buffer's `canvas-keys-zoom-function\\='."
   (setq canvas-browser--zoom
         (pcase direction
           ('in (min 5.0 (* canvas-browser--zoom canvas-browser-zoom-step)))
@@ -4180,7 +4180,7 @@ It is this buffer's `canvas-keys-zoom-function\='."
   (message "canvas-browser: wrote %s" file))
 
 (defun canvas-browser-refresh (&rest _)
-  "Read the page again; this buffer's `revert-buffer-function\='."
+  "Read the page again; this buffer's `revert-buffer-function\\='."
   (interactive)
   (canvas-browser--tell "Page.reload" nil))
 
@@ -4320,9 +4320,9 @@ and the settings.  The widths line the columns of the two rows up."
 (defvar canvas-browser-mode-map
   (define-keymap :parent (make-composed-keymap canvas-keys-mode-map special-mode-map))
   "Keymap of a page buffer in normal state.
-The common canvas keys come from canvas-keys: `SPC\=' opens the menu,
-`q\=' quits, `W\=' writes the picture, `C\=' customizes, and the zoom
-keys zoom the page.  `g\=' is `revert-buffer\=', which reads it again.")
+The common canvas keys come from canvas-keys: `SPC\\=' opens the menu,
+`q\\=' quits, `W\\=' writes the picture, `C\\=' customizes, and the zoom
+keys zoom the page.  `g\\=' is `revert-buffer\\=', which reads it again.")
 
 ;; The keys are bound here and not where the map is made.  A variable
 ;; keeps its value when its file is loaded again, so keys bound there
@@ -4716,8 +4716,8 @@ and `C-g\\=' drops the mark, and then leaves, as `ESC\\=' does."
 (defun canvas-browser--caret-take-region (text)
   "Give the keys to the caret, with TEXT as its region.
 TEXT is what a drag of the mouse marked on the page.  Nothing is copied,
-as nothing is after a drag in a buffer: `M-w\=' copies the region and
-`C-g\=' drops it.  One who set `mouse-drag-copy-region\=' gets the copy
+as nothing is after a drag in a buffer: `M-w\\=' copies the region and
+`C-g\\=' drops it.  One who set `mouse-drag-copy-region\\=' gets the copy
 here as well.  In a field the keys are the page's, and the field copies
 its own mark."
   (when (and (stringp text) (not (string-empty-p text)) (not canvas-browser--insert))
@@ -4790,12 +4790,12 @@ With the mark set it marks, as a motion after `C-SPC\\=' does."
 (defvar avy-single-candidate-jump)
 
 (defun canvas-browser--jump-timeout ()
-  "How long a pause ends the text of a jump: avy\='s pause, once avy is loaded."
+  "How long a pause ends the text of a jump: avy\\='s pause, once avy is loaded."
   (if (boundp 'avy-timeout-seconds) avy-timeout-seconds 0.5))
 
 (defun canvas-browser--read-jump-text ()
-  "Read the text of a jump until a pause, as `avy-goto-char-timer\=' reads it.
-`DEL\=' takes the last character back, `RET\=' ends at once, and `ESC\=' gives
+  "Read the text of a jump until a pause, as `avy-goto-char-timer\\=' reads it.
+`DEL\\=' takes the last character back, `RET\\=' ends at once, and `ESC\\=' gives
 up.  The text, or nil when given up or empty."
   (let ((text (catch 'done
                 (let ((text ""))
@@ -4814,7 +4814,7 @@ The first key is waited for; after it, a pause ends the text."
           (t (concat text (char-to-string key))))))
 
 (defun canvas-browser-caret-jump ()
-  "Put the caret on text in view that you type, as `avy-goto-char-timer\=' does.
+  "Put the caret on text in view that you type, as `avy-goto-char-timer\\=' does.
 Type until you pause; every place in view that shows the text takes a
 hint, and naming one puts the caret there, or marks to it when the mark
 is set.  From normal state the caret starts there.  Text in lower case
@@ -4879,7 +4879,7 @@ also come before chromium has laid the page out for the new window."
                           #'canvas-browser--keep-fresh (current-buffer)))))
 
 (defun canvas-browser--may-ask-p (buffer)
-  "Whether BUFFER\='s page can be asked for a picture of itself now.
+  "Whether BUFFER\\='s page can be asked for a picture of itself now.
 No session, no chromium, hints waiting to be named, or no window showing
 the buffer: each of them means no."
   (and canvas-browser--session
@@ -5017,8 +5017,8 @@ here, on every load."
 
 (defun canvas-browser--keep-modal-state ()
   "Ask for the modal state this mode was given, if something changed it.
-`ESC\=' leaves the typing state of a page, and meow takes that key for
-its own state, which would leave the buffer in a state where `SPC\=' is
+`ESC\\=' leaves the typing state of a page, and meow takes that key for
+its own state, which would leave the buffer in a state where `SPC\\=' is
 meow's keypad rather than the menu of the page."
   (when (and (fboundp 'meow--switch-state)
              (boundp 'meow-mode-state-list)
@@ -5038,7 +5038,7 @@ meow's keypad rather than the menu of the page."
 
 (defun canvas-browser--bind-clicks (map click)
   "Bind the clicks of the mouse in MAP to CLICK, a command.
-An area of the image map puts `canvas-browser-link\=' before the event,
+An area of the image map puts `canvas-browser-link\\=' before the event,
 so that id takes a map of its own, whose parent is MAP: a click over a
 link runs the same command, and an event that nothing binds is ignored,
 rather than telling the reader that it is undefined."
@@ -5074,7 +5074,7 @@ Emacs reports a fast wheel turn as a double or triple event."
   "Tell canvas-minimap to leave a page buffer alone.
 A page is a picture, not lines of text, and a map of it told the reader
 nothing the window does not.  Take the mode out of
-`canvas-minimap-exclude-modes\=' to have the strip back."
+`canvas-minimap-exclude-modes\\=' to have the strip back."
   (add-to-list 'canvas-minimap-exclude-modes 'canvas-browser-mode))
 
 (with-eval-after-load 'canvas-minimap (canvas-browser--leave-out-of-map))
@@ -5190,7 +5190,7 @@ asked, and :multiple whether the field takes several files.")
 
 (define-minor-mode canvas-browser-attach-mode
   "Pick in this dired buffer the files that a page asked for.
-Mark them and press `C-c C-c\=', or press it on one file.  `C-c C-k\='
+Mark them and press `C-c C-c\\=', or press it on one file.  `C-c C-k\\='
 tells the page that nothing was chosen."
   :lighter " Attach"
   :keymap canvas-browser-attach-mode-map
@@ -5273,7 +5273,7 @@ its own."
 
 (defun canvas-browser-attach-open ()
   "Go into the directory at point, or give the file at point to the page.
-This is `RET\=' while a page waits for a file.  Without it, `RET\=' on a
+This is `RET\\=' while a page waits for a file.  Without it, `RET\\=' on a
 file opens the file in a buffer, where the keys of the choice are not."
   (interactive)
   (let ((file (dired-get-file-for-visit)))
@@ -5717,20 +5717,20 @@ written in holds text that is nowhere else."
   '(("buffer" . canvas-browser-send-to-buffer)
     ("org capture" . canvas-browser-send-to-org-capture)
     ("org-roam node" . canvas-browser-send-to-org-roam))
-  "Where `canvas-browser-send-to\=' can send a page, each (NAME . FUNCTION).
+  "Where `canvas-browser-send-to\\=' can send a page, each (NAME . FUNCTION).
 FUNCTION is called in the page buffer with one argument, a plist.  Its
 `:kind' is `text' for the text that the caret marks, `page' for the
 text of the whole page, and `part' for the text of the part of it that
 is picked.  The text is all that the page shows there, and nothing is
 read into it on the way: what is made of it is the business of
-FUNCTION, which gets the HTML from `canvas-browser-content-html\=' when
+FUNCTION, which gets the HTML from `canvas-browser-content-html\\=' when
 it wants what the text has lost.  Only a translator of
-`canvas-browser-translators\=' comes between: when the address of the
+`canvas-browser-translators\\=' comes between: when the address of the
 page has one, the text is what it made of the page, and `:thread' is
 the thread as Lisp data, when the translator gave one.  Its `:text' is
 that text, and its `:url' and `:title' are the address and the title of
 the page.  Another package adds a receiver of its own with
-`add-to-list\='."
+`add-to-list\\='."
   :type '(alist :key-type string :value-type function)
   :group 'canvas-browser)
 
@@ -5771,7 +5771,7 @@ The null of JSON is nil."
 (defun canvas-browser--value-now (script &optional await)
   "The value that SCRIPT gives in this page; nil for the null of JSON.
 With AWAIT, the value of the promise that SCRIPT gives.  See
-`canvas-browser--answer-now\='."
+`canvas-browser--answer-now\\='."
   (canvas-browser--value-of
    (canvas-browser--answer-now
     "Runtime.evaluate"
@@ -5871,7 +5871,7 @@ It is nil for a part that has gone, or that is out of the window."
 
 (defun canvas-browser--translation (kind)
   "What the translator of this page makes of KIND of it, or nil.
-It is a plist of `canvas-browser-translate\='.
+It is a plist of `canvas-browser-translate\\='.
 It is nil when the address has no translator, and when the translator
 finds nothing to translate, which a message says.  The page is asked
 for its HTML only when its address has a translator."
@@ -5892,14 +5892,14 @@ as the page shows it, and there is no :thread."
   (or (canvas-browser--translation kind) (list :text (funcall plain))))
 
 (defun canvas-browser--text-to-read (kind plain)
-  "The text of KIND of this page, for a reader; see `canvas-browser--reading\='."
+  "The text of KIND of this page, for a reader; see `canvas-browser--reading\\='."
   (plist-get (canvas-browser--reading kind plain) :text))
 
 (defun canvas-browser--content (kind reading)
   "What a receiver gets of this page: READING of KIND, its address and title.
 KIND is `text' for the text that the caret marks, `page' for the text
 of the whole page, and `part' for that of one part of it.  READING is
-a plist of `canvas-browser--reading\='.  A page without a title is
+a plist of `canvas-browser--reading\\='.  A page without a title is
 named by its address."
   (append (list :kind kind :text (plist-get reading :text))
           (and (plist-get reading :thread) (list :thread (plist-get reading :thread)))
@@ -5924,8 +5924,8 @@ first, so that a page is not read for nothing."
 (defun canvas-browser-send-to ()
   "Send the text that the caret marks to a receiver.
 With nothing marked, send the part of the page that is picked, and with
-no part picked, the whole page.  `S\=' picks a part.  The receivers are
-those of `canvas-browser-receivers\='."
+no part picked, the whole page.  `S\\=' picks a part.  The receivers are
+those of `canvas-browser-receivers\\='."
   (interactive)
   (cond ((canvas-browser--marked-text)
          (canvas-browser--send 'text #'canvas-browser--marked-text))
@@ -5962,7 +5962,7 @@ takes it off again."
 
 (defun canvas-browser-send-part-to ()
   "Send the text of the part of the page that is picked to a receiver.
-`S\=' picks a part.  The part is tinted while the receiver is asked
+`S\\=' picks a part.  The part is tinted while the receiver is asked
 for, when the window shows it.  All of its text is sent, also what is
 out of the window."
   (interactive)
@@ -5976,7 +5976,7 @@ out of the window."
                        'part (canvas-browser--reading 'part #'canvas-browser--part-text)))))
 
 (defun canvas-browser--paste (text)
-  "Paste TEXT into this buffer with the command it has for `yank\='.
+  "Paste TEXT into this buffer with the command it has for `yank\\='.
 The buffer of a terminal is read-only and takes text through its
 process, which its own yank command does.  The kill ring stays as it
 is."
@@ -6023,7 +6023,7 @@ is, or in a quote block with QUOTE."
         (t (plist-get content :text))))
 
 (defun canvas-browser-send-to-org-capture (content)
-  "Capture CONTENT with a template of `org-capture\=', which is asked for."
+  "Capture CONTENT with a template of `org-capture\\=', which is asked for."
   (require 'org-capture)
   (canvas-browser--store-org-link content (canvas-browser--org-text content))
   ;; Without this, org-capture stores a link to the page buffer, and
@@ -6036,7 +6036,7 @@ is, or in a quote block with QUOTE."
      :target (file+head "${slug}.org" "#+title: ${title}")
      :unnarrowed t))
   "The templates of the org-roam receiver, as org-roam writes its templates.
-See `org-roam-capture-templates\=' for what one holds.  %i stands for
+See `org-roam-capture-templates\\=' for what one holds.  %i stands for
 what is sent, with a heading of its own that links to the page: a
 thread that a translator gave as an org list, and other text as a
 quote.  %a stands for a link to the page, named by the title of the
@@ -6044,7 +6044,7 @@ page, and ${title} for the title of the node.
 
 The text is not ${body}, as org-roam has it for a page sent from a
 browser.  For ${NAME} org-roam first calls a function called NAME, when
-there is one, and a package that is loaded may have a function `body\=':
+there is one, and a package that is loaded may have a function `body\\=':
 the web-server package has."
   :type '(repeat sexp)
   :group 'canvas-browser)
@@ -6134,7 +6134,7 @@ The heading does not name the directory of the attachments here.  org
 fills a capture template in a buffer without a file, and org-attach
 takes no relative directory in such a buffer: where org shows the
 pictures of a note at startup, the capture stopped with an error.
-`canvas-browser--name-attachments\=' names the directory when the text
+`canvas-browser--name-attachments\\=' names the directory when the text
 is in the note."
   (concat "* From "
           (org-link-make-string (plist-get content :url) (plist-get content :title))
@@ -6162,7 +6162,7 @@ without a thread stays as it is."
 
 (defun canvas-browser--name-attachments (thread node)
   "Have the heading that holds THREAD in this note name the attachments of NODE.
-See `canvas-browser--attach-property\='.  A thread above the first
+See `canvas-browser--attach-property\\='.  A thread above the first
 heading needs nothing, and a heading that names a directory keeps it."
   (when-let* ((directory (canvas-browser--attach-property node))
               (start (canvas-browser-org-thread-start thread)))
@@ -6197,7 +6197,7 @@ its messages are left to the capture."
 (defun canvas-browser--capture-in-node (node content)
   "Capture CONTENT in the note of NODE, under a heading of its own.
 The heading names the attachments of NODE as soon as org has put the
-text in the note: see `canvas-browser--org-section\='."
+text in the note: see `canvas-browser--org-section\\='."
   (canvas-browser--store-org-link content (canvas-browser--org-section content))
   (let ((org-capture-link-is-already-stored t)
         (org-capture-mode-hook
@@ -6211,7 +6211,7 @@ text in the note: see `canvas-browser--org-section\='."
 The node is one that exists, or a new one with the title that you type.
 What is sent gets a heading of its own in the note, which links to
 the page: a thread as an org list, and other text as a quote.  The
-templates are those of `canvas-browser-org-roam-templates\='.
+templates are those of `canvas-browser-org-roam-templates\\='.
 
 The node is not found by the address of the page, and not named by its
 title.  Many a page has one address and one title for all that it
@@ -6223,7 +6223,7 @@ attachments of the node, as org-attach keeps them, and the note links
 to them where they stood.
 
 A node that holds the thread already is not given it a second time:
-the new messages are merged into it, as `canvas-browser-org-merge\='
+the new messages are merged into it, as `canvas-browser-org-merge\\='
 does."
   (require 'org-roam)
   (require 'org-attach)
@@ -6355,13 +6355,13 @@ Those embark has for any URL come beside them, as for the page.")
 (defvar embark-transformer-alist)
 
 (defun canvas-browser--embark-link (_type candidate)
-  "CANDIDATE, a link as `canvas-browser-links\=' offers it, as a URL for embark.
+  "CANDIDATE, a link as `canvas-browser-links\\=' offers it, as a URL for embark.
 The address is the last word of what is offered."
   (cons 'url (car (last (split-string candidate " " t)))))
 
 (defun canvas-browser--embark-here ()
   "Have embark find its targets in this page buffer with one finder alone.
-That is `canvas-browser-embark-target\='.  The buffer holds one character,
+That is `canvas-browser-embark-target\\='.  The buffer holds one character,
 which shows the picture of the page.  A finder that reads text takes
 that character as its target, and embark shows the picture in its
 prompt when it cycles to it."
@@ -6369,7 +6369,7 @@ prompt when it cycles to it."
 
 (defun canvas-browser--embark-setup ()
   "Tell embark of the targets of a page buffer, also of those open already.
-`s\=' on marked text opens a page buffer that searches for it, and `>\='
+`s\\=' on marked text opens a page buffer that searches for it, and `>\\='
 sends the target to a receiver.  A page has the actions of a URL too."
   (set-keymap-parent canvas-browser-embark-text-map embark-general-map)
   (setf (alist-get 'canvas-browser-text embark-keymap-alist)
@@ -6603,8 +6603,8 @@ called: a page has one for each of its frames.")
 
 (defun canvas-browser--on-call (name function)
   "Have FUNCTION called when the page of this buffer calls window.NAME.
-See `canvas-browser--bindings\=' for how it is called.  The page has the
-name only once `canvas-browser--give-name\=' gave it."
+See `canvas-browser--bindings\\=' for how it is called.  The page has the
+name only once `canvas-browser--give-name\\=' gave it."
   (setf (alist-get name canvas-browser--bindings nil nil #'equal) function)
   (canvas-browser-cdp-listen canvas-browser--session "Runtime.bindingCalled"
                              (canvas-browser--here #'canvas-browser--binding-called)))
@@ -6705,10 +6705,10 @@ each a string that is empty when the page gave none.  `:source' names
 where it comes from, as \"example.org\".  `:origin' is the site, as
 \"https://example.org\", `:url' and `:page-title' are the address and
 the title of the page, and `:buffer' is its page buffer.
-`canvas-browser-notification-open\=' shows the page of a notification,
+`canvas-browser-notification-open\\=' shows the page of a notification,
 and tells the page that the notification was clicked.
 
-A notification that came through `canvas-browser-notification-service\='
+A notification that came through `canvas-browser-notification-service\\='
 has the last four only when a page of its site is open.  Its `:source'
 is the name of the program when no browser showed it.
 
@@ -6716,7 +6716,7 @@ canvas-browser shows nothing itself: what is made of a notification is
 the business of these functions.  As the package comes, one function
 says the notification in the echo area.
 
-Only a site that `canvas-browser-notifications\=' allowed shows
+Only a site that `canvas-browser-notifications\\=' allowed shows
 notifications."
   :type 'hook
   :group 'canvas-browser)
@@ -6726,7 +6726,7 @@ notifications."
 Each is (ORIGIN . ALLOWED).  ORIGIN is the site as a page names it,
 such as \"https://example.org\".  ALLOWED is non-nil for a site that
 may show notifications, and nil for one that may not.
-`canvas-browser-notifications\=' adds the site of a page, and changes
+`canvas-browser-notifications\\=' adds the site of a page, and changes
 its answer."
   :type '(alist :key-type string :value-type boolean)
   :group 'canvas-browser)
@@ -6798,7 +6798,7 @@ its answer."
   "The script that hands the notifications of a page to Emacs.
 Chromium shows a notification in a window of its own, on a display that
 nobody sees.  So on a site that may show notifications, the page gets a
-`Notification\=' that shows nothing and tells Emacs.  A notification that
+`Notification\\=' that shows nothing and tells Emacs.  A notification that
 the page asks its service worker to show is taken the same way.  One
 that a service worker shows on its own, while no page asks, is not: the
 script is in pages only.
@@ -6829,7 +6829,7 @@ one for the scheme."
 
 (defun canvas-browser--notification (said context)
   "The notification that a frame of this page told of in SAID, from CONTEXT.
-It is the plist that `canvas-browser-notification-functions\=' get."
+It is the plist that `canvas-browser-notification-functions\\=' get."
   (list :title (plist-get said :title)
         :body (plist-get said :body)
         :tag (plist-get said :tag)
@@ -6887,7 +6887,7 @@ opened none a moment later, the site is opened in a page buffer."
 
 (defun canvas-browser-notification-open (notification)
   "Show the page of NOTIFICATION, and say that the notification was clicked.
-NOTIFICATION is what `canvas-browser-notification-functions\=' got.  A
+NOTIFICATION is what `canvas-browser-notification-functions\\=' got.  A
 site acts on the click as it likes: a mail site opens the mail."
   (if (plist-get notification :service-id)
       (canvas-browser--click-on-bus notification)
@@ -6930,7 +6930,7 @@ for it."
 
 (defun canvas-browser-notifications ()
   "Say whether the site of this page may show notifications.
-The answer is kept in `canvas-browser-notification-sites\=' for the
+The answer is kept in `canvas-browser-notification-sites\\=' for the
 sessions to come.  Run the command again to change it.
 
 Chromium asks this in its own window when a page wants to show
@@ -6958,7 +6958,7 @@ answer that does not come until this command gives one."
 (defun canvas-browser-toggle-notifications ()
   "Let the site of this page show notifications, or stop it.
 The menu of the page says which of the two holds.  This is the answer
-that `canvas-browser-notifications\=' asks for, given without a question."
+that `canvas-browser-notifications\\=' asks for, given without a question."
   (interactive nil canvas-browser-mode)
   (let ((origin (canvas-browser--this-site)))
     (canvas-browser--decide-notifications
@@ -6966,7 +6966,7 @@ that `canvas-browser-notifications\=' asks for, given without a question."
 
 (defun canvas-browser--watch-notifications ()
   "Take the notifications of the pages of this buffer.
-See `canvas-browser--notify-script\='.  Chromium is told of the sites
+See `canvas-browser--notify-script\\='.  Chromium is told of the sites
 that are kept, so that a page of one finds its answer there."
   (pcase-dolist (`(,origin . ,allowed) canvas-browser-notification-sites)
     (canvas-browser--set-notification-permission origin allowed))
@@ -6983,7 +6983,7 @@ site does so for mail that it is told of by web push.  Chromium hands
 those to the notification service of the desktop, over D-Bus.  With
 this non-nil, and when no other program is that service, canvas-browser
 is it, and the notifications go to
-`canvas-browser-notification-functions\='.
+`canvas-browser-notification-functions\\='.
 
 Emacs is then the service for every program of the session, not for
 chromium alone.  A desktop with a notification service of its own keeps
@@ -7093,7 +7093,7 @@ one is closed."
 
 (defun canvas-browser--serve-notifications ()
   "Be the notification service of the session, when asked for and free.
-See `canvas-browser-notification-service\='."
+See `canvas-browser-notification-service\\='."
   (when (and canvas-browser-notification-service
              (not canvas-browser--dbus-served)
              (canvas-browser--dbus-free-p))

@@ -97,7 +97,7 @@ sent from a page that gave no address."
 
 (defun canvas-browser--org-entry ()
   "The item of an org list whose head line point is on, as a plist.
-:key is what `canvas-browser--head-key\=' makes of the head, :edited
+:key is what `canvas-browser--head-key\\=' makes of the head, :edited
 says whether the item is a new version, :depth how far in it stands,
 :start where it starts, :text its own text, :text-end where its own
 text ends, and :end where the items under it end."

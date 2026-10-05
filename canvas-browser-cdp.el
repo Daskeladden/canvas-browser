@@ -249,7 +249,7 @@ error rather than with no."
 
 (defcustom canvas-browser-headless nil
   "Whether chromium runs without a window of its own.
-A headless chromium says so in its user agent, keeps `navigator.webdriver\='
+A headless chromium says so in its user agent, keeps `navigator.webdriver\\='
 true and has no WebGL at all, and a site behind a bot check reads all
 three: it then asks the reader to pick out traffic lights rather than to
 tick a box.  A chromium with a window reads as the browser it is.  Set
@@ -261,13 +261,13 @@ this when there is no X server to give it one."
   "The X display chromium draws its window on.
 A display of its own is where a window nobody looks at belongs.  The page
 is read through the screencast, so nothing of it travels to your own
-display, which matters when that display is forwarded over ssh.  `Xvfb\='
+display, which matters when that display is forwarded over ssh.  `Xvfb\\='
 is started on this one when nothing listens there yet."
   :type 'string
   :group 'canvas-browser)
 
 (defconst canvas-browser-cdp--screen "2560x1440x24"
-  "The screen `Xvfb\=' is given, wide enough for any window of a page.")
+  "The screen `Xvfb\\=' is given, wide enough for any window of a page.")
 
 (defconst canvas-browser-cdp--window-size "1920,1200"
   "The window chromium opens, which the page layout then overrides.")
@@ -284,7 +284,7 @@ is left off."
   (file-exists-p (canvas-browser-cdp--display-socket display)))
 
 (defun canvas-browser-cdp--wait-for-display ()
-  "Wait until `canvas-browser-display\=' answers, or signal an error."
+  "Wait until `canvas-browser-display\\=' answers, or signal an error."
   (let ((deadline (+ (float-time) canvas-browser-cdp-timeout)))
     (while (and (not (canvas-browser-cdp--display-live-p canvas-browser-display))
                 (< (float-time) deadline))
@@ -294,7 +294,7 @@ is left off."
              canvas-browser-display canvas-browser-cdp-timeout))))
 
 (defun canvas-browser-cdp--ensure-display ()
-  "Have an X server on `canvas-browser-display\=', starting `Xvfb\=' if need be.
+  "Have an X server on `canvas-browser-display\\=', starting `Xvfb\\=' if need be.
 The display listens on its socket alone, never on the network."
   (unless (canvas-browser-cdp--display-live-p canvas-browser-display)
     (unless (executable-find "Xvfb")

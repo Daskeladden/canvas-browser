@@ -50,22 +50,22 @@
   "The translators of pages, each (REGEXP . FUNCTION).
 A page whose address matches REGEXP is sent as the text that FUNCTION
 makes of it, and not as the text the page shows.  FUNCTION is called
-with the HTML of what is sent, parsed as `libxml-parse-html-region\='
+with the HTML of what is sent, parsed as `libxml-parse-html-region\\='
 gives it.  It returns the text, a thread as Lisp data, as
-`canvas-browser-thread-translator\=' makes one, or nil when it finds
+`canvas-browser-thread-translator\\=' makes one, or nil when it finds
 nothing to translate there.  The first entry that matches is the one
-that counts.  Add one with `canvas-browser-add-translator\='."
+that counts.  Add one with `canvas-browser-add-translator\\='."
   :type '(alist :key-type regexp :value-type function)
   :group 'canvas-browser)
 
 (defun canvas-browser-add-translator (regexp function)
   "Translate the pages whose address matches REGEXP with FUNCTION.
 A translator that REGEXP has already is replaced, so a snippet can be
-evaluated again after a change.  See `canvas-browser-translators\='."
+evaluated again after a change.  See `canvas-browser-translators\\='."
   (setf (alist-get regexp canvas-browser-translators nil nil #'equal) function))
 
 (defun canvas-browser-translator-for (url)
-  "The entry of `canvas-browser-translators\=' for URL, or nil."
+  "The entry of `canvas-browser-translators\\=' for URL, or nil."
   (cl-find-if (lambda (entry) (string-match-p (car entry) url))
               canvas-browser-translators))
 
@@ -98,9 +98,9 @@ A picture for the look alone, with an empty description or the role
 presentation, stands for nothing.  An emoji stands as itself, a
 description or a label in brackets, and a picture with neither as
 [image].  The brackets carry the address of the picture as the text
-property `canvas-browser-picture\=', so that a receiver can fetch it.
+property `canvas-browser-picture\\=', so that a receiver can fetch it.
 
-Each of them has the text property `canvas-browser-for-picture\=': the
+Each of them has the text property `canvas-browser-for-picture\\=': the
 page shows a picture there and no text, so who looks for the text in
 the page must leave it out."
   (let ((alt (dom-attr node 'alt))
@@ -116,7 +116,7 @@ the page must leave it out."
 
 (defun canvas-browser-text-pictures (text)
   "The pictures in TEXT, each (START END ADDRESS), in their order.
-They are the brackets that `canvas-browser-dom-text\=' put for a
+They are the brackets that `canvas-browser-dom-text\\=' put for a
 picture, with its address."
   (let ((start 0) (pictures nil))
     (while (setq start (text-property-not-all start (length text)
@@ -174,7 +174,7 @@ and none at the start of a line."
       t)))
 
 (defun canvas-browser--join-pieces (pieces)
-  "PIECES of `canvas-browser--dom-pieces\=' as one text."
+  "PIECES of `canvas-browser--dom-pieces\\=' as one text."
   (with-temp-buffer
     (let ((break nil))
       (dolist (piece pieces)
@@ -316,7 +316,7 @@ that a page marks as an item: the items inside it take its place."
           (t (canvas-browser--items-inside node items skip)))))
 
 (defun canvas-browser--items-inside (node items skip)
-  "The items inside NODE; see `canvas-browser--thread-items\='."
+  "The items inside NODE; see `canvas-browser--thread-items\\='."
   (mapcan (lambda (child) (canvas-browser--thread-items child items skip))
           (dom-children node)))
 
@@ -328,7 +328,7 @@ or \(ATTRIBUTE VALUE) for an element whose ATTRIBUTE is VALUE.  The
 others say where the item keeps its title, its author, its time, its
 text and its own address, and each may be left out.  Each is a way to
 read a part of the item,
-as `canvas-browser--access\=' takes it: (attr NAME), (inside ATTRIBUTE
+as `canvas-browser--access\\=' takes it: (attr NAME), (inside ATTRIBUTE
 VALUE), (tag NAME), or a function of the element.
 
 The translator gives the thread as Lisp data: see the top of this part
@@ -434,7 +434,7 @@ far in the items of THREAD stand, 0 when nil."
 ;;;; Translating
 
 (defun canvas-browser--parse-html (html)
-  "HTML as `libxml-parse-html-region\=' reads it."
+  "HTML as `libxml-parse-html-region\\=' reads it."
   (with-temp-buffer
     (insert html)
     (libxml-parse-html-region (point-min) (point-max))))
