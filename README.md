@@ -552,6 +552,7 @@ The wheel is a gesture of canvas-keys.
 So it reaches the page also while a minor mode such as `pixel-scroll-precision-mode` binds the wheel.
 One notch moves the page by `canvas-keys-wheel-step` pixels.
 The page keeps the buttons: canvas-keys binds no drag here, and the middle click yanks while you type.
+A click, a drag and the middle click go to the page under the pointer, and they select its window.
 
 A page is often more than one thing that scrolls: a list beside the text,
 a pane of its own. `S` labels every such part with the letters of the
