@@ -19,7 +19,11 @@ UNDO    = -L $(ELPACA)/undo-tree -L $(ELPACA)/queue
 SUITES  = tests/canvas-browser-cdp-tests.el tests/canvas-browser-translate-tests.el \
           tests/canvas-browser-merge-tests.el tests/canvas-browser-tests.el
 
-.PHONY: test live clean
+# The directories of the Lisp with whole paths, for a check that runs elsewhere.
+GUI_LOAD = $(foreach d,. $(DIAGRAM) $(KEYS),-L $(abspath $(d))) \
+           -L $(ELPACA)/websocket -L $(ELPACA)/transient -L $(ELPACA)/cond-let
+
+.PHONY: test live gui clean
 
 test:
 	ERT_MATCH='$(MATCH)' $(EMACS) -Q --batch --eval "(setq load-prefer-newer t)" $(LOAD) \
@@ -30,6 +34,16 @@ test:
 live:
 	$(EMACS) -Q --batch --eval "(setq load-prefer-newer t)" $(LOAD) -l tests/canvas-browser-live-tests.el \
 	  --eval '(ert-run-tests-batch-and-exit)'
+
+# Real turns of the wheel on a page buffer, beside a link and over one,
+# on a virtual display.  No chromium runs: the check notes what a
+# gesture sends to the page.  It is not part of test.
+# -noreset: an X server starts anew when its last client leaves, and
+# Emacs opens the display more than once as it starts.  Without it the
+# server now and then refuses the Emacs of this check.
+gui:
+	EMACS='$(EMACS)' GUI_LOAD='$(GUI_LOAD)' \
+	  xvfb-run -a -s "-screen 0 1400x900x24 -noreset" tests/gui/run.sh
 
 clean:
 	rm -f *.elc tests/*.elc

@@ -1,1 +1,6 @@
 *.elc
+
+# What a run of the real-frame check leaves behind
+tests/gui/ready
+tests/gui/done
+tests/gui/result
