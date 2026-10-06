@@ -1435,12 +1435,32 @@ The key is `y\\=', which copies the address of a link after `f\\=' as well.
   (kill-new canvas-browser--url)
   (message "canvas-browser: copied %s" canvas-browser--url))
 
-(defun canvas-browser--wheel (x y delta)
-  "Turn the wheel DELTA pixels at the page pixel X Y, down for a positive one.
-Chromium sends the turn to whatever lies under that pixel, so a part of
-the page that scrolls on its own scrolls when the pointer is over it."
+(defun canvas-browser--wheel (x y delta-x delta-y)
+  "Turn the wheel at the page pixel X Y: DELTA-Y pixels, down for a positive
+one, and DELTA-X pixels, to the right for a positive one.  Chromium sends
+the turn to whatever lies under that pixel, so a part of the page that
+scrolls on its own scrolls when the pointer is over it."
   (canvas-browser--tell "Input.dispatchMouseEvent"
-                        (list :type "mouseWheel" :x x :y y :deltaX 0 :deltaY delta)))
+                        (list :type "mouseWheel" :x x :y y :deltaX delta-x :deltaY delta-y)))
+
+(defun canvas-browser--count-gesture ()
+  "Count a gesture of canvas-keys as a command on this page.
+The hook that does so before each command runs in the buffer of the
+selected window.  A gesture acts on the page under the pointer, whose
+window need not be the selected one, and that page would then go on
+drawing into the parts that moved before the gesture."
+  (unless (eq (current-buffer) (window-buffer (selected-window)))
+    (canvas-browser--forget-live)))
+
+(defun canvas-browser--wheel-by (dx dy x y)
+  "Turn the wheel over the page pixel X Y, so that what lies there moves
+DX pixels to the right and DY pixels down.  It is this buffer's
+`canvas-keys-wheel-function\\=': the wheel goes to the page as a wheel, and
+the page moves the other way than what it shows."
+  (unless (and (numberp dx) (numberp dy) (numberp x) (numberp y))
+    (error "canvas-browser: a turn of the wheel needs four numbers, not %S" (list dx dy x y)))
+  (canvas-browser--count-gesture)
+  (canvas-browser--wheel x y (- dx) (- dy)))
 
 (defun canvas-browser--scroll (mode value expression)
   "Scroll the picked part of the page, or all of it.
@@ -1493,21 +1513,6 @@ at all."
   "Scroll the page one line back."
   (interactive)
   (canvas-browser--scroll-by (- canvas-browser-line-height)))
-
-(defun canvas-browser-wheel (event)
-  "Scroll where EVENT, a turn of the wheel over the canvas, points.
-The turn goes to the page at that very pixel, so the part under the
-pointer scrolls, as it does in a window of chromium\\='s own.  Emacs reports
-a fast turn as a double or a triple event, and each one scrolls a line."
-  (interactive "e")
-  (let ((turn (event-basic-type event)))
-    (cl-assert (memq turn '(wheel-up wheel-down)) nil
-               "canvas-browser: %S is not a turn of the wheel" turn)
-    (let ((at (posn-object-x-y (event-start event))))
-      (canvas-browser--wheel (car at) (cdr at)
-                             (if (eq turn 'wheel-up)
-                                 (- canvas-browser-line-height)
-                               canvas-browser-line-height)))))
 
 (defconst canvas-browser--takes-typing-js
   "const takesTyping = e => !!e && (e.isContentEditable || e.tagName === 'TEXTAREA' ||
@@ -4324,7 +4329,8 @@ and so does the key of `consult-line-multi\\='."
 ;;;; The zoom and the picture
 
 (defcustom canvas-browser-zoom-step 1.2
-  "How much one zoom key changes the scale of the page."
+  "How much one zoom key, or one notch of the wheel with control, changes
+the scale of the page."
   :type 'number
   :group 'canvas-browser)
 
@@ -4359,6 +4365,17 @@ It is this buffer's `canvas-keys-zoom-function\\='."
           ('fit (user-error "canvas-browser: a page has nothing whole to fit"))
           (other (error "canvas-browser: %S is no zoom" other))))
   (canvas-browser--apply-zoom))
+
+(defun canvas-browser--zoom-at (factor _x _y)
+  "Zoom the page one step: in for a FACTOR above 1, out for one below.
+It is this buffer's `canvas-keys-zoom-at-function\\='.  A page zooms by its
+own step, as the keys do.  A zoom lays the page out again, so the pixel
+under the pointer does not stay where it is, as in any browser."
+  (unless (and (numberp factor) (> factor 0))
+    (error "canvas-browser: a zoom needs a factor above 0, not %S" factor))
+  (unless (= factor 1)
+    (canvas-browser--count-gesture)
+    (canvas-browser--zoom-by-key (if (> factor 1) 'in 'out))))
 
 (defun canvas-browser-write-picture (file)
   "Write the last frame of this page to FILE."
@@ -5230,32 +5247,33 @@ meow's keypad rather than the menu of the page."
   (canvas-browser--keep-modal-state)
   (message "canvas-browser: the keys are Emacs's again"))
 
-(defun canvas-browser--bind-clicks (map click)
+(defun canvas-browser--bind-clicks (map click &optional gestures)
   "Bind the clicks of the mouse in MAP to CLICK, a command.
 An area of the image map puts `canvas-browser-link\\=' before the event,
 so that id takes a map of its own, whose parent is MAP: a click over a
 link runs the same command, and an event that nothing binds is ignored,
-rather than telling the reader that it is undefined."
+rather than telling the reader that it is undefined.  The map of the id
+looks in GESTURES first, a keymap, when one is given."
   (define-key map [down-mouse-1] #'ignore)
   (dolist (event '([mouse-1] [double-mouse-1] [triple-mouse-1]
                    [double-down-mouse-1] [triple-down-mouse-1]))
     (define-key map event click))
   (let ((link (make-sparse-keymap)))
-    (set-keymap-parent link map)
+    (set-keymap-parent link (if gestures (make-composed-keymap gestures map) map))
     (define-key link [t] #'ignore)
     (define-key map [canvas-browser-link] link))
   map)
 
 (defun canvas-browser--bind-mouse (map)
   "Bind the mouse in MAP.
-A click reaches the page, a drag marks in it, and the wheel scrolls it.
-Emacs reports a fast wheel turn as a double or triple event."
-  (dolist (turn '("" "double-" "triple-"))
-    (dolist (direction '("down" "up"))
-      (define-key map (vector (intern (format "%swheel-%s" turn direction)))
-                  #'canvas-browser-wheel)))
+A click reaches the page, and a drag marks in it.  The wheel is a
+gesture of canvas-keys, which binds it beside a link.  Over a link the
+keys of canvas-keys do not reach, so the map of the link holds the two
+gestures that a page answers: the wheel, and the wheel with control."
   (define-key map [drag-mouse-1] #'canvas-browser-drag)
-  (canvas-browser--bind-clicks map #'canvas-browser-click))
+  (canvas-browser--bind-clicks map #'canvas-browser-click
+                               (canvas-keys-gesture-map 'canvas-keys-wheel-function
+                                                        'canvas-keys-zoom-at-function)))
 
 (canvas-browser--bind-mouse canvas-browser-mode-map)
 ;; The mouse works while you type in the page as well: the state is about
@@ -5291,6 +5309,10 @@ nothing the window does not.  Take the mode out of
         canvas-keys-copy-function #'canvas-browser-copy-block
         canvas-keys-group 'canvas-browser
         canvas-keys-zoom-function #'canvas-browser--zoom-by-key
+        ;; The page keeps the buttons, so it takes the wheel alone, and
+        ;; neither a pan nor a region of canvas-keys.
+        canvas-keys-wheel-function #'canvas-browser--wheel-by
+        canvas-keys-zoom-at-function #'canvas-browser--zoom-at
         canvas-keys-redraw-function #'canvas-browser-refresh)
   (add-hook 'kill-buffer-hook #'canvas-browser--release nil t)
   ;; Any command may change the page anywhere, so what was moving before

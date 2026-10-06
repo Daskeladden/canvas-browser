@@ -1957,47 +1957,180 @@ of their texts are killed afterwards."
                            "a picture")))
         (delete-file file)))))
 
-;;;; The mouse over a link area
+;;;; The wheel, and the mouse over a link area
 
 (defun canvas-browser-test--wheel-event (kind x y)
-  "A mouse event of KIND over the canvas, at the page pixel X Y."
-  (list kind (list (selected-window) 'text (cons x y) 0 nil nil nil nil (cons x y) nil)))
+  "A mouse event of KIND over the picture of the page in the selected
+window, at the page pixel X Y."
+  (list kind (list (selected-window) 1 (cons x y) 0 nil 1 '(0 . 0)
+                   '(image :type canvas) (cons x y) '(800 . 600))))
 
-(ert-deftest canvas-browser-the-wheel-scrolls-the-page ()
-  ;; GIVEN a page buffer
-  ;; WHEN the wheel turns down, and fast enough for a double turn
-  ;; THEN each turn scrolls where the pointer is
+(defmacro canvas-browser-test--in-shown-page (&rest body)
+  "Run BODY in a page buffer whose chromium is stubbed, and which the
+selected window shows: a gesture acts on the buffer under the pointer."
+  (declare (indent 0))
+  `(canvas-browser-test--in-page
+     (save-window-excursion
+       (set-window-buffer (selected-window) (current-buffer))
+       ,@body)))
+
+(defconst canvas-browser-test--states
+  '(canvas-browser-mode-map canvas-browser-insert-map canvas-browser-caret-map)
+  "The maps of the three states of the keys of a page buffer: the keys of
+Emacs, the keys while the reader types in the page, and the keys of the caret.")
+
+(ert-deftest canvas-browser-the-wheel-is-a-gesture-of-canvas-keys ()
+  ;; GIVEN a page buffer, in each of the three states of its keys
   (canvas-browser-test--in-page
-    (should (eq (key-binding [wheel-down]) #'canvas-browser-wheel))
-    (should (eq (key-binding [double-wheel-down]) #'canvas-browser-wheel))
-    (should (eq (key-binding [triple-wheel-up]) #'canvas-browser-wheel))))
+    (dolist (state canvas-browser-test--states)
+      (ert-info ((symbol-name state) :prefix "State: ")
+        (use-local-map (symbol-value state))
+        ;; THEN the wheel scrolls through canvas-keys, plain, as a fast
+        ;;      turn, with shift and to a side, AND with control it zooms
+        (dolist (key '("<wheel-down>" "<double-wheel-down>" "<triple-wheel-up>"
+                       "S-<wheel-down>" "<wheel-left>"))
+          (should (eq (key-binding (kbd key)) #'canvas-keys-wheel-scroll)))
+        (should (eq (key-binding (kbd "C-<wheel-up>")) #'canvas-keys-wheel-zoom))
+        (should (eq (key-binding (kbd "C-<double-wheel-down>")) #'canvas-keys-wheel-zoom))
+        ;; THEN the page keeps the buttons: no drag and no fit of
+        ;;      canvas-keys is bound, AND the left button clicks
+        (dolist (key '("<down-mouse-2>" "M-<down-mouse-1>" "C-<down-mouse-1>" "<double-down-mouse-2>"))
+          (should-not (memq (key-binding (kbd key))
+                            '(canvas-keys-drag-pan canvas-keys-drag-region canvas-keys-mouse-fit))))
+        (should (eq (key-binding (kbd "<mouse-1>")) #'canvas-browser-click))
+        ;; THEN the map of the state binds no gesture that a page
+        ;;      takes to another command
+        (should-not (canvas-keys-mouse-violations (symbol-value state)
+                                                  'canvas-keys-wheel-function
+                                                  'canvas-keys-zoom-at-function))))
+    ;; THEN the middle click yanks into a field while the reader types
+    (use-local-map canvas-browser-insert-map)
+    (should (eq (key-binding (kbd "<mouse-2>")) #'canvas-browser-yank))))
 
 (ert-deftest canvas-browser-the-wheel-scrolls-what-is-under-the-pointer ()
   ;; GIVEN a page buffer, and the pointer over the pixel 120 by 340
-  ;; WHEN the wheel turns down there, and then up somewhere else
-  ;; THEN a wheel event goes to the page at that very pixel, further down
-  ;;      and then back, so that chromium scrolls whatever lies under it,
-  ;;      as it does in a window of its own
   (canvas-browser-test--in-page
-    (canvas-browser-wheel (canvas-browser-test--wheel-event 'wheel-down 120 340))
+    ;; WHEN canvas-keys tells of a turn that moves the content 48 pixels up
+    (funcall canvas-keys-wheel-function 0 -48 120 340)
+    ;; THEN a wheel event goes to the page at that very pixel, 48 pixels
+    ;;      further down, so that chromium scrolls whatever lies under
+    ;;      it, as it does in a window of its own
     (let ((event (canvas-browser-test--params "Input.dispatchMouseEvent")))
       (should (equal (plist-get event :type) "mouseWheel"))
       (should (equal (plist-get event :x) 120))
       (should (equal (plist-get event :y) 340))
-      (should (> (plist-get event :deltaY) 0)))
-    (canvas-browser-wheel (canvas-browser-test--wheel-event 'double-wheel-up 10 20))
+      (should (equal (plist-get event :deltaX) 0))
+      (should (equal (plist-get event :deltaY) 48)))
+    ;; WHEN it tells of a turn the other way, of another size, somewhere else
+    (funcall canvas-keys-wheel-function 0 30 10 20)
+    ;; THEN the page goes back there, by that size
     (let ((event (canvas-browser-test--params "Input.dispatchMouseEvent")))
       (should (equal (plist-get event :x) 10))
-      (should (< (plist-get event :deltaY) 0)))))
+      (should (equal (plist-get event :y) 20))
+      (should (equal (plist-get event :deltaY) -30)))
+    ;; WHEN it tells of a turn that moves the content 48 pixels to the left
+    (funcall canvas-keys-wheel-function -48 0 10 20)
+    ;; THEN the page scrolls sideways, to what lies further right
+    (let ((event (canvas-browser-test--params "Input.dispatchMouseEvent")))
+      (should (equal (plist-get event :deltaX) 48))
+      (should (equal (plist-get event :deltaY) 0)))))
 
-(ert-deftest canvas-browser-the-wheel-command-takes-only-a-turn-of-the-wheel ()
-  ;; GIVEN a page buffer
-  ;; WHEN the wheel command is handed a click instead of a turn
-  ;; THEN it says so at once, rather than scrolling by a guess
+(ert-deftest canvas-browser-a-real-turn-of-the-wheel-reaches-the-page ()
+  ;; GIVEN a page buffer in a window, AND the step of the wheel
+  (canvas-browser-test--in-shown-page
+    (let ((canvas-keys-wheel-step 48))
+      ;; WHEN the command that canvas-keys binds to the wheel runs for a
+      ;;      turn toward the reader, a fast one, over the pixel 120 by 340
+      (canvas-keys-wheel-scroll (canvas-browser-test--wheel-event 'double-wheel-down 120 340))
+      ;; THEN the page hears a wheel event there, one step further down
+      (let ((event (canvas-browser-test--params "Input.dispatchMouseEvent")))
+        (should (equal (plist-get event :type) "mouseWheel"))
+        (should (equal (list (plist-get event :x) (plist-get event :y)) '(120 340)))
+        (should (equal (plist-get event :deltaY) 48)))
+      ;; WHEN the wheel turns with shift, away from the reader
+      (canvas-keys-wheel-scroll (canvas-browser-test--wheel-event 'S-wheel-up 120 340))
+      ;; THEN the page scrolls sideways, back to the left
+      (let ((event (canvas-browser-test--params "Input.dispatchMouseEvent")))
+        (should (equal (plist-get event :deltaX) -48))
+        (should (equal (plist-get event :deltaY) 0))))))
+
+(defconst canvas-browser-test--gestures
+  (list (lambda () (funcall canvas-keys-wheel-function 0 -48 120 340))
+        (lambda () (funcall canvas-keys-zoom-at-function 1.25 120 340)))
+  "The two gestures of canvas-keys that a page answers, each as a function
+that makes the gesture in the page buffer at hand.")
+
+(ert-deftest canvas-browser-a-gesture-over-a-page-that-is-not-selected-is-a-command-on-it ()
+  ;; GIVEN a page buffer that no window shows, so that the hook of the
+  ;;       page that counts each command did not run for a gesture over
+  ;;       it, AND a part of the page that the buffer knows as moving
   (canvas-browser-test--in-page
-    (let ((raised (should-error
-                   (canvas-browser-wheel (canvas-browser-test--wheel-event 'mouse-1 5 5)))))
-      (should (string-search "not a turn of the wheel" (cadr raised))))))
+    (dolist (gesture canvas-browser-test--gestures)
+      (setq canvas-browser--live-boxes (list '(:x 1 :y 2 :w 3 :h 4))
+            canvas-browser--commanded nil)
+      (let ((commands canvas-browser--commands))
+        ;; WHEN a gesture of canvas-keys acts on the page
+        (funcall gesture)
+        ;; THEN the page counts one command, with its time, AND forgets
+        ;;      the moving part, so that the next frame draws the whole
+        ;;      window and no still picture from before is painted
+        (should (= canvas-browser--commands (1+ commands)))
+        (should canvas-browser--commanded)
+        (should-not canvas-browser--live-boxes))))
+
+  ;; GIVEN a page buffer in the selected window, where the hook of the
+  ;;       page counts each command itself
+  (canvas-browser-test--in-shown-page
+    (dolist (gesture canvas-browser-test--gestures)
+      (let ((commands canvas-browser--commands))
+        ;; WHEN a gesture acts on the page
+        (funcall gesture)
+        ;; THEN the gesture does not count the command a second time
+        (should (= canvas-browser--commands commands))))))
+
+(ert-deftest canvas-browser-a-turn-of-the-wheel-needs-numbers ()
+  ;; GIVEN a page buffer that sent nothing to the page yet
+  (canvas-browser-test--in-page
+    (setq canvas-browser-test--commands nil)
+    ;; WHEN the wheel function hears a move, or a place, that is no number
+    ;; THEN it says so, AND nothing goes to the page
+    (dolist (turn '((nil -48 120 340) (0 "48" 120 340) (0 -48 nil 340) (0 -48 120 nil)))
+      (should (string-search "a turn of the wheel needs four numbers"
+                             (error-message-string
+                              (should-error (apply canvas-keys-wheel-function turn))))))
+    (should-not (canvas-browser-test--params "Input.dispatchMouseEvent"))))
+
+(ert-deftest canvas-browser-the-wheel-with-control-zooms-the-page-a-step ()
+  ;; GIVEN a page buffer of 800 by 600 at its natural size
+  (canvas-browser-test--in-page
+    ;; WHEN canvas-keys asks for a zoom in at a pixel
+    (funcall canvas-keys-zoom-at-function 1.25 120 340)
+    ;; THEN the page is one step of its own larger, as after the key +
+    (should (= canvas-browser--zoom canvas-browser-zoom-step))
+    (let ((metrics (canvas-browser-test--params "Emulation.setDeviceMetricsOverride")))
+      (should (= (plist-get metrics :deviceScaleFactor) canvas-browser-zoom-step))
+      (should (< (plist-get metrics :width) 800)))
+    ;; WHEN it asks for a zoom out, by another factor
+    (funcall canvas-keys-zoom-at-function 0.5 120 340)
+    ;; THEN the page is at its natural size again: a page zooms by its
+    ;;      own step, whatever the factor
+    (should (= canvas-browser--zoom 1.0))
+    ;; WHEN it asks for a zoom by a factor of 1
+    (setq canvas-browser-test--commands nil)
+    (funcall canvas-keys-zoom-at-function 1.0 120 340)
+    ;; THEN the page stays, AND nothing goes to chromium
+    (should (= canvas-browser--zoom 1.0))
+    (should-not canvas-browser-test--commands)
+    ;; WHEN it asks for a zoom by nothing, by less than nothing, or by
+    ;;      what is no number
+    ;; THEN that is an error that says so, AND the page stays
+    ;;      AND nothing goes to chromium
+    (dolist (factor '(0 -2.0 nil "2"))
+      (should (string-search "a zoom needs a factor above 0"
+                             (error-message-string
+                              (should-error (funcall canvas-keys-zoom-at-function factor 120 340)))))
+      (should (= canvas-browser--zoom 1.0)))
+    (should-not canvas-browser-test--commands)))
 
 (ert-deftest canvas-browser-the-mouse-over-a-link-area-reaches-the-page ()
   ;; GIVEN a page buffer, where the areas of the image map carry the id
@@ -2008,13 +2141,51 @@ of their texts are killed afterwards."
   (canvas-browser-test--in-page
     (should (eq (key-binding [canvas-browser-link mouse-1]) #'canvas-browser-click))
     (should (eq (key-binding [canvas-browser-link down-mouse-1]) #'ignore))
-    (should (eq (key-binding [canvas-browser-link wheel-down]) #'canvas-browser-wheel))
-    (should (eq (key-binding [canvas-browser-link triple-wheel-up]) #'canvas-browser-wheel))
+    (should (eq (key-binding [canvas-browser-link wheel-down]) #'canvas-keys-wheel-scroll))
+    (should (eq (key-binding [canvas-browser-link triple-wheel-up]) #'canvas-keys-wheel-scroll))
+    (should (eq (key-binding [canvas-browser-link S-wheel-down]) #'canvas-keys-wheel-scroll))
+    (should (eq (key-binding [canvas-browser-link C-wheel-up]) #'canvas-keys-wheel-zoom))
     ;; A right click keeps the canvas menu, as everywhere else in a canvas
     ;; buffer, and an event that nothing binds is ignored.
     (should (eq (key-binding [canvas-browser-link mouse-3]) #'canvas-keys-menu))
     ;; `key-binding' gives the default binding only when it is asked to.
-    (should (eq (key-binding [canvas-browser-link mouse-2] t) #'ignore))))
+    (should (eq (key-binding [canvas-browser-link mouse-2] t) #'ignore))
+    ;; THEN no drag and no fit of canvas-keys is bound over a link: the
+    ;;      page keeps the buttons there too
+    (dolist (press '(down-mouse-2 M-down-mouse-1 C-down-mouse-1 double-down-mouse-2))
+      (should (eq (key-binding (vector 'canvas-browser-link press) t) #'ignore)))
+    ;; WHEN the reader types in the page
+    (use-local-map canvas-browser-insert-map)
+    ;; THEN the wheel is the same gesture over a link, AND the middle
+    ;;      click yanks there too
+    (should (eq (key-binding [canvas-browser-link wheel-down]) #'canvas-keys-wheel-scroll))
+    (should (eq (key-binding [canvas-browser-link C-wheel-down]) #'canvas-keys-wheel-zoom))
+    (should (eq (key-binding [canvas-browser-link mouse-2]) #'canvas-browser-yank))
+    ;; WHEN the caret of the page has the keys
+    (use-local-map canvas-browser-caret-map)
+    ;; THEN the wheel is the same gesture over a link, AND a click there
+    ;;      reaches the page
+    (should (eq (key-binding [canvas-browser-link wheel-down]) #'canvas-keys-wheel-scroll))
+    (should (eq (key-binding [canvas-browser-link C-wheel-up]) #'canvas-keys-wheel-zoom))
+    (should (eq (key-binding [canvas-browser-link mouse-1]) #'canvas-browser-click))))
+
+(ert-deftest canvas-browser-an-embedded-page-leaves-the-wheel-to-its-buffer ()
+  ;; GIVEN the keys of the picture of an embedded page, which lies in a
+  ;;       buffer of another mode
+  ;; THEN a click reaches the page, over a link too
+  (should (eq (lookup-key canvas-browser-embed-map [mouse-1]) #'canvas-browser-embed-click))
+  (should (eq (lookup-key canvas-browser-embed-map [canvas-browser-link mouse-1])
+              #'canvas-browser-embed-click))
+  ;; THEN beside a link no key of the wheel is bound, also not by a
+  ;;      binding for every other key: the buffer scrolls
+  (dolist (key '([wheel-down] [C-wheel-up] [S-wheel-down]))
+    (should-not (lookup-key canvas-browser-embed-map key t)))
+  ;; THEN over a link no gesture of canvas-keys is bound: the buffer of
+  ;;      an embedded page fills in no function for one, so a gesture
+  ;;      there would be a user error.  The turn is swallowed there, as
+  ;;      it was before the page took the gestures.
+  (dolist (key '([canvas-browser-link wheel-down] [canvas-browser-link C-wheel-up]))
+    (should (eq (lookup-key canvas-browser-embed-map key t) #'ignore))))
 
 (ert-deftest canvas-browser-a-second-screencast-stops-the-first ()
   ;; GIVEN a page buffer whose screencast runs
