@@ -538,6 +538,8 @@ Normal state keeps the keys of Emacs:
 | a click | clicks the page at that pixel, and types there if it is a field |
 | a drag | marks what lies between its two ends, once the button is let go |
 | the wheel | scrolls what lies under the pointer, over a link as well |
+| the wheel with shift | scrolls it sideways |
+| the wheel with control | zooms the page a step, as `+` and `-` do |
 
 With smear-cursor on, you see where a search lands: the first hit is
 flashed, and the cursor of smear-cursor flies from one hit to the next.
@@ -545,6 +547,11 @@ flashed, and the cursor of smear-cursor flies from one hit to the next.
 The scroll keys move the page itself, which happens at once. The wheel
 goes to the page as a wheel, at the pixel the pointer is over, so that it
 scrolls the part of the page that lies there, as it does in any browser.
+
+The wheel is a gesture of canvas-keys.
+So it reaches the page also while a minor mode such as `pixel-scroll-precision-mode` binds the wheel.
+One notch moves the page by `canvas-keys-wheel-step` pixels.
+The page keeps the buttons: canvas-keys binds no drag here, and the middle click yanks while you type.
 
 A page is often more than one thing that scrolls: a list beside the text,
 a pane of its own. `S` labels every such part with the letters of the
@@ -883,7 +890,7 @@ chromium a window on.
 | `canvas-browser-second-try` | 0.5 | seconds before a window still empty is asked again |
 | `canvas-browser-hint-keys` | asdfghjkl | the letters a hint is made of |
 | `canvas-browser-hint-font` | Sans Bold 11 | the font a hint is written in |
-| `canvas-browser-zoom-step` | 1.2 | what one zoom key changes |
+| `canvas-browser-zoom-step` | 1.2 | what one zoom key, or one notch of the wheel with control, changes |
 | `canvas-browser-line-height` | 40 | pixels that `n` and `p` scroll |
 | `canvas-browser-search-url` | DuckDuckGo | where words are searched for |
 | `canvas-browser-spots-delay` | 0.3 | seconds of quiet before the pointer areas are read |
@@ -914,5 +921,7 @@ machine.
 ## The tests
 
 `make test` runs against a stubbed websocket and needs no chromium.
+`make gui` sends real turns of the wheel to a page buffer on a virtual display, and it needs no chromium either.
+It needs `xvfb-run`, `python3` and the libraries `libX11` and `libXtst`.
 `make live` opens `tests/fixtures/page.html` in a real chromium, waits
 for a picture, and reads the text of the page.
