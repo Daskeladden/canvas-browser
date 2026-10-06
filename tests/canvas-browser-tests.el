@@ -5926,12 +5926,15 @@ The window manager says so on the root window, where Emacs reads it."
 
 ;;;; A drag of the mouse
 
-(defun canvas-browser-test--at (x y &optional off-the-page)
-  "A mouse position at the pixel X Y of the page in the selected window.
-With OFF-THE-PAGE, the position is in the window and not on the page."
-  (list (selected-window) 1 '(0 . 0) 0 nil 1 '(0 . 0)
-        (unless off-the-page canvas-browser--canvas)
-        (cons x y) '(800 . 600)))
+(defun canvas-browser-test--at (x y &optional off-the-page window)
+  "A mouse position at the pixel X Y of the page in WINDOW, which is the
+selected window by default.  With OFF-THE-PAGE, the position is in the
+window and not on the page."
+  (let ((window (or window (selected-window))))
+    (list window 1 '(0 . 0) 0 nil 1 '(0 . 0)
+          (unless off-the-page
+            (buffer-local-value 'canvas-browser--canvas (window-buffer window)))
+          (cons x y) '(800 . 600))))
 
 (defun canvas-browser-test--mouse-events ()
   "The mouse events sent to the page, oldest first, as (TYPE X Y)."
@@ -5947,7 +5950,7 @@ With OFF-THE-PAGE, the position is in the window and not on the page."
   ;; THEN the page gets a press at the first pixel, a move to the second
   ;;      with the left button held, and a release there: a browser marks
   ;;      what lies between
-  (canvas-browser-test--in-page
+  (canvas-browser-test--in-shown-page
     (setq canvas-browser-test--commands nil)
     (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
                                (canvas-browser-test--at 200 95)))
@@ -5963,13 +5966,98 @@ With OFF-THE-PAGE, the position is in the window and not on the page."
   ;; WHEN a drag starts on the page AND ends on something else in the
   ;;      window, where there is no pixel of the page
   ;; THEN nothing goes to the page, AND the reader is told why
-  (canvas-browser-test--in-page
+  (canvas-browser-test--in-shown-page
     (setq canvas-browser-test--commands nil)
     (should-error
      (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
                                 (canvas-browser-test--at 0 0 t)))
      :type 'user-error)
     (should-not (canvas-browser-test--mouse-events))))
+
+;;;; The buttons on a page whose window is not selected
+
+(defmacro canvas-browser-test--beside-a-page (&rest body)
+  "Run BODY in a buffer of text in the selected window, with a page whose
+chromium is stubbed in the window beside it.  `page' is the buffer of
+the page and `page-window' its window, and `senders' holds the buffer
+from which each message went to chromium."
+  (declare (indent 0))
+  `(canvas-browser-test--in-page
+     (let ((page (current-buffer))
+           (send (symbol-function 'canvas-browser-cdp-send))
+           (senders nil))
+       (save-window-excursion
+         (delete-other-windows)
+         (let ((page-window (split-window-right)))
+           (set-window-buffer page-window page)
+           (with-temp-buffer
+             (set-window-buffer (selected-window) (current-buffer))
+             (setq canvas-browser-test--commands nil)
+             (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                        (lambda (&rest message)
+                          (push (current-buffer) senders)
+                          (apply send message))))
+               ,@body)))))))
+
+(ert-deftest canvas-browser-a-click-goes-to-the-page-under-the-pointer ()
+  ;; GIVEN a page in the window beside the selected window, which shows
+  ;;       a buffer of text
+  (canvas-browser-test--beside-a-page
+    (let ((counted (buffer-local-value 'canvas-browser--commands page)))
+      ;; WHEN the left button clicks on the page at the pixel 40 by 90
+      (canvas-browser-click (list 'mouse-1 (canvas-browser-test--at 40 90 nil page-window)))
+      ;; THEN that page gets the press and the release there, AND it
+      ;;      counts the click as a command on it
+      (should (equal (canvas-browser-test--mouse-events)
+                     '(("mousePressed" 40 90) ("mouseReleased" 40 90))))
+      (should (equal (delete-dups senders) (list page)))
+      (should (= (buffer-local-value 'canvas-browser--commands page) (1+ counted)))
+      ;; THEN the window of the page is the selected one, as after a
+      ;;      click in any window: what the reader types next goes there
+      (should (eq (selected-window) page-window)))))
+
+(ert-deftest canvas-browser-a-drag-goes-to-the-page-under-the-pointer ()
+  ;; GIVEN a page in the window beside the selected window, which shows
+  ;;       a buffer of text
+  (canvas-browser-test--beside-a-page
+    (let ((counted (buffer-local-value 'canvas-browser--commands page)))
+      ;; WHEN the mouse is dragged over the page from 40 by 90 to 200 by 95
+      (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90 nil page-window)
+                                 (canvas-browser-test--at 200 95 nil page-window)))
+      ;; THEN that page gets the press, the move and the release, AND it
+      ;;      counts the drag as a command on it, AND its window is the
+      ;;      selected one
+      (should (equal (canvas-browser-test--mouse-events)
+                     '(("mousePressed" 40 90) ("mouseMoved" 200 95) ("mouseReleased" 200 95))))
+      (should (equal (delete-dups senders) (list page)))
+      (should (= (buffer-local-value 'canvas-browser--commands page) (1+ counted)))
+      (should (eq (selected-window) page-window)))))
+
+(ert-deftest canvas-browser-the-middle-button-types-into-the-page-under-the-pointer ()
+  ;; GIVEN a page in the window beside the selected window, which shows
+  ;;       a buffer of text, AND a kill in Emacs
+  (canvas-browser-test--beside-a-page
+    (let ((kill-ring (list "a kill")) (kill-ring-yank-pointer nil)
+          (interprogram-paste-function nil))
+      ;; WHEN the middle button is pressed on the page
+      (canvas-browser-yank (list 'mouse-2 (canvas-browser-test--at 40 90 nil page-window)))
+      ;; THEN the kill is typed into that page, AND its window is the
+      ;;      selected one
+      (should (equal (plist-get (canvas-browser-test--params "Input.insertText") :text) "a kill"))
+      (should (equal (delete-dups senders) (list page)))
+      (should (eq (selected-window) page-window)))))
+
+(ert-deftest canvas-browser-a-button-on-no-page-is-an-error ()
+  ;; GIVEN a page in the window beside the selected window, which shows
+  ;;       a buffer of text
+  (canvas-browser-test--beside-a-page
+    ;; WHEN the click command hears of a click in the window of the text
+    ;; THEN that is an error that names the buffer, AND no page hears of it
+    (should (string-search "is no page"
+                           (error-message-string
+                            (should-error (canvas-browser-click
+                                           (list 'mouse-1 (canvas-browser-test--at 40 90 t)))))))
+    (should-not canvas-browser-test--commands)))
 
 (ert-deftest canvas-browser-a-drag-is-bound-in-both-states ()
   ;; GIVEN a page buffer
@@ -6003,9 +6091,13 @@ TYPING says whether the focus of the page takes typing after the drag."
      ,@body))
 
 (defun canvas-browser-test--drag ()
-  "Drag the mouse over this page, from the pixel 40 by 90 to 200 by 95."
-  (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
-                             (canvas-browser-test--at 200 95))))
+  "Drag the mouse over this page, from the pixel 40 by 90 to 200 by 95.
+The selected window shows the page for the drag: a drag goes to the
+page under the pointer."
+  (save-window-excursion
+    (set-window-buffer (selected-window) (current-buffer))
+    (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
+                               (canvas-browser-test--at 200 95)))))
 
 (ert-deftest canvas-browser-a-drag-over-text-gives-the-keys-to-the-caret ()
   ;; GIVEN a page buffer in normal state

@@ -1420,9 +1420,14 @@ the line, and Delete follows once the page has told of the mark."
      (lambda () (canvas-browser--kill-marked append)))
     (canvas-browser--key "End" '(shift))))
 
-(defun canvas-browser-yank ()
-  "Type the newest kill of Emacs into the field."
-  (interactive)
+(defun canvas-browser-yank (&optional event)
+  "Type the newest kill of Emacs into the field.
+EVENT is what called the command.  If it is a press of a button of the
+mouse, the field is the one of the page under the pointer, and the
+window of that page is selected."
+  (interactive (list last-input-event))
+  (when (mouse-event-p event)
+    (canvas-browser--take-button event))
   (canvas-browser--tell "Input.insertText" (list :text (current-kill 0))))
 
 (defun canvas-browser-copy-url ()
@@ -1444,11 +1449,11 @@ scrolls on its own scrolls when the pointer is over it."
                         (list :type "mouseWheel" :x x :y y :deltaX delta-x :deltaY delta-y)))
 
 (defun canvas-browser--count-gesture ()
-  "Count a gesture of canvas-keys as a command on this page.
-The hook that does so before each command runs in the buffer of the
-selected window.  A gesture acts on the page under the pointer, whose
-window need not be the selected one, and that page would then go on
-drawing into the parts that moved before the gesture."
+  "Count a gesture of canvas-keys, or a press of a button, as a command on
+this page.  The hook that does so before each command runs in the buffer
+of the selected window.  The mouse acts on the page under the pointer,
+whose window need not be the selected one, and that page would then go
+on drawing into the parts that moved before the command."
   (unless (eq (current-buffer) (window-buffer (selected-window)))
     (canvas-browser--forget-live)))
 
@@ -1699,11 +1704,39 @@ flown to from a place out of sight."
     (canvas-browser--fly canvas-browser--focus-box to)
     (setq canvas-browser--focus-box to)))
 
-(defun canvas-browser-click (event)
-  "Click the page where EVENT, a click on the canvas, points."
-  (interactive "e")
+(defun canvas-browser--page-window (event)
+  "The window of the mouse EVENT, which shows a page.
+An EVENT on anything else is an error."
+  (let* ((window (posn-window (event-start event)))
+         (buffer (and (window-live-p window) (window-buffer window))))
+    (unless (and buffer (provided-mode-derived-p (buffer-local-value 'major-mode buffer)
+                                                 'canvas-browser-mode))
+      (error "canvas-browser: a button was pressed on %S, which is no page" (or buffer window)))
+    window))
+
+(defun canvas-browser--take-button (event)
+  "Make the page under the mouse EVENT the page at hand.
+A command of a button starts in the buffer of the selected window, and
+the pointer is often over another one.  The page under the pointer
+counts the press as a command on it.  Its window is then selected, as
+after a click in any window, so that what the reader types next goes to
+the page that took the press."
+  (let ((window (canvas-browser--page-window event)))
+    (with-current-buffer (window-buffer window)
+      (canvas-browser--count-gesture))
+    (select-window window)))
+
+(defun canvas-browser--click-at (event)
+  "Click this page where EVENT, a click on its picture, points."
   (let ((at (posn-object-x-y (event-start event))))
     (canvas-browser--click (car at) (cdr at))))
+
+(defun canvas-browser-click (event)
+  "Click the page where EVENT, a click on the canvas, points.
+The page is the one under the pointer, and its window is selected."
+  (interactive "e")
+  (canvas-browser--take-button event)
+  (canvas-browser--click-at event))
 
 (defun canvas-browser--page-pixel (position)
   "The pixel of the page that POSITION, a mouse position, is on, as (X . Y).
@@ -1713,8 +1746,10 @@ Nil when the position is on something else in the window."
 (defun canvas-browser-drag (event)
   "Drag the mouse over the page as EVENT, a drag on the canvas, did.
 The page marks the text between the two ends.  In a field, `M-w\\=' then
-copies it."
+copies it.  The page is the one under the pointer, and its window is
+selected."
   (interactive "e")
+  (canvas-browser--take-button event)
   (let ((from (canvas-browser--page-pixel (event-start event)))
         (to (canvas-browser--page-pixel (event-end event))))
     (unless (and from to)
@@ -7367,7 +7402,7 @@ See `canvas-browser-notification-service\\='."
          (page (with-current-buffer (window-buffer (posn-window start))
                  (canvas-browser--embed-at (posn-point start)))))
     (with-current-buffer page
-      (canvas-browser-click event))))
+      (canvas-browser--click-at event))))
 
 (defun canvas-browser-embed-click-middle ()
   "Click the middle of the page embedded at point.
