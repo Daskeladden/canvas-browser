@@ -29,4 +29,12 @@ move(350, 230)                                        # over the link, which is 
 time.sleep(0.5)
 gestures()
 time.sleep(0.5)
+def text_window():                                    # a click in the text beside the page selects that window again
+    move(-300, 100); click(1); time.sleep(0.6)
+move(100, 100); click(1)                              # a click on the page, whose window is not selected
+text_window()
+move(100, 100); button(1, True); move(140, 100); move(180, 100); button(1, False)   # a drag on it
+text_window()
+move(100, 100); click(2)                              # the middle button on it
+time.sleep(0.5)
 open(os.path.join(d, "done"), "w").close()
