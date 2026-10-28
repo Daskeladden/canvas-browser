@@ -16,6 +16,9 @@
 (defvar canvas-browser-test--listeners nil
   "The listeners the page buffer left with chromium, as ((SESSION . METHOD) . FUNCTION).")
 
+(defvar canvas-browser-test--downloads "/nonexistent/canvas-browser-downloads/"
+  "The directory the stubbed chromium writes each download into.")
+
 (defun canvas-browser-test--event (method params)
   "Have chromium send the event METHOD with PARAMS to whoever listens."
   (funcall (cdr (cl-find method canvas-browser-test--listeners
@@ -35,6 +38,8 @@
                 (lambda (session method function)
                   (push (cons (cons session method) function) canvas-browser-test--listeners)))
                ((symbol-function 'canvas-browser-cdp-forget) #'ignore)
+               ((symbol-function 'canvas-browser-cdp-download-directory)
+                (lambda () canvas-browser-test--downloads))
                ((symbol-function 'canvas-browser-cdp-send)
                 (lambda (method params &optional answer _session &rest _)
                   (push (cons method params) canvas-browser-test--commands)
@@ -8980,3 +8985,108 @@ each method.  The signals that Emacs sends go to `signals', each
     (funcall (cdr (assoc "CloseNotification" registered)) 4)
     (should (equal (car signals) '(nil "NotificationClosed" (:uint32 4 :uint32 3))))))
 
+
+;;;; Downloads
+
+(defmacro canvas-browser-test--downloading (saved said &rest body)
+  "Run BODY in a page buffer whose chromium writes downloads to a new directory.
+SAVED is bound to the download directory, which does not exist yet, and
+SAID to the list of what the echo area was given, newest first."
+  (declare (indent 2))
+  `(let* ((parent (make-temp-file "canvas-browser-downloads-" t))
+          (canvas-browser-test--downloads (file-name-as-directory
+                                           (expand-file-name "chromium" parent)))
+          (,saved (file-name-as-directory (expand-file-name "Downloads" parent)))
+          (canvas-browser-download-directory ,saved)
+          (,said nil))
+     (make-directory canvas-browser-test--downloads)
+     (unwind-protect
+         (cl-letf (((symbol-function 'message)
+                    (lambda (format-string &rest args)
+                      (push (apply #'format format-string args) ,said))))
+           (canvas-browser-test--in-page ,@body))
+       (delete-directory parent t))))
+
+(defun canvas-browser-test--download (guid name text)
+  "Have chromium download NAME as GUID, write TEXT to it, and finish.
+The file is written where chromium writes a download, named by its GUID."
+  (canvas-browser-test--event "Browser.downloadWillBegin"
+                              (list :frameId "F1" :guid guid :url "https://example.org/x"
+                                    :suggestedFilename name))
+  (write-region text nil (expand-file-name guid canvas-browser-test--downloads) nil 'silent)
+  (canvas-browser-test--event "Browser.downloadProgress"
+                              (list :guid guid :totalBytes 4 :receivedBytes 4
+                                    :state "completed")))
+
+(defun canvas-browser-test--file-text (file)
+  "The text of FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (buffer-string)))
+
+(ert-deftest canvas-browser-chromium-saves-each-download-for-emacs ()
+  ;; GIVEN a page being opened
+  ;; THEN chromium is told to write each download, named by its id, into
+  ;;      a directory of its own, with no dialog, AND to tell of each one
+  ;; AND Emacs listens to the start and the progress of every download
+  (canvas-browser-test--downloading saved said
+    (should (equal (canvas-browser-test--params "Browser.setDownloadBehavior")
+                   (list :behavior "allowAndName"
+                         :downloadPath canvas-browser-test--downloads
+                         :eventsEnabled t)))
+    (should (assoc '(nil . "Browser.downloadWillBegin") canvas-browser-test--listeners))
+    (should (assoc '(nil . "Browser.downloadProgress") canvas-browser-test--listeners))))
+
+(ert-deftest canvas-browser-a-complete-download-lands-in-the-download-directory ()
+  ;; GIVEN a page, and a download directory that does not exist yet
+  ;; WHEN chromium downloads report.pdf and says that it is complete
+  ;; THEN the file is in the download directory under the name the site
+  ;;      gave it, with what chromium wrote, AND chromium's copy is gone
+  ;; AND the echo area names the file
+  (canvas-browser-test--downloading saved said
+    (canvas-browser-test--download "G1" "report.pdf" "menu")
+    (let ((file (expand-file-name "report.pdf" saved)))
+      (should (equal (canvas-browser-test--file-text file) "menu"))
+      (should-not (file-exists-p (expand-file-name "G1" canvas-browser-test--downloads)))
+      (should (string-search (abbreviate-file-name file) (car said))))))
+
+(ert-deftest canvas-browser-a-download-never-writes-over-a-file ()
+  ;; GIVEN report.pdf and report (1).pdf in the download directory
+  ;; WHEN chromium downloads report.pdf again
+  ;; THEN it is saved as report (2).pdf, as a browser numbers it, AND the
+  ;;      two files that were there are as they were
+  (canvas-browser-test--downloading saved said
+    (make-directory saved)
+    (write-region "old" nil (expand-file-name "report.pdf" saved) nil 'silent)
+    (write-region "older" nil (expand-file-name "report (1).pdf" saved) nil 'silent)
+    (canvas-browser-test--download "G2" "report.pdf" "new")
+    (should (equal (canvas-browser-test--file-text (expand-file-name "report (2).pdf" saved))
+                   "new"))
+    (should (equal (canvas-browser-test--file-text (expand-file-name "report.pdf" saved)) "old"))
+    (should (equal (canvas-browser-test--file-text (expand-file-name "report (1).pdf" saved))
+                   "older"))))
+
+(ert-deftest canvas-browser-a-download-stays-in-the-download-directory ()
+  ;; GIVEN a site that names its download with directories before the name
+  ;; WHEN chromium downloads it
+  ;; THEN the file is saved in the download directory, under its last name
+  (canvas-browser-test--downloading saved said
+    (canvas-browser-test--download "G3" "../../escape.sh" "echo")
+    (should (file-exists-p (expand-file-name "escape.sh" saved)))
+    (should-not (file-exists-p (expand-file-name "../escape.sh" saved)))))
+
+(ert-deftest canvas-browser-a-cancelled-download-is-said ()
+  ;; GIVEN a download of report.pdf that has begun
+  ;; WHEN chromium says that it was cancelled
+  ;; THEN the echo area says that the download of report.pdf stopped, AND
+  ;;      nothing is saved in the download directory
+  (canvas-browser-test--downloading saved said
+    (canvas-browser-test--event "Browser.downloadWillBegin"
+                                (list :frameId "F1" :guid "G4" :url "https://example.org/x"
+                                      :suggestedFilename "report.pdf"))
+    (canvas-browser-test--event "Browser.downloadProgress"
+                                (list :guid "G4" :totalBytes 4 :receivedBytes 1
+                                      :state "canceled"))
+    (should (string-search "report.pdf" (car said)))
+    (should (string-search "stopped" (car said)))
+    (should-not (file-exists-p (expand-file-name "report.pdf" saved)))))

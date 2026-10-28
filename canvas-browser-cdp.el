@@ -100,6 +100,11 @@ chromium loads every one when it starts.  Nil lets
   (or canvas-browser-extension-directory
       (canvas-browser-cdp--extensions-for (canvas-browser-cdp--executable))))
 
+(defun canvas-browser-cdp-download-directory ()
+  "The directory chromium writes each download into, until Emacs moves it.
+It is in the profile, where every chromium can write, a snap too."
+  (file-name-as-directory (expand-file-name "canvas-browser-downloads" (canvas-browser-cdp--profile))))
+
 (defun canvas-browser-cdp--extensions ()
   "The directories of the extensions chromium loads, in the order of their names.
 A hidden directory is left out: an extension is unpacked into one
@@ -385,6 +390,7 @@ A command sent while it connects reaches nobody."
         (canvas-browser-cdp--ensure-display))
       (let ((process-environment (canvas-browser-cdp--environment)))
         (make-directory (canvas-browser-cdp--profile) t)
+        (make-directory (canvas-browser-cdp-download-directory) t)
         (ignore-errors (delete-file (canvas-browser-cdp--port-file)))
         (setq canvas-browser-cdp--process
               (make-process :name "canvas-browser-chromium"

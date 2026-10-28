@@ -386,6 +386,28 @@
       (should (> asked 2))
       (should (canvas-browser-cdp-running-p)))))
 
+(ert-deftest canvas-browser-cdp-start-makes-the-directory-of-downloads ()
+  ;; GIVEN a profile directory that does not exist yet
+  ;; WHEN the client starts
+  ;; THEN the directory that chromium writes each download into is made,
+  ;;      AND it is inside the profile, where a snap chromium can write too
+  (let* ((parent (make-temp-file "canvas-browser-profile-" t))
+         (canvas-browser-profile-directory (expand-file-name "profile" parent))
+         (canvas-browser-headless t)
+         (canvas-browser-cdp--socket nil)
+         (canvas-browser-cdp--process nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'executable-find) (lambda (name) (concat "/usr/bin/" name)))
+                  ((symbol-function 'make-process) (lambda (&rest _) 'process))
+                  ((symbol-function 'canvas-browser-cdp--address) (lambda () "ws://127.0.0.1:1/x"))
+                  ((symbol-function 'websocket-open) (lambda (&rest _) 'socket))
+                  ((symbol-function 'canvas-browser-cdp--open-p) (lambda (_socket) t)))
+          (canvas-browser-cdp-start)
+          (should (file-directory-p (canvas-browser-cdp-download-directory)))
+          (should (string-prefix-p (file-name-as-directory canvas-browser-profile-directory)
+                                   (canvas-browser-cdp-download-directory))))
+      (delete-directory parent t))))
+
 (ert-deftest canvas-browser-cdp-says-when-another-chromium-holds-the-profile ()
   ;; GIVEN a chromium that exits at once, as one does when another chromium
   ;;       already uses the profile

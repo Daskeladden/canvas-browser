@@ -2313,3 +2313,37 @@ What comes over the bus is an event that Emacs reads as it reads a key."
               (should (eq (plist-get (car got) :buffer) (current-buffer))))))
       (dbus-unregister-service :session "org.freedesktop.Notifications"))))
 
+
+(defun canvas-browser-live-test--file-text (file)
+  "The text of FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (buffer-string)))
+
+(ert-deftest canvas-browser-live-a-download-lands-in-the-download-directory ()
+  ;; GIVEN the download fixture, and an empty download directory
+  ;; WHEN the link that downloads order.txt is clicked
+  ;; THEN order.txt is in the download directory with the text of the
+  ;;      link, and no dialog asked where to save it
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((buffer nil)
+        (canvas-browser-profile-directory
+         (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+           (make-temp-file "canvas-browser-live-" t)))
+        (canvas-browser-download-directory (make-temp-file "canvas-browser-saved-" t)))
+    (unwind-protect
+        (let ((file (expand-file-name "tests/fixtures/download.html"))
+              (saved (expand-file-name "order.txt" canvas-browser-download-directory)))
+          (setq buffer (canvas-browser (concat "file://" file)))
+          (with-current-buffer buffer
+            (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+            (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+            (let ((middle (canvas-browser-live-test--middle "save")))
+              (should middle)
+              (canvas-browser--click (car middle) (cdr middle)))
+            (should (canvas-browser-live-test--wait 30 (lambda () (file-exists-p saved))))
+            (should (equal (canvas-browser-live-test--file-text saved) "coffee order"))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (canvas-browser-cdp-stop)
+      (delete-directory canvas-browser-profile-directory t)
+      (delete-directory canvas-browser-download-directory t))))

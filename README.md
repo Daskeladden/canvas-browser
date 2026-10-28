@@ -141,6 +141,15 @@ waits, the two keys are there in every dired buffer, so you can go to
 another directory first. For a snap chromium, a file that the snap
 cannot read is copied to `~/snap/chromium/common/canvas-browser-files`.
 
+### Downloads
+
+A downloaded file goes to `~/Downloads`, and the echo area names it when
+it is complete. No dialog asks where to save it, also not for the
+download button of a PDF. If the name is taken, the file gets a number,
+as in `report (1).pdf`. Chromium writes the file into
+`canvas-browser-downloads` in its profile first, and Emacs moves it from
+there.
+
 ### What a page copies
 
 A button of a page that copies, as "Copy link" does, puts its text on
@@ -875,6 +884,7 @@ chromium a window on.
 |---|---|---|
 | `canvas-browser-chromium` | chromium, chromium-browser, google-chrome | the names looked for |
 | `canvas-browser-profile-directory` | by the chromium found | where the profile goes |
+| `canvas-browser-download-directory` | `~/Downloads/` | where a downloaded file is saved |
 | `canvas-browser-cdp-timeout` | 10 | seconds to wait for chromium |
 | `canvas-browser-headless` | nil | whether chromium runs without a window of its own |
 | `canvas-browser-display` | :98 | the X display chromium draws its window on |
@@ -916,7 +926,7 @@ machine.
 
 - Video and animation: a frame reaches the screen after what you do, and
   a full frame costs about 3.5 MB on a display without shared memory.
-- Tabs of its own, downloads, printing and developer tools.
+- Tabs of its own, printing and developer tools.
 - A second engine.
 
 ## The tests

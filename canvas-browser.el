@@ -1034,6 +1034,7 @@ it again."
   "Open URL in this buffer, on a canvas WIDTH by HEIGHT; URL."
   (canvas-browser--start-chromium)
   (canvas-browser--watch-targets)
+  (canvas-browser--watch-downloads)
   (canvas-browser--adopt width height)
   (setq canvas-browser--url url)
   (let ((buffer (current-buffer)))
@@ -5556,6 +5557,72 @@ is closed."
     (canvas-browser--attach-finish)
     (canvas-browser--attach-leave page)
     (message "canvas-browser: no file for the page")))
+
+;;;; Downloads
+
+(defcustom canvas-browser-download-directory "~/Downloads/"
+  "The directory each downloaded file is saved in.
+A name that is taken there gets a number, as in report (1).pdf."
+  :type 'directory
+  :group 'canvas-browser)
+
+(defvar canvas-browser--downloads (make-hash-table :test #'equal)
+  "The name the site gave each download that runs, by its id.")
+
+(defun canvas-browser--watch-downloads ()
+  "Have chromium save each download for Emacs, and tell of it.
+Chromium would ask where to save some files, a PDF among them, in a
+dialog on a display that nobody sees.  It writes each one under the id
+of its download instead, and Emacs moves it to its place once complete."
+  (canvas-browser-cdp-listen nil "Browser.downloadWillBegin" #'canvas-browser--download-begun)
+  (canvas-browser-cdp-listen nil "Browser.downloadProgress" #'canvas-browser--download-progress)
+  (canvas-browser-cdp-send "Browser.setDownloadBehavior"
+                           (list :behavior "allowAndName"
+                                 :downloadPath (canvas-browser-cdp-download-directory)
+                                 :eventsEnabled t)))
+
+(defun canvas-browser--download-begun (params)
+  "Note the name of the download that PARAMS tell of."
+  (puthash (plist-get params :guid) (plist-get params :suggestedFilename)
+           canvas-browser--downloads))
+
+(defun canvas-browser--download-progress (params)
+  "Save the download that PARAMS tell of once it is complete, or say it stopped."
+  (pcase (plist-get params :state)
+    ("completed" (canvas-browser--download-save (plist-get params :guid)))
+    ("canceled" (canvas-browser--download-stop (plist-get params :guid)))))
+
+(defun canvas-browser--download-name (guid)
+  "The name the site gave the download GUID; forget it."
+  (let ((name (or (gethash guid canvas-browser--downloads)
+                  (error "canvas-browser: no download %s has begun" guid))))
+    (remhash guid canvas-browser--downloads)
+    name))
+
+(defun canvas-browser--free-file (name directory)
+  "The file NAME in DIRECTORY, numbered as NAME (1) and on while one is taken.
+A directory in NAME is dropped, so that a site cannot write elsewhere."
+  (let* ((name (file-name-nondirectory name))
+         (file (expand-file-name name directory))
+         (number 0))
+    (while (file-exists-p file)
+      (setq file (expand-file-name (format "%s (%d)%s" (file-name-sans-extension name)
+                                           (cl-incf number) (file-name-extension name t))
+                                   directory)))
+    file))
+
+(defun canvas-browser--download-save (guid)
+  "Move the complete download GUID into `canvas-browser-download-directory\\='."
+  (let ((file (canvas-browser--free-file (canvas-browser--download-name guid)
+                                         canvas-browser-download-directory)))
+    (make-directory canvas-browser-download-directory t)
+    (rename-file (expand-file-name guid (canvas-browser-cdp-download-directory)) file)
+    (message "canvas-browser: saved %s" (abbreviate-file-name file))))
+
+(defun canvas-browser--download-stop (guid)
+  "Say that the download GUID stopped before it was complete."
+  (message "canvas-browser: the download of %s stopped"
+           (canvas-browser--download-name guid)))
 
 ;;;; A field of the page in a buffer
 
