@@ -2535,3 +2535,101 @@ Give the buffer once the page has answered, or nil when none opens."
                              (with-current-buffer (messages-buffer)
                                (buffer-substring (min (1+ messages-before) (point-max)) (point-max)))))
       (should (canvas-browser-live-test--rich-is-as-written)))))
+
+(defun canvas-browser-live-test--file-bytes (file)
+  "The bytes of FILE, as they are on the disk."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (buffer-string)))
+
+(ert-deftest canvas-browser-live-P-opens-the-pdf-of-the-page-in-emacs ()
+  ;; GIVEN a page that shows the PDF fixture, and an empty download
+  ;;       directory
+  ;; WHEN P is pressed
+  ;; THEN order.pdf is in the download directory, byte for byte the
+  ;;      fixture, AND Emacs opens it
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((buffer nil)
+        (opened nil)
+        (canvas-browser-profile-directory
+         (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+           (make-temp-file "canvas-browser-live-" t)))
+        (canvas-browser-download-directory (make-temp-file "canvas-browser-saved-" t)))
+    (unwind-protect
+        (let ((file (expand-file-name "tests/fixtures/order.pdf"))
+              (saved (expand-file-name "order.pdf" canvas-browser-download-directory)))
+          (setq buffer (canvas-browser (concat "file://" file)))
+          (with-current-buffer buffer
+            (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+            (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+            (cl-letf (((symbol-function 'find-file) (lambda (file &rest _) (setq opened file))))
+              (canvas-browser-open-pdf))
+            (should (equal opened saved))
+            (should (equal (canvas-browser-live-test--file-bytes saved)
+                           (canvas-browser-live-test--file-bytes file)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (canvas-browser-cdp-stop)
+      (delete-directory canvas-browser-profile-directory t)
+      (delete-directory canvas-browser-download-directory t))))
+
+(defun canvas-browser-live-test--hint-boxes ()
+  "The boxes the hints go on in this page, and their session, as (BOXES . SESSION).
+It is nil when chromium did not answer in ten seconds."
+  (let ((got nil))
+    (canvas-browser--hint-boxes (lambda (boxes session) (setq got (cons boxes session))))
+    (canvas-browser-live-test--wait 10 (lambda () got))
+    got))
+
+(defun canvas-browser-live-test--labels (session)
+  "The labels of the things the last hints went on, in the frame of SESSION."
+  (let ((labels 'waiting))
+    (canvas-browser--evaluate
+     "window.__canvasBrowserTargets.map(e => e.getAttribute('aria-label'))"
+     (lambda (value) (setq labels value))
+     session)
+    (canvas-browser-live-test--wait 10 (lambda () (not (eq labels 'waiting))))
+    labels))
+
+(ert-deftest canvas-browser-live-a-hint-clicks-the-download-button-of-a-pdf ()
+  ;; GIVEN a page that shows the PDF fixture in the viewer of chromium,
+  ;;       and an empty download directory
+  ;; WHEN the hints are asked for, and the hint of the Download button
+  ;;      is clicked
+  ;; THEN the hints are on the buttons of the viewer, AND order.pdf is in
+  ;;      the download directory, byte for byte the fixture
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((buffer nil)
+        (canvas-browser-profile-directory
+         (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+           (make-temp-file "canvas-browser-live-" t)))
+        (canvas-browser-download-directory (make-temp-file "canvas-browser-saved-" t)))
+    (unwind-protect
+        (let ((file (expand-file-name "tests/fixtures/order.pdf"))
+              (saved (expand-file-name "order.pdf" canvas-browser-download-directory))
+              (found nil))
+          (setq buffer (canvas-browser (concat "file://" file)))
+          (with-current-buffer buffer
+            (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+            (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+            ;; The toolbar of the viewer hides its Download button in a
+            ;; narrow window.
+            (canvas-browser--resize 1280 800)
+            ;; The viewer draws its buttons one after the other.
+            (should (canvas-browser-live-test--wait
+                     30 (lambda ()
+                          (setq found (canvas-browser-live-test--hint-boxes))
+                          (member "Download" (canvas-browser-live-test--labels (cdr found))))))
+            (pcase-let* ((`(,boxes . ,session) found)
+                         (place (seq-position (canvas-browser-live-test--labels session)
+                                              "Download"))
+                         (middle (canvas-browser--box-middle (nth place boxes))))
+              (should session)
+              (canvas-browser--click (car middle) (cdr middle)))
+            (should (canvas-browser-live-test--wait 30 (lambda () (file-exists-p saved))))
+            (should (equal (canvas-browser-live-test--file-bytes saved)
+                           (canvas-browser-live-test--file-bytes file)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (canvas-browser-cdp-stop)
+      (delete-directory canvas-browser-profile-directory t)
+      (delete-directory canvas-browser-download-directory t))))

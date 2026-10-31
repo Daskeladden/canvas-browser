@@ -150,6 +150,20 @@ as in `report (1).pdf`. Chromium writes the file into
 `canvas-browser-downloads` in its profile first, and Emacs moves it from
 there.
 
+### A PDF
+
+Chromium shows a PDF in its own viewer, a frame of its own above the
+page. On a PDF, `f` labels the buttons of that viewer: download, print,
+zoom, the page number, the sidebar and its pages. The viewer draws the
+links of the PDF itself, so they are no part of a page, and `f` does
+not label them.
+
+`P` opens the PDF in a buffer of Emacs.
+If you installed pdf-tools, it shows the PDF there, and its `F` labels
+the links. The PDF is saved in `~/Downloads`, as a download is, and comes
+from what chromium loaded. So a PDF behind a sign-in opens too. If the
+same PDF is there already, `P` opens that file and saves no copy.
+
 ### What a page copies
 
 A button of a page that copies, as "Copy link" does, puts its text on
@@ -412,7 +426,8 @@ too, with the page that the buffer shows among them.
 
 `embark-act` in a page buffer acts on the page. It has the actions of
 any URL, so you can open the address in another browser or in eww, copy
-it, or download it. `>` sends the page to a receiver. When a part of
+it, or download it. `>` sends the page to a receiver, and `P` opens the
+PDF that the page shows in Emacs. When a part of
 the page is picked with `S`, that part is a target before the page, and
 `>` sends the part. While the caret marks text, the text is the first
 target. `embark-cycle` reaches the targets after the first. On marked
@@ -535,7 +550,7 @@ Normal state keeps the keys of Emacs:
 | `C-v`, `M-v`, the arrows | scroll a screen and a line |
 | `<prior>`, `<next>` | scroll a screen back and further down |
 | `<home>`, `<end>`, `C-<home>`, `C-<end>`, `M-<`, `M->` | go to the top and the foot of the page |
-| `f` | labels what a click can reach, fields inside web components included, and clicks the one you name; the labels stay until you name one or press `ESC` |
+| `f` | labels what a click can reach, fields inside web components included, and clicks the one you name; the labels stay until you name one or press `ESC`. On a PDF it labels the buttons of the viewer |
 | `a` | offers the links of the page by their text and address, and clicks the one you choose. `C-u a` opens it in a page buffer of its own |
 | `M-w` | labels the page and its blocks, and copies the picture of the one you name. `C-u M-w` copies the whole window at once |
 | `C-c C-l` | stores a link to the page for org, also while the keys go to the page |
@@ -555,6 +570,7 @@ Normal state keeps the keys of Emacs:
 | `M-s M-p` | searches the text of every page that is open, and shows the page at the line you choose |
 | `M-.` in that text | shows the page at the line: the page scrolls to it and paints it for a moment, and `M-,` comes back to the text |
 | `e` | opens the same URL in eww |
+| `P` | opens the PDF that the page shows in Emacs, see [A PDF](#a-pdf) |
 | a click | clicks the page at that pixel, and types there if it is a field |
 | a click on the address in the header line | opens the prompt of `o` with the address in it, ready to edit. The address lights up under the pointer |
 | a drag | marks what lies between its two ends, once the button is let go |

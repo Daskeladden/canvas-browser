@@ -322,6 +322,140 @@ that moment now."
         (should (string-search "nothing to click" said))
         (should-not (canvas-browser-test--params "Input.dispatchMouseEvent"))))))
 
+;;;; Hints on the viewer of a PDF
+
+(defconst canvas-browser-test--viewer-url
+  "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html"
+  "The address of the frame in which chromium shows a PDF.")
+
+(defvar canvas-browser-test--targets
+  (list (list :targetId "T1" :type "page" :url "https://example.org/w123.pdf")
+        (list :targetId "W2" :type "iframe" :parentFrameId "T2"
+              :url canvas-browser-test--viewer-url)
+        (list :targetId "W1" :type "iframe" :parentFrameId "T1"
+              :url canvas-browser-test--viewer-url)
+        (list :targetId "P1" :type "iframe" :parentFrameId "W1"
+              :url "https://example.org/w123.pdf"))
+  "The targets of chromium while the page T1 shows a PDF.
+W1 is its viewer, and W2 the viewer of another page.")
+
+(defvar canvas-browser-test--sent nil
+  "The commands sent while a PDF is shown, as (METHOD PARAMS SESSION), newest first.")
+
+(defun canvas-browser-test--pdf-answer (method params session boxes)
+  "What chromium answers to METHOD with PARAMS in SESSION while it shows a PDF.
+The page has nothing to click, and the viewer W1 has BOXES.  A script on
+a thing in the viewer gives \"Download\"."
+  (pcase method
+    ("Target.getTargets" (list :targetInfos canvas-browser-test--targets))
+    ("Target.attachToTarget" (list :sessionId (concat "S-" (plist-get params :targetId))))
+    ("Runtime.evaluate"
+     (let ((script (plist-get params :expression)))
+       (list :result
+             (list :value (cond ((equal script "document.contentType") "application/pdf")
+                                ((not (equal script canvas-browser--boxes-script)) "Download")
+                                ((equal session "S-W1") boxes))))))))
+
+(defmacro canvas-browser-test--showing-pdf-viewer (boxes &rest body)
+  "Run BODY in a page buffer that shows a PDF in the viewer of chromium.
+The viewer has BOXES, see `canvas-browser-test--pdf-answer\\='.  What is
+sent goes to `canvas-browser-test--sent\\='."
+  (declare (indent 1))
+  `(canvas-browser-test--in-page
+     (let ((canvas-browser-test--sent nil))
+       (cl-letf (((symbol-function 'canvas-browser-cdp-send)
+                  (lambda (method params &optional answer session &rest _)
+                    (push (list method params session) canvas-browser-test--sent)
+                    (when answer
+                      (funcall answer (canvas-browser-test--pdf-answer
+                                       method params session ,boxes)))))
+                 ((symbol-function 'canvas-browser--draw-hints) #'ignore)
+                 ((symbol-function 'canvas-browser--paint-window) #'ignore))
+         ,@body))))
+
+(defun canvas-browser-test--sent-of (method)
+  "The last command METHOD that was sent, as (METHOD PARAMS SESSION)."
+  (cl-find method canvas-browser-test--sent :key #'car :test #'equal))
+
+(ert-deftest canvas-browser-hints-on-a-pdf-go-on-the-buttons-of-its-viewer ()
+  ;; GIVEN a page that shows a PDF, whose viewer has two buttons, and the
+  ;;       viewer of another page
+  ;; WHEN the hints are shown and the second one is chosen
+  ;; THEN the page is clicked in the middle of that button, AND the
+  ;;      viewer that was looked into is the one of this page
+  (canvas-browser-test--showing-pdf-viewer
+      '((:x 16 :y 12 :w 32 :h 32) (:x 1160 :y 12 :w 32 :h 32))
+    (cl-letf (((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) (list 1))))
+      (canvas-browser-hints)
+      (pcase-let ((`(,_ ,click ,session) (canvas-browser-test--sent-of "Input.dispatchMouseEvent")))
+        (should (equal (plist-get click :x) 1176))
+        (should (equal (plist-get click :y) 28))
+        (should (equal session "S1")))
+      (should (equal (plist-get (cadr (canvas-browser-test--sent-of "Target.attachToTarget"))
+                                :targetId)
+                     "W1")))))
+
+(ert-deftest canvas-browser-the-viewer-of-a-pdf-is-attached-to-once ()
+  ;; GIVEN a page that shows a PDF
+  ;; WHEN the hints are shown twice
+  ;; THEN chromium attaches to the viewer once, AND the second time the
+  ;;      boxes are asked of that same viewer again
+  (canvas-browser-test--showing-pdf-viewer '((:x 16 :y 12 :w 32 :h 32))
+    (cl-letf (((symbol-function 'canvas-browser--read-hint) (lambda (&rest _) nil)))
+      (canvas-browser-hints)
+      (canvas-browser-hints)
+      (should (= (cl-count "Target.attachToTarget" canvas-browser-test--sent
+                           :key #'car :test #'equal)
+                 1))
+      (should (= (cl-count-if (lambda (sent)
+                                (and (equal (plist-get (nth 1 sent) :expression)
+                                            canvas-browser--boxes-script)
+                                     (equal (nth 2 sent) "S-W1")))
+                              canvas-browser-test--sent)
+                 2)))))
+
+(ert-deftest canvas-browser-w-before-a-hint-on-a-pdf-reads-the-viewer ()
+  ;; GIVEN a page that shows a PDF, whose viewer has a button
+  ;; WHEN its hint is named after w
+  ;; THEN the text is asked of the viewer, where the button is, AND it
+  ;;      goes to the kill ring
+  (canvas-browser-test--showing-pdf-viewer '((:x 1160 :y 12 :w 32 :h 32))
+    (let ((kill-ring nil))
+      (cl-letf (((symbol-function 'canvas-browser--read-hint)
+                 (lambda (&rest _) (cons 0 (assq ?w canvas-browser--hint-actions)))))
+        (canvas-browser-hints)
+        (should (equal (car kill-ring) "Download"))
+        (should (equal (nth 2 (cl-find-if (lambda (sent)
+                                            (string-search "__canvasBrowserTargets[0]"
+                                                           (or (plist-get (nth 1 sent) :expression)
+                                                               "")))
+                                          canvas-browser-test--sent))
+                       "S-W1"))))))
+
+(ert-deftest canvas-browser-hints-on-a-pdf-whose-viewer-is-not-open-say-so ()
+  ;; GIVEN a page that shows a PDF whose viewer has not opened yet
+  ;; WHEN the hints are asked for
+  ;; THEN the reader is told that there is nothing to click, AND nothing
+  ;;      is attached to
+  (let ((canvas-browser-test--targets (list (car canvas-browser-test--targets)))
+        (said nil))
+    (canvas-browser-test--showing-pdf-viewer '((:x 16 :y 12 :w 32 :h 32))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (canvas-browser-hints)
+        (should (string-search "nothing to click" said))
+        (should-not (canvas-browser-test--sent-of "Target.attachToTarget"))))))
+
+(ert-deftest canvas-browser-hints-on-a-page-that-shows-no-pdf-look-no-further ()
+  ;; GIVEN a page of HTML that has nothing to click
+  ;; WHEN the hints are asked for
+  ;; THEN no viewer of a PDF is looked for
+  (canvas-browser-test--in-page
+    (cl-letf (((symbol-function 'canvas-browser--boxes) (lambda (answer) (funcall answer nil)))
+              ((symbol-function 'message) #'ignore))
+      (canvas-browser-hints)
+      (should-not (canvas-browser-test--params "Target.getTargets")))))
+
 ;;;; Find in page, and the text of a page
 
 (ert-deftest canvas-browser-text-opens-the-page-as-a-buffer ()
@@ -9546,3 +9680,134 @@ The file is written where chromium writes a download, named by its GUID."
   ;; THEN each is an HTML paragraph with no line break around its text,
   ;;      which an editor of a page would keep as a space
   (should (equal (canvas-browser--org-to-html "first\n\nthird") "<p>first</p><p>third</p>")))
+
+;;;; A PDF in Emacs
+
+(defconst canvas-browser-test--pdf-bytes "%PDF-1.4\n\xe2\x80\x93 coffee order\n"
+  "The bytes of a PDF, with bytes that are no text, as chromium loaded them.")
+
+(defmacro canvas-browser-test--showing (url type bytes saved opened &rest body)
+  "Run BODY in a page buffer at URL that shows a document of TYPE.
+Chromium loaded it as BYTES.  SAVED is bound to the download directory,
+which does not exist yet, and OPENED to the list of the files that
+Emacs opened, newest first."
+  (declare (indent 5))
+  (let ((said (make-symbol "said")))
+    `(canvas-browser-test--downloading ,saved ,said
+       (ignore ,said)
+       (setq canvas-browser--url ,url)
+       (let ((,opened nil))
+         (cl-letf (((symbol-function 'canvas-browser--value-now)
+                    (lambda (script &rest _)
+                      (should (equal script "document.contentType"))
+                      ,type))
+                   ((symbol-function 'canvas-browser--loaded-bytes)
+                    (lambda (address)
+                      (should (equal address ,url))
+                      ,bytes))
+                   ((symbol-function 'find-file)
+                    (lambda (file &rest _) (push file ,opened))))
+           ,@body)))))
+
+(defun canvas-browser-test--file-bytes (file)
+  "The bytes of FILE, as they are on the disk."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (buffer-string)))
+
+(ert-deftest canvas-browser-P-opens-the-pdf-of-the-page-in-emacs ()
+  ;; GIVEN a page that shows a PDF, at an address that names a page of it
+  ;; WHEN P is pressed
+  ;; THEN the bytes that chromium loaded are saved in the download
+  ;;      directory, named as the address names the PDF, AND Emacs opens
+  ;;      that file
+  (canvas-browser-test--showing "https://example.org/papers/w123.pdf#page=3"
+      "application/pdf" canvas-browser-test--pdf-bytes saved opened
+    (should (eq (key-binding (kbd "P")) #'canvas-browser-open-pdf))
+    (canvas-browser-open-pdf)
+    (let ((file (expand-file-name "w123.pdf" saved)))
+      (should (equal (canvas-browser-test--file-bytes file) canvas-browser-test--pdf-bytes))
+      (should (equal opened (list file))))))
+
+(ert-deftest canvas-browser-the-same-pdf-is-saved-once ()
+  ;; GIVEN a page that shows a PDF, and the same PDF saved before
+  ;; WHEN P is pressed
+  ;; THEN Emacs opens the file that is there, AND saves no second copy
+  (canvas-browser-test--showing "https://example.org/papers/w123.pdf"
+      "application/pdf" canvas-browser-test--pdf-bytes saved opened
+    (make-directory saved)
+    (let ((coding-system-for-write 'no-conversion))
+      (write-region canvas-browser-test--pdf-bytes nil (expand-file-name "w123.pdf" saved)
+                    nil 'silent))
+    (canvas-browser-open-pdf)
+    (should (equal opened (list (expand-file-name "w123.pdf" saved))))
+    (should-not (file-exists-p (expand-file-name "w123 (1).pdf" saved)))))
+
+(ert-deftest canvas-browser-another-pdf-of-the-same-name-is-numbered ()
+  ;; GIVEN a page that shows a PDF, and another PDF of the same name saved
+  ;; WHEN P is pressed
+  ;; THEN the PDF of the page is saved and opened as w123 (1).pdf, AND
+  ;;      the other PDF is as it was
+  (canvas-browser-test--showing "https://example.org/papers/w123.pdf"
+      "application/pdf" canvas-browser-test--pdf-bytes saved opened
+    (make-directory saved)
+    (write-region "%PDF-1.4 kitchen" nil (expand-file-name "w123.pdf" saved) nil 'silent)
+    (canvas-browser-open-pdf)
+    (let ((file (expand-file-name "w123 (1).pdf" saved)))
+      (should (equal (canvas-browser-test--file-bytes file) canvas-browser-test--pdf-bytes))
+      (should (equal opened (list file))))
+    (should (equal (canvas-browser-test--file-text (expand-file-name "w123.pdf" saved))
+                   "%PDF-1.4 kitchen"))))
+
+(ert-deftest canvas-browser-P-on-a-page-without-a-pdf-says-so ()
+  ;; GIVEN a page that shows HTML
+  ;; WHEN P is pressed
+  ;; THEN the reader is told that the page shows no PDF, AND nothing is
+  ;;      saved or opened
+  (canvas-browser-test--showing "https://example.org/menu.html"
+      "text/html" "<html>" saved opened
+    (should (equal (cadr (should-error (canvas-browser-open-pdf) :type 'user-error))
+                   "canvas-browser: this page shows no PDF"))
+    (should-not (file-exists-p saved))
+    (should-not opened)))
+
+(ert-deftest canvas-browser-a-pdf-that-chromium-gives-no-bytes-of-is-an-error ()
+  ;; GIVEN a page that shows a PDF, but chromium gives no bytes of it
+  ;; WHEN P is pressed
+  ;; THEN an error names the address, AND nothing is saved or opened
+  (canvas-browser-test--showing "https://example.org/papers/w123.pdf"
+      "application/pdf" nil saved opened
+    (should (equal (cadr (should-error (canvas-browser-open-pdf)))
+                   "canvas-browser: chromium gave no bytes of https://example.org/papers/w123.pdf"))
+    (should-not (file-exists-p saved))
+    (should-not opened)))
+
+(ert-deftest canvas-browser-a-pdf-is-named-by-its-address ()
+  ;; GIVEN the addresses of PDFs
+  ;; WHEN each is named as a file
+  ;; THEN the name is the last part of the path, with its escapes read,
+  ;;      AND it ends in .pdf, so that Emacs opens it as a PDF, AND an
+  ;;      address with no such part gives document.pdf
+  (should (equal (canvas-browser--pdf-name "https://example.org/papers/w123.pdf#page=3")
+                 "w123.pdf"))
+  (should (equal (canvas-browser--pdf-name "https://example.org/pdf/2401.12345?download=1")
+                 "2401.12345.pdf"))
+  (should (equal (canvas-browser--pdf-name "https://example.org/coffee%20order.PDF")
+                 "coffee order.PDF"))
+  (should (equal (canvas-browser--pdf-name "file:///home/cook/kitchen.pdf") "kitchen.pdf"))
+  (should (equal (canvas-browser--pdf-name "https://example.org/") "document.pdf")))
+
+(ert-deftest canvas-browser-the-menu-and-embark-open-the-pdf-of-a-page ()
+  ;; GIVEN embark with no keymaps of its own
+  ;; WHEN canvas-browser sets itself up with it
+  ;; THEN P opens the PDF of the page, in the menu and as an action of
+  ;;      embark on the page
+  (let ((embark-keymap-alist nil)
+        (embark-target-injection-hooks nil)
+        (embark-transformer-alist nil)
+        (embark-general-map (make-sparse-keymap)))
+    (canvas-browser--embark-setup)
+    (should (eq (keymap-lookup canvas-browser-embark-page-map "P") #'canvas-browser-open-pdf))
+    (should (eq (plist-get (canvas-browser-test--menu-entry "P") :command)
+                #'canvas-browser-open-pdf))))

@@ -2037,13 +2037,14 @@ article, a dialog, a table, a piece of code, a picture.  Only what shows
 counts, so a block under a dialog takes no hint, and a block whose box
 is that of one taken already is the same picture and takes none.")
 
-(defun canvas-browser--evaluate (script answer)
-  "Run SCRIPT in the page, and call ANSWER with the value it gives."
+(defun canvas-browser--evaluate (script answer &optional session)
+  "Run SCRIPT in the page, and call ANSWER with the value it gives.
+With SESSION, SCRIPT runs in the frame of that session instead."
   (canvas-browser-cdp-send
    "Runtime.evaluate"
    (list :expression script :returnByValue t)
    (lambda (result) (funcall answer (plist-get (plist-get result :result) :value)))
-   canvas-browser--session))
+   (or session canvas-browser--session)))
 
 (defun canvas-browser--evaluate-here (script answer)
   "Run SCRIPT in the page, and call ANSWER in this buffer with its value.
@@ -2254,11 +2255,17 @@ letter of the hints.")
 CHOSEN is the (PLACE . ACTION) of `canvas-browser--read-hint\'."
   (funcall (or (nth 2 (cdr chosen)) default) (car chosen) (nth (car chosen) boxes)))
 
+(defvar canvas-browser--targets-session nil
+  "The session of the frame that holds the things the hints are on.
+It is nil for the page itself, and the session of the viewer for a PDF.")
+
 (defun canvas-browser--on-target (place script answer)
   "Run SCRIPT, a function of one element, on the thing at PLACE; to ANSWER.
-The things are those the last hints were put on, kept in the page."
+The things are those the last hints were put on, kept in the page, or
+in the frame of `canvas-browser--targets-session\\='."
   (canvas-browser--evaluate
-   (format "(%s)(window.__canvasBrowserTargets[%d])" script place) answer))
+   (format "(%s)(window.__canvasBrowserTargets[%d])" script place) answer
+   canvas-browser--targets-session))
 
 (defconst canvas-browser--address-js
   "e => { const link = e.closest ? e.closest('a[href]') : null;
@@ -2429,18 +2436,93 @@ window, or a part of it repeated across the window."
   "Open the address of the thing at PLACE in eww."
   (canvas-browser--with-address place #'eww))
 
+(defconst canvas-browser--pdf-viewer-url
+  "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/"
+  "The start of the address of the viewer that chromium shows a PDF in.")
+
+(defvar-local canvas-browser--viewer nil
+  "The PDF viewer this page buffer attached to, as (TARGET . SESSION), or nil.")
+
+(defun canvas-browser--viewer-target (infos)
+  "The id of the PDF viewer of this page among the targets INFOS, or nil.
+The viewer is a frame of its own, whose parent is the page."
+  (plist-get (seq-find (lambda (info)
+                         (and (equal (plist-get info :type) "iframe")
+                              (equal (plist-get info :parentFrameId) canvas-browser--target)
+                              (string-prefix-p canvas-browser--pdf-viewer-url
+                                               (plist-get info :url))))
+                       infos)
+             :targetId))
+
+(defun canvas-browser--attach-viewer (target then)
+  "Attach to the PDF viewer TARGET, and call THEN in this buffer with its session."
+  (canvas-browser-cdp-send
+   "Target.attachToTarget" (list :targetId target :flatten t)
+   (canvas-browser--here
+    (lambda (result)
+      (let ((session (or (plist-get result :sessionId)
+                         (error "canvas-browser: chromium gave no session of the PDF viewer"))))
+        (setq canvas-browser--viewer (cons target session))
+        (funcall then session))))))
+
+(defun canvas-browser--with-viewer (then)
+  "Call THEN in this buffer with the session of its PDF viewer, or nil for none.
+A viewer this buffer attached to before is used again."
+  (canvas-browser-cdp-send
+   "Target.getTargets" nil
+   (canvas-browser--here
+    (lambda (result)
+      (let ((target (canvas-browser--viewer-target (plist-get result :targetInfos))))
+        (cond ((null target) (funcall then nil))
+              ((equal target (car canvas-browser--viewer))
+               (funcall then (cdr canvas-browser--viewer)))
+              (t (canvas-browser--attach-viewer target then))))))))
+
+(defun canvas-browser--viewer-boxes (answer)
+  "Call ANSWER with the boxes of the PDF viewer of this page, and its session.
+Both are nil while no viewer is open."
+  (canvas-browser--with-viewer
+   (lambda (session)
+     (if session
+         (canvas-browser--evaluate canvas-browser--boxes-script
+                                   (lambda (boxes) (funcall answer boxes session))
+                                   session)
+       (funcall answer nil nil)))))
+
+(defun canvas-browser--hint-boxes (answer)
+  "Call ANSWER with the boxes the hints go on, and the session that has them.
+They are the boxes of `canvas-browser--boxes\\=', and the session is nil
+for the page itself.  Chromium shows a PDF in a viewer, a frame of its
+own that the page cannot look into, so a page that shows a PDF has
+nothing to click itself.  There the boxes are the buttons of the
+viewer.  The viewer fills the window, so its boxes are those of the
+page."
+  (canvas-browser--boxes
+   (canvas-browser--here
+    (lambda (boxes)
+      (if boxes
+          (funcall answer boxes nil)
+        (canvas-browser--ask-page
+         "document.contentType"
+         (lambda (type)
+           (if (equal type "application/pdf")
+               (canvas-browser--viewer-boxes answer)
+             (funcall answer nil nil)))))))))
+
 (defun canvas-browser-hints ()
   "Label everything that can be clicked, and click the one you name.
 A key of `canvas-browser--hint-actions\' pressed before the letters does
 something else with it: copy its address, its text or its picture, or
-open it in a buffer of its own or in eww."
+open it in a buffer of its own or in eww.  In a PDF, the buttons of the
+viewer are labelled."
   (interactive)
-  (canvas-browser--boxes
-   (lambda (boxes)
+  (canvas-browser--hint-boxes
+   (lambda (boxes session)
      (if (null boxes)
          (message "canvas-browser: nothing to click on this page")
        (when-let* ((chosen (canvas-browser--choose-box boxes canvas-browser--hint-actions)))
-         (canvas-browser--act chosen boxes #'canvas-browser--click-target))))))
+         (let ((canvas-browser--targets-session session))
+           (canvas-browser--act chosen boxes #'canvas-browser--click-target)))))))
 
 (defun canvas-browser--blocks (answer)
   "Call ANSWER with the boxes of the blocks of the page."
@@ -4624,6 +4706,7 @@ and the settings.  The widths line the columns of the two rows up."
    ("L" "lines" canvas-browser-search-text)
    ("A" "all pages" canvas-browser-search-pages)
    ("e" "eww" canvas-browser-open-in-eww)
+   ("P" "PDF" canvas-browser-open-pdf)
    ("y" "copy URL" canvas-browser-copy-url)
    (">" "send to" canvas-browser-send-to)]
   ["Modes"
@@ -4678,6 +4761,7 @@ keys zoom the page.  `g\\=' is `revert-buffer\\=', which reads it again.")
   "p" #'canvas-browser-scroll-line-down
   "t" #'canvas-browser-text
   "e" #'canvas-browser-open-in-eww
+  "P" #'canvas-browser-open-pdf
   "M-s M-l" #'canvas-browser-search-text
   "M-s M-p" #'canvas-browser-search-pages
   "C-c '" #'canvas-browser-edit-field
@@ -5710,13 +5794,16 @@ of its download instead, and Emacs moves it to its place once complete."
     (remhash guid canvas-browser--downloads)
     name))
 
-(defun canvas-browser--free-file (name directory)
+(defun canvas-browser--free-file (name directory &optional bytes)
   "The file NAME in DIRECTORY, numbered as NAME (1) and on while one is taken.
-A directory in NAME is dropped, so that a site cannot write elsewhere."
+A directory in NAME is dropped, so that a site cannot write elsewhere.
+A file that holds BYTES already is given as it is, so that the same
+bytes are not saved twice."
   (let* ((name (file-name-nondirectory name))
          (file (expand-file-name name directory))
          (number 0))
-    (while (file-exists-p file)
+    (while (and (file-exists-p file)
+                (not (and bytes (canvas-browser--holds-p file bytes))))
       (setq file (expand-file-name (format "%s (%d)%s" (file-name-sans-extension name)
                                            (cl-incf number) (file-name-extension name t))
                                    directory)))
@@ -5734,6 +5821,58 @@ A directory in NAME is dropped, so that a site cannot write elsewhere."
   "Say that the download GUID stopped before it was complete."
   (message "canvas-browser: the download of %s stopped"
            (canvas-browser--download-name guid)))
+
+;;;; A PDF in Emacs
+
+(defun canvas-browser--holds-p (file bytes)
+  "Non-nil when FILE holds BYTES and nothing more."
+  (and (= (file-attribute-size (file-attributes file)) (length bytes))
+       (equal (with-temp-buffer
+                (set-buffer-multibyte nil)
+                (insert-file-contents-literally file)
+                (buffer-string))
+              bytes)))
+
+(defun canvas-browser--pdf-name (url)
+  "The name of a file for the PDF at URL.
+It is the last part of the path of URL, with its escapes read, or
+document.pdf when the path has none.  It ends in .pdf, so that Emacs
+opens the file as a PDF."
+  (let* ((path (car (url-path-and-query (url-generic-parse-url url))))
+         (name (decode-coding-string
+                (url-unhex-string (file-name-nondirectory (or path ""))) 'utf-8)))
+    (cond ((string-empty-p name) "document.pdf")
+          ((string-suffix-p ".pdf" name t) name)
+          (t (concat name ".pdf")))))
+
+(defun canvas-browser--pdf-bytes ()
+  "The bytes of the PDF that this page shows, as chromium loaded them.
+Nothing is fetched again, so a PDF behind a sign-in comes all the same."
+  (unless (equal (canvas-browser--value-now "document.contentType") "application/pdf")
+    (user-error "canvas-browser: this page shows no PDF"))
+  (or (canvas-browser--loaded-bytes canvas-browser--url)
+      (error "canvas-browser: chromium gave no bytes of %s" canvas-browser--url)))
+
+(defun canvas-browser--save-pdf (bytes name)
+  "The file in `canvas-browser-download-directory\\=' that holds BYTES.
+It is a new file NAME, unless a file there holds BYTES already."
+  (let ((file (canvas-browser--free-file name canvas-browser-download-directory bytes)))
+    (unless (file-exists-p file)
+      (make-directory canvas-browser-download-directory t)
+      (let ((coding-system-for-write 'no-conversion))
+        (write-region bytes nil file nil 'silent)))
+    file))
+
+(defun canvas-browser-open-pdf ()
+  "Open the PDF that this page shows in a buffer of Emacs.
+pdf-tools shows it there when it is installed.  The PDF is saved in
+`canvas-browser-download-directory\\=', as a download is, and a PDF saved
+there before with the same bytes is opened again."
+  (interactive)
+  (unless canvas-browser--url
+    (user-error "canvas-browser: this buffer holds no URL"))
+  (find-file (canvas-browser--save-pdf (canvas-browser--pdf-bytes)
+                                       (canvas-browser--pdf-name canvas-browser--url))))
 
 ;;;; A field of the page in a buffer
 
@@ -7049,6 +7188,7 @@ Its parent holds the actions that embark has for any target.")
   "The actions of embark on a page, beside those embark has for any URL.")
 
 (keymap-set canvas-browser-embark-page-map ">" #'canvas-browser-send-page-to)
+(keymap-set canvas-browser-embark-page-map "P" #'canvas-browser-open-pdf)
 
 (defvar canvas-browser-embark-part-map (make-sparse-keymap)
   "The actions of embark on the part of a page that is picked.
@@ -7078,7 +7218,8 @@ prompt when it cycles to it."
 (defun canvas-browser--embark-setup ()
   "Tell embark of the targets of a page buffer, also of those open already.
 `s\\=' on marked text opens a page buffer that searches for it, and `>\\='
-sends the target to a receiver.  A page has the actions of a URL too."
+sends the target to a receiver.  `P\\=' on a page opens its PDF in Emacs.
+A page has the actions of a URL too."
   (set-keymap-parent canvas-browser-embark-text-map embark-general-map)
   (setf (alist-get 'canvas-browser-text embark-keymap-alist)
         '(canvas-browser-embark-text-map))
