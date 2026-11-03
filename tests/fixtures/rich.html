@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head><title>canvas-browser rich editor fixture</title></head>
+  <body>
+    <!-- A rich editor as a page builds it: it takes a paste of HTML and
+         puts it in place of the selection, as the editors of a wiki or a
+         chat do.  Each block is on one line, so the editor has no text
+         between its blocks. -->
+    <div id="rich" contenteditable="true" style="width: 400px; border: 1px solid #888"><h2 id="plan">Plan</h2><p id="keep">Keep this.</p><ul id="items"><li>milk</li><li>sugar</li></ul><p id="styled"><strong>strong</strong> coffee from the <a href="https://example.com/menu">menu</a></p><p id="picture">A cup <img id="cup" alt="cup" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="> here</p></div>
+    <script>
+      // The keys that the page is told of.  A chat sends its text when
+      // it is told of Enter, so a text from a buffer must come without
+      // a key.
+      window.keys = [];
+      document.addEventListener('keydown', event => window.keys.push(event.key), true);
+      document.getElementById('rich').addEventListener('paste', event => {
+        const html = event.clipboardData.getData('text/html');
+        if (!html) return;
+        event.preventDefault();
+        const range = document.getSelection().getRangeAt(0);
+        range.deleteContents();
+        const template = document.createElement('template');
+        template.innerHTML = html;
+        range.insertNode(template.content);
+      });
+    </script>
+  </body>
+</html>

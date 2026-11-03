@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'dom)
 (require 'canvas-cairo)
 (require 'canvas-keys)
 (require 'transient)
@@ -5724,11 +5725,12 @@ come back as a paragraph of its own.
   const e = activeField();
   if (!e) return null;
   if (e.type === 'password') return {password: true};
-  return {id: fieldId(e), text: fieldText(e)};
+  return {id: fieldId(e), text: fieldText(e), rich: typeof e.value !== 'string'};
 })()")
   "The JavaScript that gives the field with the focus: its name and its text.
 The answer is null without such a field, and it says so when the field
-is one for a password, without the password.")
+is one for a password, without the password.  It also says whether the
+field is a rich editor: an element that the page made editable.")
 
 (defconst canvas-browser--field-mark-script
   (concat "(function (id) {" canvas-browser--field-js "
@@ -5743,6 +5745,105 @@ It gives a promise that is kept once the page has told of the new
 selection, as an editor must know of it before a text takes its place.
 The answer is null when the page no longer has the field.")
 
+(defconst canvas-browser--rich-js
+  (concat "
+  const richSelection = e => {
+    const root = e.getRootNode();
+    return root.getSelection ? root.getSelection() : e.ownerDocument.getSelection();
+  };
+  const richRange = e => {
+    const selection = richSelection(e);
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    return e.contains(range.commonAncestorContainer) ? range : null;
+  };
+  const heldIn = part => {
+    if (part.querySelector('img, svg, canvas, video, picture, figure')) return 'a picture';
+    if (part.querySelector('table')) return 'a table';
+    if (part.querySelector('pre')) return 'a block of code';
+    const known = /^(P|DIV|BR|H[1-6]|UL|OL|LI|STRONG|B|EM|I|CODE|A|SPAN|SECTION|ARTICLE|BLOCKQUOTE)$/;
+    for (const el of part.querySelectorAll('*'))
+      if (!known.test(el.tagName) || el.style.color || el.style.backgroundColor)
+        return 'formatting that org has no markup for';
+    return null;
+  };
+  const richRanges = () => {
+    const kept = keptFields();
+    return kept.ranges || (kept.ranges = new Map());
+  };
+  const richPart = e => {
+    const range = richRange(e);
+    const part = document.createElement('div');
+    const id = fieldId(e);
+    if (range) {
+      part.appendChild(range.cloneContents());
+      richRanges().set(id, range.cloneRange());
+    }
+    return {id: id, rich: true, html: part.innerHTML, held: heldIn(part)};
+  };
+  const blockAfterCaret = (e, range, html) => {
+    if (!range.collapsed || !/<(p|div|h[1-6]|ul|ol|blockquote)[ >]/i.test(html)) return;
+    let block = range.startContainer;
+    while (block && block.parentNode !== e) block = block.parentNode;
+    if (!block) return;
+    const rest = document.createRange();
+    rest.setStart(range.startContainer, range.startOffset);
+    rest.setEndAfter(block);
+    if (rest.toString() === '') { range.setStartAfter(block); range.collapse(true); }
+  };
+  const putRich = (id, html) => {
+    const e = fieldOf(id);
+    const range = e && richRanges().get(id);
+    if (!range) return null;
+    richRanges().delete(id);
+    e.focus();
+    blockAfterCaret(e, range, html);
+    const told = " canvas-browser--selection-change-js ";
+    const selection = richSelection(e);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return told.then(() => {
+      const plain = document.createElement('template');
+      plain.innerHTML = html;
+      const data = new DataTransfer();
+      data.setData('text/html', html);
+      data.setData('text/plain', plain.content.textContent);
+      const paste = new ClipboardEvent('paste',
+        {clipboardData: data, bubbles: true, cancelable: true, composed: true});
+      if (e.dispatchEvent(paste)) e.ownerDocument.execCommand('insertHTML', false, html);
+      return true;
+    });
+  };")
+  "The JavaScript that reads and writes a part of a rich editor.
+`richPart\\=' gives the selection of the editor E as HTML, and keeps the
+selection to write over later.  Its answer says what the selection holds
+that org cannot hold, as a picture, so that nothing of it is lost.  A
+cursor with no selection is an empty part.
+`putRich\\=' puts HTML in place of the part that was kept.  It pastes the
+HTML, as the editors of pages take a paste of formatted text, and the
+editor makes its own blocks of it.  An editor that does not take the
+paste itself gets the HTML through the insert command of the browser.
+A cursor at the end of a block goes after the block first, so that a
+list or a heading does not go inside a paragraph.")
+
+(defconst canvas-browser--field-part-script
+  (concat "(function () {" canvas-browser--field-js canvas-browser--rich-js "
+  const e = activeField();
+  if (!e || typeof e.value === 'string') return null;
+  return richPart(e);
+})()")
+  "The JavaScript that gives the selected part of the rich editor with the focus.
+The answer is what `richPart\\=' gives, or null when the focus is in no
+rich editor.")
+
+(defconst canvas-browser--field-put-rich-script
+  (concat "(function (id, html) {" canvas-browser--field-js canvas-browser--rich-js "
+  return putRich(id, html);
+})(%s, %s)")
+  "The JavaScript that puts HTML in place of the kept part of a rich editor.
+The two %s are the name of the field and the HTML.  The answer is null
+when the page no longer has the field or its part.")
+
 (defconst canvas-browser--field-push-delay 0.2
   "How many seconds a change in the history of a field waits to be typed.
 Steps that follow one another fast are typed into the field as one.")
@@ -5756,6 +5857,11 @@ Steps that follow one another fast are typed into the field as one.")
 (defvar-local canvas-browser--field-page nil
   "The page buffer that has the field whose text this buffer holds.")
 
+(defvar-local canvas-browser--field-rich nil
+  "Non-nil in the buffer of a part of a rich editor.
+The buffer holds that part in org, and `C-c C-c\\=' puts it in place of
+that part only.")
+
 (defvar-local canvas-browser--field-id nil
   "The name that the page has for the field whose text this buffer holds.")
 
@@ -5768,6 +5874,129 @@ at once.  With nil the buffer follows the field.")
 
 (defvar-local canvas-browser--field-push-timer nil
   "The timer that types the text of this buffer into its field.")
+
+;;; The text of a rich editor in org
+
+(defvar org-html-text-markup-alist)
+(declare-function org-export-string-as "ox" (string backend &optional body-only ext-plist))
+
+(defconst canvas-browser--rich-marks
+  '((strong . "*") (b . "*") (em . "/") (i . "/") (code . "~"))
+  "The org mark of each HTML element that marks text inside a line.")
+
+(defun canvas-browser--rich-dom-tag (node)
+  "The tag of NODE, a part of a DOM, or nil when NODE is text."
+  (and (consp node) (dom-tag node)))
+
+(defun canvas-browser--rich-inline (node)
+  "The org text of NODE, a part of a DOM inside a line.
+White space shrinks to one space, as a page shows it."
+  (let ((tag (canvas-browser--rich-dom-tag node)))
+    (cond ((stringp node) (replace-regexp-in-string "[ \t\n\r]+" " " node))
+          ((eq tag 'br) "\n")
+          ((eq tag 'a)
+           (format "[[%s][%s]]" (dom-attr node 'href) (canvas-browser--rich-inline-children node)))
+          ((assq tag canvas-browser--rich-marks)
+           (let ((mark (alist-get tag canvas-browser--rich-marks)))
+             (concat mark (canvas-browser--rich-inline-children node) mark)))
+          (t (canvas-browser--rich-inline-children node)))))
+
+(defun canvas-browser--rich-inline-children (node)
+  "The org text of the children of NODE, inside a line."
+  (mapconcat #'canvas-browser--rich-inline (dom-children node) ""))
+
+(defun canvas-browser--rich-line (nodes)
+  "The org text of NODES, the parts of one line, with no space at its ends."
+  (string-trim (replace-regexp-in-string " \\{2,\\}" " " (mapconcat #'canvas-browser--rich-inline nodes ""))))
+
+(defun canvas-browser--rich-list-p (node)
+  "Whether NODE is a list of a page."
+  (memq (canvas-browser--rich-dom-tag node) '(ul ol)))
+
+(defun canvas-browser--rich-item (item prefix)
+  "The org text of ITEM, an element of a list, with PREFIX before it.
+A list inside the item stands below it, as far in as the text of the item."
+  (let ((indent (make-string (length prefix) ?\s))
+        (own (canvas-browser--rich-line (seq-remove #'canvas-browser--rich-list-p (dom-children item))))
+        (inner (mapcar #'canvas-browser--rich-list (seq-filter #'canvas-browser--rich-list-p (dom-children item)))))
+    (concat prefix own
+            (mapconcat (lambda (sub) (concat "\n" (replace-regexp-in-string "^" indent sub))) inner ""))))
+
+(defun canvas-browser--rich-list (node)
+  "The org text of NODE, a list of a page."
+  (let ((items (seq-filter (lambda (child) (eq (canvas-browser--rich-dom-tag child) 'li)) (dom-children node)))
+        (number 0))
+    (mapconcat (lambda (item)
+                 (setq number (1+ number))
+                 (canvas-browser--rich-item item (if (eq (dom-tag node) 'ol) (format "%d. " number) "- ")))
+               items "\n")))
+
+(defun canvas-browser--rich-heading (node)
+  "The org text of NODE, a heading of a page: a star for each level."
+  (concat (make-string (string-to-number (substring (symbol-name (dom-tag node)) 1)) ?*)
+          " " (canvas-browser--rich-line (dom-children node))))
+
+(defun canvas-browser--rich-blocks (nodes)
+  "The org blocks that NODES make, as a list of texts, none of them empty.
+Text between blocks makes a paragraph of its own."
+  (let ((blocks nil) (line nil))
+    (cl-flet ((end-line ()
+                (let ((text (canvas-browser--rich-line (nreverse line))))
+                  (setq line nil)
+                  (unless (string-empty-p text) (push text blocks)))))
+      (dolist (node nodes)
+        (let ((tag (canvas-browser--rich-dom-tag node)))
+          (cond ((memq tag '(h1 h2 h3 h4 h5 h6)) (end-line) (push (canvas-browser--rich-heading node) blocks))
+                ((memq tag '(ul ol)) (end-line) (push (canvas-browser--rich-list node) blocks))
+                ((eq tag 'head))
+                ((memq tag '(html body p div section article header footer main blockquote))
+                 (end-line)
+                 (setq blocks (append (reverse (canvas-browser--rich-blocks (dom-children node))) blocks)))
+                (t (push node line)))))
+      (end-line))
+    (nreverse blocks)))
+
+(defun canvas-browser--html-to-org (html)
+  "The org text of HTML, a part of a rich editor of a page.
+Each block is a paragraph, a heading or a list, and an empty line is
+between two blocks."
+  (string-join (canvas-browser--rich-blocks
+                (list (with-temp-buffer
+                        (insert html)
+                        (libxml-parse-html-region (point-min) (point-max)))))
+               "\n\n"))
+
+(defun canvas-browser--rich-top-level (text)
+  "The fewest stars of a heading of TEXT, org, or 1 when it has no heading."
+  (let ((levels nil) (start 0))
+    (while (string-match "^\\(\\*+\\) " text start)
+      (push (length (match-string 1 text)) levels)
+      (setq start (match-end 0)))
+    (if levels (apply #'min levels) 1)))
+
+(defun canvas-browser--rich-compact (html)
+  "HTML with no line break next to a tag, and a space for each other one.
+The export of org puts a line break after each tag of a block, and an
+editor of a page keeps such a break as a space."
+  (replace-regexp-in-string
+   "\n" " " (replace-regexp-in-string "\n*\\(<[^>]*>\\)\n*" "\\1" html)))
+
+(defun canvas-browser--org-to-html (text)
+  "The HTML of TEXT, org that goes into a rich editor of a page.
+A heading of N stars is a heading of level N, and bold text is strong,
+as the editors of pages mark them.  The export of org counts the levels
+from the fewest stars in the text, so that number is the top level."
+  (require 'ox-html)
+  (let ((org-html-text-markup-alist '((bold . "<strong>%s</strong>")
+                                      (code . "<code>%s</code>")
+                                      (italic . "<em>%s</em>")
+                                      (strike-through . "<del>%s</del>")
+                                      (underline . "<u>%s</u>")
+                                      (verbatim . "<code>%s</code>"))))
+    (canvas-browser--rich-compact
+     (org-export-string-as text 'html t (list :with-toc nil :section-numbers nil
+                                             :html-toplevel-hlevel (canvas-browser--rich-top-level text)
+                                             :with-smart-quotes nil :with-sub-superscript nil)))))
 
 (defvar canvas-browser--field-reading nil
   "Whether the text of a field is being put in its buffer.
@@ -5909,6 +6138,9 @@ page, so the page is what the window shows again."
          (message "canvas-browser: no field of the page has the focus"))
         ((plist-get field :password)
          (message "canvas-browser: a password is not shown in a buffer"))
+        ((eq (plist-get field :rich) t)
+         (canvas-browser--ask-page canvas-browser--field-part-script
+                                   #'canvas-browser--rich-part-open))
         (t (let ((buffer (canvas-browser--field-buffer (current-buffer) field)))
              (with-current-buffer buffer
                (setq canvas-browser--field-state 'edit))
@@ -5923,10 +6155,55 @@ sent either way.  What the field holds that is no text, as a picture,
 does not come back.
 
 The buffer stays when the edit ends, and it is the buffer of that field
-from then on: its undo history is the history of the field."
+from then on: its undo history is the history of the field.
+
+In a rich editor, an element that the page made editable, the buffer is
+in org and holds only the part that is selected, or nothing when only
+the cursor is there.  `C-c C-c\\=' puts the org there as formatted text,
+in place of that part, and leaves the rest of the editor alone.  A
+selection that holds what org cannot hold, as a picture or a table,
+opens no buffer."
   (interactive)
   (canvas-browser--ask-page canvas-browser--field-read-script
                             #'canvas-browser--edit-field-open))
+
+(defun canvas-browser--rich-part-open (part)
+  "Open PART in a buffer.
+PART is what this page answered about the part of its rich editor."
+  (cond ((null part)
+         (message "canvas-browser: no rich editor of the page has the focus"))
+        ((stringp (plist-get part :held))
+         (message "canvas-browser: the selection holds %s, which org cannot hold, so it stays as it is"
+                  (plist-get part :held)))
+        (t (pop-to-buffer (canvas-browser--rich-buffer (current-buffer) part)))))
+
+(defun canvas-browser--rich-buffer (page field)
+  "A new buffer in org for the part of a rich editor of PAGE that FIELD names.
+FIELD is what the page answered about the part: the name of its field
+and its HTML."
+  (let ((buffer (generate-new-buffer (format "*part of a field of %s*" (buffer-name page)))))
+    (with-current-buffer buffer
+      (org-mode)
+      (insert (canvas-browser--html-to-org (plist-get field :html)))
+      (setq buffer-undo-list nil)
+      (canvas-browser-edit-field-mode 1)
+      (setq canvas-browser--field-page page
+            canvas-browser--field-id (plist-get field :id)
+            canvas-browser--field-rich t
+            canvas-browser--field-state 'edit))
+    buffer))
+
+(defun canvas-browser--rich-send (then)
+  "Put the org of this buffer in its rich editor, in place of its part.
+THEN is called in the page buffer with whether the page still has the
+part."
+  (let ((html (canvas-browser--org-to-html
+               (buffer-substring-no-properties (point-min) (point-max))))
+        (id canvas-browser--field-id))
+    (with-current-buffer canvas-browser--field-page
+      (canvas-browser--ask-page
+       (format canvas-browser--field-put-rich-script (json-encode id) (json-encode html))
+       (lambda (put) (funcall then (eq put t)))))))
 
 (defun canvas-browser--edit-field-leave (buffer)
   "Put BUFFER out of sight, which was open to write the text of a field in.
@@ -5944,7 +6221,8 @@ The text goes in as a yank does, without a key, so nothing is sent."
   (unless (buffer-live-p canvas-browser--field-page)
     (user-error "canvas-browser: the page of this field is gone"))
   (let ((buffer (current-buffer)))
-    (canvas-browser--field-send
+    (funcall
+     (if canvas-browser--field-rich #'canvas-browser--rich-send #'canvas-browser--field-send)
      (lambda (marked)
        (if marked
            (canvas-browser--edit-field-leave buffer)
@@ -5974,7 +6252,9 @@ knows each key that was typed."
   (let* ((buffer (and (plist-get field :id)
                       (canvas-browser--field-buffer (current-buffer) field)))
          (command (and buffer (with-current-buffer buffer (key-binding keys)))))
-    (if (or (not (commandp command)) (eq command 'undo))
+    ;; A step of the history is typed in place of all that the field
+    ;; holds, which in a rich editor would take its formatting.
+    (if (or (eq (plist-get field :rich) t) (not (commandp command)) (eq command 'undo))
         (canvas-browser-field-undo)
       (with-current-buffer buffer
         (setq canvas-browser--field-state 'live)

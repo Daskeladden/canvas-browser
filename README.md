@@ -169,9 +169,17 @@ the text into the field, in place of what the field holds. `C-c C-k`
 leaves the field as it is. Neither key sends the text. It goes in as a
 yank does, without a key, so a chat that sends on Enter sends nothing.
 
-An editor that a page builds itself gets a paragraph for each line.
-What such a field holds that is no text, as a picture, does not come
-back. A field for a password does not open in a buffer.
+A field for a password does not open in a buffer.
+
+An editor that a page builds itself, as the editor of a wiki or a chat
+box, is a rich editor. There `C-c '` opens only the part that you
+selected, as org, or an empty buffer when only the cursor is there.
+`C-c C-c` puts the org in place of that part as formatted text, with
+its headings, lists, bold text and links, and leaves the rest of the
+editor alone. A selection that holds what org cannot hold, as a
+picture, a table, a block of code or colored text, opens no buffer, so
+nothing of it is lost. In a rich editor, `C-x u` is the undo of the
+page.
 
 When the edit ends, the buffer stays, and it is the buffer of that
 field from then on. Its undo history is the history of the field, which

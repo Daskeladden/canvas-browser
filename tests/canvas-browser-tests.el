@@ -9090,3 +9090,53 @@ The file is written where chromium writes a download, named by its GUID."
     (should (string-search "report.pdf" (car said)))
     (should (string-search "stopped" (car said)))
     (should-not (file-exists-p (expand-file-name "report.pdf" saved)))))
+
+;;; The text of a rich editor in org.
+
+(ert-deftest canvas-browser-a-list-of-a-page-comes-as-an-org-list ()
+  ;; GIVEN the HTML of a list of two items, as a page holds it
+  ;; WHEN it is read as org
+  ;; THEN it is an org list of the two items
+  (should (equal (canvas-browser--html-to-org "<ul id=\"items\"><li>milk</li><li>sugar</li></ul>")
+                 "- milk\n- sugar")))
+
+(ert-deftest canvas-browser-a-heading-of-a-page-keeps-its-level-in-org ()
+  ;; GIVEN the HTML of a heading of the second level and a paragraph
+  ;; WHEN it is read as org
+  ;; THEN the heading has two stars, AND an empty line is between it and
+  ;;      the paragraph
+  (should (equal (canvas-browser--html-to-org "<h2>Plan</h2>\n<p>Keep\n  this.</p>")
+                 "** Plan\n\nKeep this.")))
+
+(ert-deftest canvas-browser-the-markup-in-a-line-of-a-page-comes-as-org-markup ()
+  ;; GIVEN the HTML of a line with bold, slanted and code text and a link
+  ;; WHEN it is read as org
+  ;; THEN each of them has its org markup
+  (should (equal (canvas-browser--html-to-org
+                  "<p><strong>strong</strong> <em>soft</em> <code>cup</code> from the <a href=\"https://example.com/menu\">menu</a></p>")
+                 "*strong* /soft/ ~cup~ from the [[https://example.com/menu][menu]]")))
+
+(ert-deftest canvas-browser-org-goes-to-html-and-back-unchanged ()
+  ;; GIVEN org texts with headings, paragraphs, markup, a list in a list
+  ;;       and a numbered list
+  ;; WHEN each is written as HTML, and that HTML is read as org again
+  ;; THEN each text is as it was
+  (dolist (text '("* Order\n\n- coffee\n- tea"
+                  "** Plan\n\nKeep this.\n\nAnd this."
+                  "*strong* /soft/ ~cup~ from the [[https://example.com/menu][menu]]"
+                  "- coffee\n  - milk\n  - sugar\n- tea"
+                  "1. grind\n2. brew"))
+    (should (equal (canvas-browser--html-to-org (canvas-browser--org-to-html text)) text))))
+
+(ert-deftest canvas-browser-bold-org-text-is-strong-in-html ()
+  ;; GIVEN org text in bold
+  ;; WHEN it is written as HTML
+  ;; THEN the HTML marks it as strong, which the editors of pages know
+  (should (string-search "<strong>strong</strong>" (canvas-browser--org-to-html "*strong* coffee"))))
+
+(ert-deftest canvas-browser-org-paragraphs-become-html-with-no-line-breaks ()
+  ;; GIVEN two org paragraphs
+  ;; WHEN they are written as HTML
+  ;; THEN each is an HTML paragraph with no line break around its text,
+  ;;      which an editor of a page would keep as a space
+  (should (equal (canvas-browser--org-to-html "first\n\nthird") "<p>first</p><p>third</p>")))

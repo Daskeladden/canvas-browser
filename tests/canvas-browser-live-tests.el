@@ -1879,25 +1879,34 @@ With nil for TEXT, the text stays as the buffer has it."
                5 (lambda () (equal (canvas-browser-live-test--value "area")
                                    "alpha\nbeta\n\ngamma")))))))
 
-(ert-deftest canvas-browser-live-an-editor-keeps-its-lines-through-a-buffer ()
+(ert-deftest canvas-browser-live-a-whole-editor-keeps-its-paragraphs-through-a-buffer ()
   ;; GIVEN the field fixture, where an editor that the page built holds
-  ;;       three paragraphs, the second one empty
-  ;; WHEN the editor has the focus, and its text is opened in a buffer
-  ;; THEN the buffer holds a line for each paragraph: an empty line for
-  ;;      the empty one, and no more empty lines than that
-  ;; WHEN the edit is ended with one more line
-  ;; THEN the editor holds a paragraph for each line of the buffer
+  ;;       three paragraphs, the second one empty, AND all of the editor
+  ;;       is selected
+  ;; WHEN its text is opened in a buffer
+  ;; THEN the buffer holds an org paragraph for each paragraph with
+  ;;      text, with an empty line between them
+  ;; WHEN the edit is ended with one more paragraph
+  ;; THEN the editor holds a paragraph for each org paragraph, AND the
+  ;;      page was told of no key
   (skip-unless (cl-some #'executable-find canvas-browser-chromium))
   (canvas-browser-live-test--in-field-fixture
-    (let ((field (canvas-browser-live-test--edit-field "document.getElementById('editor')")))
+    (canvas-browser-live-test--page-says
+     "(() => { const e = document.getElementById('editor'); e.focus();
+               const r = document.createRange(); r.selectNodeContents(e);
+               const s = document.getSelection(); s.removeAllRanges(); s.addRange(r);
+               return true; })()")
+    (canvas-browser-edit-field)
+    (canvas-browser-live-test--wait 2 #'canvas-browser-live-test--edited-field)
+    (let ((field (canvas-browser-live-test--edited-field)))
       (should field)
       (should (equal (with-current-buffer field (buffer-string)) "first\n\nthird"))
-      (canvas-browser-live-test--finish-field field "first\n\nthird\nfourth")
+      (canvas-browser-live-test--finish-field field "first\n\nthird\n\nfourth")
       (should (canvas-browser-live-test--wait
                5 (lambda ()
                    (equal (canvas-browser-live-test--page-says
                            "[...document.querySelectorAll('#editor > p')].map(p => p.textContent)")
-                          '("first" "" "third" "fourth")))))
+                          '("first" "third" "fourth")))))
       (should (equal (canvas-browser-live-test--page-says "window.keys.length") 0)))))
 
 (ert-deftest canvas-browser-live-a-field-in-a-web-component-is-edited-in-a-buffer ()
@@ -2347,3 +2356,182 @@ What comes over the bus is an event that Emacs reads as it reads a key."
       (canvas-browser-cdp-stop)
       (delete-directory canvas-browser-profile-directory t)
       (delete-directory canvas-browser-download-directory t))))
+
+;;; The rich editor: a part of it is written in org.
+
+(defmacro canvas-browser-live-test--in-rich-fixture (&rest body)
+  "Run BODY in a page buffer of the rich editor fixture, with no window changed."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+     (canvas-browser-live-test--in-fixture "rich.html"
+       (canvas-browser-live-test--lay-out 800 600)
+       (unwind-protect (progn ,@body)
+         (mapc #'kill-buffer (canvas-browser-live-test--field-buffers))))))
+
+(defun canvas-browser-live-test--edit-rich (range)
+  "Give the rich editor the focus, select RANGE in it, and open the field in a buffer.
+RANGE is the text of a JavaScript function that sets the range it gets.
+Give the buffer once the page has answered, or nil when none opens."
+  (canvas-browser-live-test--page-says
+   (format "(() => { const e = document.getElementById('rich'); e.focus();
+                     const r = document.createRange(); (%s)(r);
+                     const s = document.getSelection(); s.removeAllRanges(); s.addRange(r);
+                     return true; })()"
+           range))
+  (canvas-browser-edit-field)
+  (canvas-browser-live-test--wait 2 #'canvas-browser-live-test--edited-field)
+  (canvas-browser-live-test--edited-field))
+
+(defun canvas-browser-live-test--rich-has (selector text)
+  "Whether the rich editor has an element that SELECTOR matches, with TEXT as its text."
+  ;; The page gives false as :false, which is no nil.  An editor keeps a
+  ;; space that is typed after a word as a no-break space.
+  (eq t (canvas-browser-live-test--page-says
+   (format "[...document.querySelectorAll('#rich %s')].some(e => e.textContent.replace(/\\s+/g, ' ').trim() === %s)"
+           selector (json-encode text)))))
+
+(defun canvas-browser-live-test--rich-in-order (&rest texts)
+  "Whether the rich editor shows each of TEXTS, in this order."
+  (eq t (canvas-browser-live-test--page-says
+   (format "(() => { const all = document.getElementById('rich').textContent;
+                     const at = %s.map(t => all.indexOf(t));
+                     return at.every((i, n) => i >= 0 && (n === 0 || i > at[n - 1])); })()"
+           (json-encode (vconcat texts))))))
+
+(defun canvas-browser-live-test--rich-is-as-written ()
+  "Whether the rich editor still holds all that the fixture wrote in it."
+  (and (canvas-browser-live-test--rich-has "h2" "Plan")
+       (canvas-browser-live-test--rich-has "p" "Keep this.")
+       (canvas-browser-live-test--rich-has "li" "milk")
+       (canvas-browser-live-test--rich-has "li" "sugar")
+       (canvas-browser-live-test--rich-has "strong" "strong")
+       (canvas-browser-live-test--rich-has "a[href=\"https://example.com/menu\"]" "menu")
+       (eq (canvas-browser-live-test--page-says "document.querySelectorAll('#rich img').length") 1)))
+
+(ert-deftest canvas-browser-live-a-selected-part-of-a-rich-editor-comes-as-org ()
+  ;; GIVEN a rich editor that holds a heading, a paragraph and a list of
+  ;;       two items, with only the list selected
+  ;; WHEN C-c ' opens the field in a buffer
+  ;; THEN the buffer holds only the list, as an org list
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-rich-fixture
+    (let ((field (canvas-browser-live-test--edit-rich
+                  "r => r.selectNode(document.getElementById('items'))")))
+      (should field)
+      (should (equal (with-current-buffer field (string-trim (buffer-string)))
+                     "- milk\n- sugar")))))
+
+(ert-deftest canvas-browser-live-org-replaces-only-the-selected-part-with-formatting ()
+  ;; GIVEN a rich editor with only its list selected, open in a buffer
+  ;; WHEN the buffer is changed to an org heading and a list of two
+  ;;      items, and C-c C-c ends the edit
+  ;; THEN the editor shows that heading and that list where the old list
+  ;;      was, AND the heading, the paragraphs and the picture around it
+  ;;      are as they were, AND the page was told of no key
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-rich-fixture
+    (let ((field (canvas-browser-live-test--edit-rich
+                  "r => r.selectNode(document.getElementById('items'))")))
+      (should field)
+      (canvas-browser-live-test--finish-field field "* Order\n- coffee\n- tea\n")
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (canvas-browser-live-test--rich-has "li" "coffee"))))
+      (should (canvas-browser-live-test--rich-has "h1, h2, h3, h4, h5, h6" "Order"))
+      (should (canvas-browser-live-test--rich-has "li" "tea"))
+      (should-not (canvas-browser-live-test--rich-has "li" "milk"))
+      (should (canvas-browser-live-test--rich-in-order
+               "Plan" "Keep this." "Order" "coffee" "tea" "strong coffee from the menu" "A cup"))
+      (should (canvas-browser-live-test--rich-has "strong" "strong"))
+      (should (eq (canvas-browser-live-test--page-says "document.querySelectorAll('#rich img').length") 1))
+      (should (equal (canvas-browser-live-test--page-says "window.keys.length") 0)))))
+
+(ert-deftest canvas-browser-live-with-no-selection-org-goes-in-at-the-cursor ()
+  ;; GIVEN a rich editor with the cursor at the end of its paragraph and
+  ;;       nothing selected
+  ;; WHEN C-c ' opens the field in a buffer
+  ;; THEN the buffer is empty
+  ;; WHEN an org list of two items is written there, and C-c C-c ends
+  ;;      the edit
+  ;; THEN the list stands in the editor after that paragraph, AND all
+  ;;      that the editor held before is still there
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-rich-fixture
+    (let ((field (canvas-browser-live-test--edit-rich
+                  "r => { const t = document.getElementById('keep').firstChild;
+                          r.setStart(t, t.length); r.collapse(true); }")))
+      (should field)
+      (should (equal (with-current-buffer field (buffer-string)) ""))
+      (canvas-browser-live-test--finish-field field "- one\n- two\n")
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (canvas-browser-live-test--rich-has "li" "one"))))
+      (should (canvas-browser-live-test--rich-has "li" "two"))
+      (should (canvas-browser-live-test--rich-in-order "Plan" "Keep this." "one" "two" "milk"))
+      (should (canvas-browser-live-test--rich-is-as-written)))))
+
+(ert-deftest canvas-browser-live-bold-text-and-a-link-come-and-go-as-org ()
+  ;; GIVEN a rich editor with a paragraph selected that holds bold text
+  ;;       and a link
+  ;; WHEN C-c ' opens the field in a buffer
+  ;; THEN the buffer holds the bold text and the link in org markup
+  ;; WHEN C-c C-c ends the edit with the text unchanged
+  ;; THEN the editor shows the bold text and the link as before
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-rich-fixture
+    (let ((field (canvas-browser-live-test--edit-rich
+                  "r => r.selectNode(document.getElementById('styled'))")))
+      (should field)
+      (should (equal (with-current-buffer field (string-trim (buffer-string)))
+                     "*strong* coffee from the [[https://example.com/menu][menu]]"))
+      (canvas-browser-live-test--finish-field field nil)
+      (should (canvas-browser-live-test--wait
+               5 (lambda () (canvas-browser-live-test--rich-is-as-written))))
+      (should (canvas-browser-live-test--rich-in-order "Keep this." "strong coffee from the menu" "A cup")))))
+
+(ert-deftest canvas-browser-live-the-history-of-a-rich-editor-types-nothing-over-it ()
+  ;; GIVEN a rich editor with the focus in it, AND a package that shows
+  ;;       the undo history of a buffer on C-x u, here one that takes a
+  ;;       step back at once
+  ;; WHEN the field is read, as it is when the keys pause, AND more is
+  ;;      typed into the page, AND the field is read again, AND the
+  ;;      history of the field is asked for in the page buffer
+  ;; THEN the page takes back what was typed with its own undo, AND the
+  ;;      editor holds all that it held before, with its formatting
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((before (lookup-key text-mode-map (kbd "C-x u"))))
+    (unwind-protect
+        (canvas-browser-live-test--in-rich-fixture
+          (define-key text-mode-map (kbd "C-x u") #'canvas-browser-live-test--step-back)
+          (canvas-browser-live-test--page-says
+           "(() => { const e = document.getElementById('rich'); e.focus();
+                     const t = document.getElementById('keep').firstChild;
+                     const r = document.createRange(); r.setStart(t, t.length); r.collapse(true);
+                     const s = document.getSelection(); s.removeAllRanges(); s.addRange(r);
+                     return true; })()")
+          (canvas-browser--field-read (current-buffer))
+          (should (canvas-browser-live-test--wait 5 #'canvas-browser-live-test--field-buffers))
+          (canvas-browser--tell "Input.insertText" (list :text " and more"))
+          (should (canvas-browser-live-test--wait
+                   5 (lambda () (canvas-browser-live-test--rich-has "p" "Keep this. and more"))))
+          (canvas-browser--field-read (current-buffer))
+          (canvas-browser-live-test--wait 2 (lambda () nil))
+          (canvas-browser-field-history)
+          (canvas-browser-live-test--wait 2 (lambda () nil))
+          (should (canvas-browser-live-test--wait
+                   5 (lambda () (canvas-browser-live-test--rich-has "p" "Keep this."))))
+          (should (canvas-browser-live-test--rich-is-as-written)))
+      (define-key text-mode-map (kbd "C-x u") (and (not (numberp before)) before)))))
+
+(ert-deftest canvas-browser-live-a-selection-with-a-picture-opens-no-buffer ()
+  ;; GIVEN a rich editor with a paragraph selected that holds a picture
+  ;; WHEN C-c ' is pressed
+  ;; THEN no buffer opens, AND a message says that the selection holds
+  ;;      a picture, AND the editor holds all that it held before
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-rich-fixture
+    (let ((messages-before (with-current-buffer (messages-buffer) (buffer-size))))
+      (should-not (canvas-browser-live-test--edit-rich
+                   "r => r.selectNode(document.getElementById('picture'))"))
+      (should (string-search "picture"
+                             (with-current-buffer (messages-buffer)
+                               (buffer-substring (min (1+ messages-before) (point-max)) (point-max)))))
+      (should (canvas-browser-live-test--rich-is-as-written)))))
