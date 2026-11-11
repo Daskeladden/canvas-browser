@@ -518,7 +518,7 @@ Normal state keeps the keys of Emacs:
 
 | key | what it does |
 |---|---|
-| `o` | opens a URL in this buffer, or searches for the words you type |
+| `o` | opens a URL in this buffer, or searches for the words you type. One word with no dot, slash or colon is searched for too. `espresso/` or a scheme such as `http://espresso` reaches a host of that name |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
 | `H` | offers the pages that you visited, the newest first, and opens the one you choose |
 | `C-SPC`, `C-u C-SPC`, `C-x C-x` | set a mark where the page stands, go back to the newest mark, and swap the two |

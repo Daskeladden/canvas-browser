@@ -1776,15 +1776,25 @@ selected."
 (defconst canvas-browser--local-host "\\`\\(localhost\\|127\\.0\\.0\\.1\\|\\[::1\\]\\)\\([:/]\\|\\'\\)"
   "How an address of this machine starts, which http serves.")
 
+(defun canvas-browser--search-words-p (text)
+  "Whether TEXT, which has no scheme, is words to search for.
+They are words with a space, or one word with no dot, no slash and no
+colon, which names no host as it is typed."
+  (or (string-match-p "[ \t]" text)
+      (string-match-p "\\`[^ \t./:]+\\'" text)))
+
 (defun canvas-browser--url-of (text)
   "TEXT as a URL: its own scheme, else one that fits, else a search.
 A local address gets http, since a server on this machine rarely has a
-certificate, and anything else gets https."
+certificate.  Words with a space are searched for, and so is one word
+with no dot, no slash and no colon: espresso is a search, while
+espresso/ and http://espresso reach a host of that name.  Anything else
+gets https."
   (let ((text (string-trim text)))
     (cond ((string-match-p canvas-browser--local-host text) (concat "http://" text))
           ;; A port is no scheme: localhost:8080 is a host, mailto:a@b is not.
           ((string-match-p "\\`[a-zA-Z][a-zA-Z0-9+.-]*:\\(//\\|[^0-9]\\)" text) text)
-          ((string-match-p "[ \t]" text)
+          ((canvas-browser--search-words-p text)
            (format canvas-browser-search-url (url-hexify-string text)))
           (t (concat "https://" text)))))
 

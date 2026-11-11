@@ -1862,6 +1862,20 @@ of their texts are killed afterwards."
     (should (equal (canvas-browser--url-of "what is a canvas")
                    "https://duckduckgo.com/?q=what%20is%20a%20canvas"))))
 
+(ert-deftest canvas-browser-one-word-is-searched-for ()
+  ;; GIVEN one word, the word with a slash, with a scheme and with a port,
+  ;;       a host with a dot, the local host, and nothing
+  ;; WHEN each is made into a URL
+  ;; THEN the word alone becomes a search, AND each of the others reaches
+  ;;      a host as before
+  (let ((canvas-browser-search-url "https://duckduckgo.com/?q=%s"))
+    (should (equal (mapcar #'canvas-browser--url-of
+                           '("espresso" "espresso/" "http://espresso" "espresso:8080"
+                             "example.org" "localhost" ""))
+                   '("https://duckduckgo.com/?q=espresso" "https://espresso/"
+                     "http://espresso" "https://espresso:8080"
+                     "https://example.org" "http://localhost" "https://")))))
+
 (ert-deftest canvas-browser-open-url-navigates-to-the-url-it-made ()
   ;; GIVEN a page buffer
   ;; WHEN a host without a scheme is opened
