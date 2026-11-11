@@ -1979,6 +1979,103 @@ from FROM to TO, each different one once."
                    "https://www.vg.no"))
     (should (equal canvas-browser--url "https://www.vg.no"))))
 
+(defun canvas-browser-test--visit-milk-sugar-coffee ()
+  "Have this page buffer visit Milk, then Sugar, then Coffee."
+  (dolist (name '("milk" "sugar" "coffee"))
+    (canvas-browser-test--visit (concat "https://example.org/" name) (capitalize name))))
+
+(defun canvas-browser-test--offered (ask)
+  "What the prompt that ASK opens offers, as a plist: the history that
+M-p steps through, and the default that M-n brings.  The reader answers
+with nothing."
+  (let ((offered nil))
+    (cl-letf (((symbol-function 'read-from-minibuffer)
+               (lambda (_prompt _initial _keymap _read hist &optional default &rest _)
+                 ;; The history may exist only while the prompt asks.  A
+                 ;; prompt without one of its own shares that of Emacs.
+                 (setq offered (list :history (symbol-value (or hist 'minibuffer-history))
+                                     :default default))
+                 "")))
+      (funcall ask))
+    offered))
+
+(ert-deftest canvas-browser-the-url-prompt-steps-through-the-pages-before ()
+  ;; GIVEN a page buffer of Coffee, after visits to Milk, then Sugar, then
+  ;;       Coffee
+  ;; WHEN the URL prompt asks
+  ;; THEN M-p steps through Sugar and then Milk, AND M-n brings the
+  ;;      address of Coffee
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-sugar-coffee)
+      (should (equal (canvas-browser-test--offered #'canvas-browser--read-url)
+                     '(:history ("https://example.org/sugar" "https://example.org/milk")
+                       :default "https://example.org/coffee"))))))
+
+(ert-deftest canvas-browser-the-url-prompt-of-no-page-steps-through-every-visit ()
+  ;; GIVEN visits to Milk, then Sugar, then Coffee, AND a buffer that is
+  ;;       no page
+  ;; WHEN the URL prompt asks there
+  ;; THEN M-p steps through Coffee, Sugar and Milk, AND M-n brings nothing
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-sugar-coffee))
+    (with-temp-buffer
+      (should (equal (canvas-browser-test--offered #'canvas-browser--read-url)
+                     '(:history ("https://example.org/coffee" "https://example.org/sugar"
+                                 "https://example.org/milk")
+                       :default nil))))))
+
+(ert-deftest canvas-browser-the-url-prompt-without-visits-has-nothing-to-step-through ()
+  ;; GIVEN a page buffer, no visited page, AND https://example.org/sugar
+  ;;       typed into another prompt before
+  ;; WHEN the URL prompt asks
+  ;; THEN M-p has nothing to step through
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (let ((minibuffer-history '("https://example.org/sugar")))
+        (should-not (plist-get (canvas-browser-test--offered #'canvas-browser--read-url)
+                               :history))))))
+
+(ert-deftest canvas-browser-what-is-typed-in-the-url-prompt-is-not-kept ()
+  ;; GIVEN a page buffer of Coffee, after visits to Milk, then Sugar, then
+  ;;       Coffee
+  ;; WHEN https://example.org/sugar is typed into the URL prompt
+  ;; THEN no history keeps it after the prompt: neither the one of the URL
+  ;;      prompt nor the one that the other prompts share
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-sugar-coffee)
+      (let ((minibuffer-history nil))
+        (cl-letf (((symbol-function 'read-from-minibuffer)
+                   (lambda (_prompt _initial _keymap _read hist &rest _)
+                     (add-to-history (or hist 'minibuffer-history) "https://example.org/sugar")
+                     "https://example.org/sugar")))
+          (canvas-browser--read-url))
+        (should-not minibuffer-history)
+        (should-not (default-value 'canvas-browser--url-history))))))
+
+(ert-deftest canvas-browser-the-command-canvas-browser-asks-through-the-url-prompt ()
+  ;; GIVEN a page buffer of Coffee, after visits to Milk, then Sugar, then
+  ;;       Coffee
+  ;; WHEN O asks for the address of a page buffer of its own
+  ;; THEN M-p steps through Sugar and then Milk, AND M-n brings the
+  ;;      address of Coffee
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-sugar-coffee)
+      (should (equal (canvas-browser-test--offered
+                      (lambda () (kill-buffer (call-interactively #'canvas-browser))))
+                     '(:history ("https://example.org/sugar" "https://example.org/milk")
+                       :default "https://example.org/coffee"))))))
+
+(ert-deftest canvas-browser-savehist-keeps-no-url-history ()
+  ;; GIVEN savehist, loaded
+  ;; THEN it leaves out the addresses that the URL prompt steps through
+  ;;      when it saves the histories of the prompts
+  (require 'savehist)
+  (should (memq 'canvas-browser--url-history savehist-ignored-variables)))
+
 ;;;; The pointer over a link
 
 (ert-deftest canvas-browser-hot-spots-name-the-boxes-that-can-be-clicked ()

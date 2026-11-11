@@ -404,6 +404,8 @@ title and its address. The page that you choose opens in this buffer.
 `M-x canvas-browser-history` in any other buffer. The key of
 `consult-history` asks for this history too in a page buffer. The
 history is kept in the file that `canvas-browser-history-file` names.
+`M-p` in the prompt of `o` and `O` steps through the same pages, without
+the page that the buffer shows.
 
 ### Embark
 
@@ -518,14 +520,14 @@ Normal state keeps the keys of Emacs:
 
 | key | what it does |
 |---|---|
-| `o` | opens a URL in this buffer, or searches for the words you type. One word with no dot, slash or colon is searched for too. `espresso/` or a scheme such as `http://espresso` reaches a host of that name. `M-n` brings the address of the page |
+| `o` | opens a URL in this buffer, or searches for the words you type. One word with no dot, slash or colon is searched for too. `espresso/` or a scheme such as `http://espresso` reaches a host of that name. In the prompt, `M-p` steps back through the pages that you visited, and `M-n` steps forward again. A first `M-n` brings the address of the page |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
 | `H` | offers the pages that you visited, the newest first, and opens the one you choose |
 | `C-SPC`, `C-u C-SPC`, `C-x C-x` | set a mark where the page stands, go back to the newest mark, and swap the two |
 | `C-x r SPC`, `C-x r j` | keep the place of the page in a register, and come back to it from any buffer |
 | `y` | copies the address of this page, as `f y` copies the address of a link |
 | `>` | sends the marked text to a receiver you name, or else the part picked with `S`, or else the text of the page |
-| `O` | the same in a page buffer of its own, as the `O` of Vimium and qutebrowser opens a tab |
+| `O` | the same as `o` in a page buffer of its own, as the `O` of Vimium and qutebrowser opens a tab |
 | `g` | reads the page again |
 | `M-p`, `M-n` | go back and forward in the history |
 | `n`, `p` | scroll a line further down and back |

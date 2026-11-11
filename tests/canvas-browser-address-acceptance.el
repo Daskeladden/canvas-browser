@@ -82,6 +82,21 @@ prompt shows are kept from the start of BODY on."
        (unwind-protect (progn ,@body)
          (kill-buffer ,page)))))
 
+(defmacro canvas-browser-address-acceptance--with-visited-pages (&rest body)
+  "Run BODY with the page Coffee shown in the selected window, after
+visits to Milk, then Sugar, then Coffee, and kill its buffer after, as
+`canvas-browser-address-acceptance--with-page' does."
+  (declare (indent 0))
+  ;; No visit goes to tea: another test types https://example.org/tea
+  ;; into the prompt, and `minibuffer-history' keeps it, so M-p could
+  ;; bring tea without any history of visits.  Each test gets a list of
+  ;; its own, so that a change the browser makes to it ends with the test.
+  `(let ((canvas-browser--visited
+          (copy-tree '(("https://example.org/coffee" "Coffee" 3.0)
+                       ("https://example.org/sugar" "Sugar" 2.0)
+                       ("https://example.org/milk" "Milk" 1.0)))))
+     (canvas-browser-address-acceptance--with-page ,@body)))
+
 (defun canvas-browser-address-acceptance--visited ()
   "The addresses that the page was sent to, oldest first."
   (reverse canvas-browser-address-acceptance--visits))
@@ -185,6 +200,18 @@ if no prompt opened."
 prompt opened."
   (car canvas-browser-address-acceptance--seen))
 
+(defun canvas-browser-address-acceptance--held ()
+  "What the prompt held when it opened and after each command in it,
+oldest first, as a list of strings."
+  ;; The command loop of the prompt runs `post-command-hook' once as it
+  ;; starts, before it reads a key, so the second note stands for no
+  ;; command and repeats the first.
+  (pcase-exhaustive (reverse (mapcar #'cdr canvas-browser-address-acceptance--seen))
+    ('nil nil)
+    (`(,opened ,start . ,after)
+     (cl-assert (equal start opened) nil "The prompt changed before any key: %S" start)
+     (cons opened after))))
+
 ;;;; The scenarios
 
 (ert-deftest canvas-browser-address-acceptance-a-click-on-the-address-asks-for-it ()
@@ -240,6 +267,79 @@ prompt opened."
     ;; AND the title has neither
     (should (equal (canvas-browser-address-acceptance--looks "Coffee")
                    '(:lights-up nil :hint nil)))))
+
+(ert-deftest canvas-browser-address-acceptance-m-p-brings-the-page-before ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Sugar, then Coffee
+  (canvas-browser-address-acceptance--with-visited-pages
+    ;; WHEN I press o and then M-p in the prompt
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "o") "M-p")
+    ;; THEN the prompt holds https://example.org/sugar
+    (should (equal (canvas-browser-address-acceptance--last-seen)
+                   '("URL: " . "https://example.org/sugar")))))
+
+(ert-deftest canvas-browser-address-acceptance-m-p-and-m-n-step-through-the-visits ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Sugar, then Coffee
+  (canvas-browser-address-acceptance--with-visited-pages
+    ;; WHEN I press o, and then M-p, M-p and M-n in the prompt
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "o")
+                                            "M-p M-p M-n")
+    ;; THEN the prompt held, in this order: nothing,
+    ;;      https://example.org/sugar, https://example.org/milk,
+    ;;      https://example.org/sugar
+    (should (equal (canvas-browser-address-acceptance--held)
+                   '("" "https://example.org/sugar" "https://example.org/milk"
+                     "https://example.org/sugar")))))
+
+(ert-deftest canvas-browser-address-acceptance-a-visit-brought-by-m-p-is-opened ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Sugar, then Coffee
+  (canvas-browser-address-acceptance--with-visited-pages
+    ;; WHEN I press o, then M-p and RET in the prompt
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "o")
+                                            "M-p RET")
+    ;; THEN the page goes to https://example.org/sugar
+    (should (equal (canvas-browser-address-acceptance--visited)
+                   '("https://example.org/sugar")))))
+
+(ert-deftest canvas-browser-address-acceptance-m-p-after-a-click-brings-the-page-before ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Sugar, then Coffee
+  (canvas-browser-address-acceptance--with-visited-pages
+    ;; WHEN I click on the address in the header line, and then press
+    ;;      M-p in the prompt
+    (canvas-browser-address-acceptance--act
+     (list (canvas-browser-address-acceptance--click-on "https://example.org/coffee"))
+     "M-p")
+    ;; THEN the prompt holds https://example.org/coffee when it opens
+    (should (equal (canvas-browser-address-acceptance--opened)
+                   '("URL: " . "https://example.org/coffee")))
+    ;; AND after M-p it holds https://example.org/sugar
+    (should (equal (canvas-browser-address-acceptance--last-seen)
+                   '("URL: " . "https://example.org/sugar")))))
+
+(ert-deftest canvas-browser-address-acceptance-m-p-in-the-prompt-of-O-brings-the-page-before ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Sugar, then Coffee
+  (canvas-browser-address-acceptance--with-visited-pages
+    ;; WHEN I press O and then M-p in the prompt
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "O") "M-p")
+    ;; THEN the prompt holds https://example.org/sugar
+    (should (equal (canvas-browser-address-acceptance--last-seen)
+                   '("URL: " . "https://example.org/sugar")))))
+
+(ert-deftest canvas-browser-address-acceptance-m-n-in-the-prompt-of-O-brings-the-address ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Sugar, then Coffee
+  (canvas-browser-address-acceptance--with-visited-pages
+    ;; WHEN I press O and then M-n in the prompt
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "O") "M-n")
+    ;; THEN the prompt is empty when O opens it
+    (should (equal (canvas-browser-address-acceptance--opened) '("URL: " . "")))
+    ;; AND after M-n it holds https://example.org/coffee
+    (should (equal (canvas-browser-address-acceptance--last-seen)
+                   '("URL: " . "https://example.org/coffee")))))
 
 ;;;; Running them
 

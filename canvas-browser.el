@@ -1830,18 +1830,34 @@ file is copied, so a page that loads files beside it finds none."
   "TEXT as a URL the chromium in use can reach; see `canvas-browser--url-of'."
   (canvas-browser--readable-url (canvas-browser--url-of text)))
 
+(defvar canvas-browser--url-history nil
+  "The addresses that `M-p\\=' steps through in the URL prompt.
+They are the pages that were visited, for the time of the prompt only,
+so what is typed there is not kept: the page it opens becomes a visit.")
+
+;; savehist saves each history that a prompt used, also while the prompt
+;; is open, and so would keep the visited pages in its own file as well.
+(defvar savehist-ignored-variables)
+(with-eval-after-load 'savehist
+  (add-to-list 'savehist-ignored-variables 'canvas-browser--url-history))
+
 (defun canvas-browser--read-url (&optional initial)
   "Ask for a URL, with INITIAL as the text to start with.
-`M-n\\=' brings the address of this page.  An empty answer is the empty
-string, not that address."
-  (read-from-minibuffer "URL: " initial nil nil nil canvas-browser--url))
+`M-p\\=' steps back through the pages that were visited, the newest first
+and this page left out, and `M-n\\=' steps forward again.  In a fresh
+prompt `M-n\\=' brings the address of this page.  An empty answer is the
+empty string, not that address."
+  (let ((canvas-browser--url-history (canvas-browser--visited-addresses)))
+    (read-from-minibuffer "URL: " initial nil nil 'canvas-browser--url-history
+                          canvas-browser--url)))
 
 (defun canvas-browser-open-url (url)
   "Go to URL in this buffer.
 A URL without a scheme gets one, and words become a search, as
 `canvas-browser--url-of\\=' says.  One word with no dot, no slash and no
-colon is a search as well.  In the prompt, `M-n\\=' brings the address
-of this page."
+colon is a search as well.  In the prompt, `M-p\\=' steps back through
+the pages that were visited and `M-n\\=' forward again, and a first
+`M-n\\=' brings the address of this page."
   (interactive (list (canvas-browser--read-url)))
   (setq canvas-browser--url (canvas-browser--reachable-url url))
   (canvas-browser--tell "Page.navigate" (list :url canvas-browser--url)))
@@ -4173,6 +4189,11 @@ and time."
                       canvas-browser-history-length))
       (canvas-browser--save-history-later))))
 
+(defun canvas-browser--visited-addresses ()
+  "The addresses of the pages that were visited, the newest first, without
+the page of this buffer."
+  (remove canvas-browser--url (mapcar #'car (canvas-browser--visited))))
+
 (defun canvas-browser--history-candidates ()
   "The pages of the history, each (NAME . URL), the newest first.
 NAME is the title and the address, as a link is offered."
@@ -5418,8 +5439,10 @@ nothing the window does not.  Take the mode out of
 
 ;;;###autoload
 (defun canvas-browser (url)
-  "Open URL in a page buffer of its own."
-  (interactive "sURL: ")
+  "Open URL in a page buffer of its own.
+In the prompt, `M-p\\=' steps back through the pages that were visited and
+`M-n\\=' forward again, as in the prompt of `canvas-browser-open-url\\='."
+  (interactive (list (canvas-browser--read-url)))
   (let* ((url (canvas-browser--reachable-url url))
          (buffer (canvas-browser--page-buffer url)))
     (pop-to-buffer buffer)
