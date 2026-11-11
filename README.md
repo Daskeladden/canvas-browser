@@ -405,7 +405,8 @@ title and its address. The page that you choose opens in this buffer.
 `consult-history` asks for this history too in a page buffer. The
 history is kept in the file that `canvas-browser-history-file` names.
 `M-p` in the prompt of `o` and `O` steps through the same pages, without
-the page that the buffer shows.
+the page that the buffer shows. The list below that prompt shows them
+too, with the page that the buffer shows among them.
 
 ### Embark
 
@@ -520,7 +521,7 @@ Normal state keeps the keys of Emacs:
 
 | key | what it does |
 |---|---|
-| `o` | opens a URL in this buffer, or searches for the words you type. One word with no dot, slash or colon is searched for too. `espresso/` or a scheme such as `http://espresso` reaches a host of that name. In the prompt, `M-p` steps back through the pages that you visited, and `M-n` steps forward again. A first `M-n` brings the address of the page |
+| `o` | opens a URL in this buffer, or searches for the words you type. One word with no dot, slash or colon is searched for too. `espresso/` or a scheme such as `http://espresso` reaches a host of that name. The pages that you visited and that match what you type show in the list of a completion view such as vertico. `RET` opens what you typed. Move to a line of the list, and `RET` opens that page. Without such a view, `TAB` completes what you type to the title and address of a visited page. In the prompt, `M-p` steps back through the pages that you visited, and `M-n` steps forward again. A first `M-n` brings the address of the page |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
 | `H` | offers the pages that you visited, the newest first, and opens the one you choose |
 | `C-SPC`, `C-u C-SPC`, `C-x C-x` | set a mark where the page stands, go back to the newest mark, and swap the two |

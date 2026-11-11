@@ -48,9 +48,13 @@ gui:
 # A click on the address in the header line, and the address in the
 # prompt of o, with real events in a frame on a virtual display.  No
 # chromium runs.  It is not part of test.  -noreset as for gui.
+# The tests of the list below the prompt need vertico and orderless,
+# and are skipped where they are not installed.  Both ask for compat,
+# which Emacs 30 and later bring with them.
 address-acceptance:
 	timeout 300 xvfb-run -a -s "-screen 0 1400x900x24 -noreset" $(EMACS) -Q \
 	  --eval '(setq load-prefer-newer t)' $(GUI_LOAD) \
+	  -L $(ELPACA)/vertico -L $(ELPACA)/orderless \
 	  -l tests/canvas-browser-address-acceptance.el \
 	  --eval '(canvas-browser-address-acceptance-run)'
 

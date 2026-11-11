@@ -34,6 +34,17 @@ A prompt that is still open then is left.")
   "What the prompt showed, newest first, as (PROMPT . CONTENTS): when it
 opened, and after each command in it.")
 
+(defvar canvas-browser-address-acceptance--lists nil
+  "What the list below the prompt showed, newest first: when the prompt
+opened, and after each command in it.  Each is the lines of the list,
+from top to bottom.")
+
+(defvar canvas-browser-address-acceptance--pages-before nil
+  "The page buffers that there were before the keys of a test.")
+
+(defvar canvas-browser-address-acceptance--keys-to-come nil
+  "The keys that are still to be typed into the prompt, oldest first.")
+
 ;;;; Chromium
 
 (defun canvas-browser-address-acceptance--send (method params &optional answer &rest _)
@@ -212,6 +223,131 @@ oldest first, as a list of strings."
      (cl-assert (equal start opened) nil "The prompt changed before any key: %S" start)
      (cons opened after))))
 
+;;;; The list below the prompt
+
+(declare-function vertico-mode "vertico" (&optional arg))
+
+(defun canvas-browser-address-acceptance--vertico-installed-p ()
+  "Whether vertico and orderless are installed, as the tests of the list
+below the prompt need."
+  (and (require 'vertico nil t) (require 'orderless nil t) t))
+
+(defun canvas-browser-address-acceptance--list-lines ()
+  "The lines that the list below the prompt of this minibuffer shows, from
+top to bottom, without their faces; nil when it shows none."
+  ;; Vertico draws the list as the text before an overlay at the end of
+  ;; the prompt: a space that holds the cursor, then one line for each
+  ;; page, each ending in a newline.
+  (when-let* ((overlay (bound-and-true-p vertico--candidates-ov))
+              (shown (overlay-get overlay 'before-string)))
+    (cdr (split-string (substring-no-properties shown) "\n" t))))
+
+(defun canvas-browser-address-acceptance--note-list ()
+  "Keep what the list below the prompt shows now."
+  (push (canvas-browser-address-acceptance--list-lines)
+        canvas-browser-address-acceptance--lists))
+
+(defun canvas-browser-address-acceptance--type-next ()
+  "Type the next of the keys that are still to come."
+  (when canvas-browser-address-acceptance--keys-to-come
+    (setq unread-command-events
+          (append unread-command-events
+                  (list (pop canvas-browser-address-acceptance--keys-to-come))))))
+
+(defun canvas-browser-address-acceptance--give-back-keys ()
+  "Leave the keys that are still to come to the command loop after the
+prompt, as when they were typed all at once."
+  (setq unread-command-events
+        (append unread-command-events canvas-browser-address-acceptance--keys-to-come)
+        canvas-browser-address-acceptance--keys-to-come nil))
+
+(defun canvas-browser-address-acceptance--list-opened ()
+  "Keep what the list below the prompt that just opened shows, now and
+after each command in it.  The keys that wait to be typed into the
+prompt are typed one by one, each after the command of the key before."
+  ;; Vertico draws the list only while no key waits to be read.  The keys
+  ;; that the test types all wait at once, so without this the list would
+  ;; stay empty until the last of them.  A person who types gives Emacs
+  ;; the time to draw the list after each key.
+  (setq canvas-browser-address-acceptance--keys-to-come unread-command-events
+        unread-command-events nil)
+  ;; Vertico draws the list in `post-command-hook' as well, so the note
+  ;; and the next key come late in the hook, after the drawing.
+  (add-hook 'post-command-hook #'canvas-browser-address-acceptance--note-list 90 t)
+  (add-hook 'post-command-hook #'canvas-browser-address-acceptance--type-next 95 t))
+
+(defmacro canvas-browser-address-acceptance--with-vertico (&rest body)
+  "Run BODY with vertico on and orderless as the first style of completion,
+and turn vertico off after it.  What the list below the prompt shows is
+kept from the start of BODY on, and the keys that a test types into a
+prompt are typed one by one, as
+`canvas-browser-address-acceptance--list-opened' says."
+  (declare (indent 0))
+  `(let ((completion-styles '(orderless basic))
+         (canvas-browser-address-acceptance--lists nil)
+         (canvas-browser-address-acceptance--keys-to-come nil))
+     (vertico-mode 1)
+     ;; Depth 95 comes after `canvas-browser-address-acceptance--act',
+     ;; which hands the keys to type to the prompt at depth 90.
+     (add-hook 'minibuffer-setup-hook #'canvas-browser-address-acceptance--list-opened 95)
+     (add-hook 'minibuffer-exit-hook #'canvas-browser-address-acceptance--give-back-keys)
+     (unwind-protect (progn ,@body)
+       (remove-hook 'minibuffer-exit-hook #'canvas-browser-address-acceptance--give-back-keys)
+       (remove-hook 'minibuffer-setup-hook #'canvas-browser-address-acceptance--list-opened)
+       (vertico-mode -1))))
+
+(defun canvas-browser-address-acceptance--title-of (line)
+  "The title of the page that LINE of the list names.
+A page is offered as `H' offers it: its title, two spaces and its address."
+  (car (split-string line "  ")))
+
+(defun canvas-browser-address-acceptance--titles-shown ()
+  "The titles of the pages that the list below the prompt showed last,
+from top to bottom; nil when it showed none."
+  (mapcar #'canvas-browser-address-acceptance--title-of
+          (car canvas-browser-address-acceptance--lists)))
+
+(defun canvas-browser-address-acceptance--page-buffers ()
+  "The page buffers that there are now."
+  (seq-filter (lambda (buffer)
+                (eq (buffer-local-value 'major-mode buffer) 'canvas-browser-mode))
+              (buffer-list)))
+
+(defmacro canvas-browser-address-acceptance--with-new-pages-killed (&rest body)
+  "Run BODY, and kill each page buffer that it opened after it."
+  (declare (indent 0))
+  `(let ((canvas-browser-address-acceptance--pages-before
+          (canvas-browser-address-acceptance--page-buffers)))
+     (unwind-protect (progn ,@body)
+       (mapc #'kill-buffer (seq-difference (canvas-browser-address-acceptance--page-buffers)
+                                           canvas-browser-address-acceptance--pages-before)))))
+
+(defun canvas-browser-address-acceptance--new-page-shown ()
+  "The address of the page that the selected window shows, when that is a
+page buffer of its own that the test opened; else nil."
+  (let ((buffer (window-buffer (selected-window))))
+    (and (memq buffer (canvas-browser-address-acceptance--page-buffers))
+         (not (memq buffer canvas-browser-address-acceptance--pages-before))
+         (buffer-local-value 'canvas-browser--url buffer))))
+
+(defmacro canvas-browser-address-acceptance--with-list-of-visits (&rest body)
+  "Run BODY with vertico and orderless, and the page Coffee shown in the
+selected window, after visits to Milk, then Brown sugar, then Coffee.
+The page buffer, each page buffer that BODY opens and vertico all end
+with BODY, as `canvas-browser-address-acceptance--with-page' and
+`canvas-browser-address-acceptance--with-vertico' say."
+  (declare (indent 0))
+  ;; The word brown is in a title only, and demerara in an address only.
+  ;; A page found by brown and opened at demerara was found by its title
+  ;; and opened by its address.
+  `(let ((canvas-browser--visited
+          (copy-tree '(("https://example.org/coffee" "Coffee" 3.0)
+                       ("https://example.org/demerara" "Brown sugar" 2.0)
+                       ("https://example.org/milk" "Milk" 1.0)))))
+     (canvas-browser-address-acceptance--with-vertico
+       (canvas-browser-address-acceptance--with-page
+         (canvas-browser-address-acceptance--with-new-pages-killed ,@body)))))
+
 ;;;; The scenarios
 
 (ert-deftest canvas-browser-address-acceptance-a-click-on-the-address-asks-for-it ()
@@ -340,6 +476,79 @@ oldest first, as a list of strings."
     ;; AND after M-n it holds https://example.org/coffee
     (should (equal (canvas-browser-address-acceptance--last-seen)
                    '("URL: " . "https://example.org/coffee")))))
+
+(ert-deftest canvas-browser-address-acceptance-typed-words-are-searched-for-beside-the-list ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Brown sugar at https://example.org/demerara,
+  ;;       then Coffee, in an Emacs with vertico and orderless
+  (skip-unless (canvas-browser-address-acceptance--vertico-installed-p))
+  (canvas-browser-address-acceptance--with-list-of-visits
+    ;; WHEN I press o and type brown, AND WHEN I then press RET
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "o")
+                                            "b r o w n RET")
+    ;; THEN the list below the prompt shows Brown sugar before RET
+    (should (equal (canvas-browser-address-acceptance--titles-shown) '("Brown sugar")))
+    ;; AND after RET the page goes to https://duckduckgo.com/?q=brown
+    (should (equal (canvas-browser-address-acceptance--visited)
+                   '("https://duckduckgo.com/?q=brown")))))
+
+(ert-deftest canvas-browser-address-acceptance-a-page-chosen-from-the-list-is-opened ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Brown sugar at https://example.org/demerara,
+  ;;       then Coffee, in an Emacs with vertico and orderless
+  (skip-unless (canvas-browser-address-acceptance--vertico-installed-p))
+  (canvas-browser-address-acceptance--with-list-of-visits
+    ;; WHEN I press o, type brown, press the down key once and press RET
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "o")
+                                            "b r o w n <down> RET")
+    ;; THEN the page goes to https://example.org/demerara
+    (should (equal (canvas-browser-address-acceptance--visited)
+                   '("https://example.org/demerara")))))
+
+(ert-deftest canvas-browser-address-acceptance-a-typed-address-is-opened-beside-the-list ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Brown sugar at https://example.org/demerara,
+  ;;       then Coffee, in an Emacs with vertico and orderless
+  (skip-unless (canvas-browser-address-acceptance--vertico-installed-p))
+  (canvas-browser-address-acceptance--with-list-of-visits
+    ;; WHEN I press o and type example.org, AND WHEN I then press RET
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "o")
+                                            "e x a m p l e . o r g RET")
+    ;; THEN the list below the prompt shows Coffee, Brown sugar and Milk,
+    ;;      in this order, before RET
+    (should (equal (canvas-browser-address-acceptance--titles-shown)
+                   '("Coffee" "Brown sugar" "Milk")))
+    ;; AND after RET the page goes to https://example.org
+    (should (equal (canvas-browser-address-acceptance--visited)
+                   '("https://example.org")))))
+
+(ert-deftest canvas-browser-address-acceptance-O-opens-a-page-chosen-from-the-list ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Brown sugar at https://example.org/demerara,
+  ;;       then Coffee, in an Emacs with vertico and orderless
+  (skip-unless (canvas-browser-address-acceptance--vertico-installed-p))
+  (canvas-browser-address-acceptance--with-list-of-visits
+    ;; WHEN I press O, type brown, press the down key once and press RET
+    (canvas-browser-address-acceptance--act (canvas-browser-address-acceptance--keys "O")
+                                            "b r o w n <down> RET")
+    ;; THEN a page buffer of its own shows https://example.org/demerara
+    (should (equal (canvas-browser-address-acceptance--new-page-shown)
+                   "https://example.org/demerara"))))
+
+(ert-deftest canvas-browser-address-acceptance-a-page-chosen-after-a-click-is-opened ()
+  ;; GIVEN a page buffer that shows https://example.org/coffee, after
+  ;;       visits to Milk, then Brown sugar at https://example.org/demerara,
+  ;;       then Coffee, in an Emacs with vertico and orderless
+  (skip-unless (canvas-browser-address-acceptance--vertico-installed-p))
+  (canvas-browser-address-acceptance--with-list-of-visits
+    ;; WHEN I click on the address in the header line, delete the address
+    ;;      with C-a C-k, type milk, press the down key once and press RET
+    (canvas-browser-address-acceptance--act
+     (list (canvas-browser-address-acceptance--click-on "https://example.org/coffee"))
+     "C-a C-k m i l k <down> RET")
+    ;; THEN the page goes to https://example.org/milk
+    (should (equal (canvas-browser-address-acceptance--visited)
+                   '("https://example.org/milk")))))
 
 ;;;; Running them
 

@@ -1936,6 +1936,31 @@ from FROM to TO, each different one once."
 `read-from-minibuffer\\=' with ARGUMENTS."
   (list (nth 0 arguments) (nth 1 arguments) (nth 5 arguments)))
 
+(defun canvas-browser-test--set-up-prompt (keymap default look)
+  "Call LOOK in a prompt with KEYMAP once it is set up; what LOOK gives.
+DEFAULT is the default that `read-from-minibuffer\\=' was given, which M-n
+brings unless the setup of the prompt offers another."
+  ;; A buffer of text stands in for the minibuffer.  The functions that
+  ;; a prompt sets up its minibuffer with run there, as they run when a
+  ;; minibuffer opens.
+  (with-temp-buffer
+    (use-local-map keymap)
+    (let ((minibuffer-default default))
+      (run-hooks 'minibuffer-setup-hook)
+      (funcall look))))
+
+(defun canvas-browser-test--default ()
+  "The default that M-n brings first in this prompt."
+  minibuffer-default)
+
+(defun canvas-browser-test--as-set-up (arguments)
+  "ARGUMENTS of a call of `read-from-minibuffer\\=', with the default that
+M-n brings once the prompt is set up in the place of their own."
+  (append (seq-take arguments 5)
+          (list (canvas-browser-test--set-up-prompt (nth 2 arguments) (nth 5 arguments)
+                                                    #'canvas-browser-test--default))
+          (nthcdr 6 arguments)))
+
 (ert-deftest canvas-browser-the-url-prompt-offers-the-address-of-the-page ()
   ;; GIVEN a page buffer at https://example.org/coffee
   ;; WHEN the URL prompt asks, once with text to start with and once
@@ -1946,7 +1971,9 @@ from FROM to TO, each different one once."
     (setq canvas-browser--url "https://example.org/coffee")
     (let ((asked nil))
       (cl-letf (((symbol-function 'read-from-minibuffer)
-                 (lambda (&rest arguments) (push arguments asked) "")))
+                 (lambda (&rest arguments)
+                   (push (canvas-browser-test--as-set-up arguments) asked)
+                   "")))
         (canvas-browser--read-url "https://example.org/tea")
         (canvas-browser--read-url))
       (should (equal (mapcar #'canvas-browser-test--asked (reverse asked))
@@ -1962,7 +1989,9 @@ from FROM to TO, each different one once."
     (setq canvas-browser--url "https://example.org/coffee")
     (let ((asked nil))
       (cl-letf (((symbol-function 'read-from-minibuffer)
-                 (lambda (&rest arguments) (setq asked arguments) "https://example.org/tea")))
+                 (lambda (&rest arguments)
+                   (setq asked (canvas-browser-test--as-set-up arguments))
+                   "https://example.org/tea")))
         (call-interactively #'canvas-browser-open-url))
       (should (equal (canvas-browser-test--asked asked)
                      '("URL: " nil "https://example.org/coffee")))
@@ -1990,11 +2019,12 @@ M-p steps through, and the default that M-n brings.  The reader answers
 with nothing."
   (let ((offered nil))
     (cl-letf (((symbol-function 'read-from-minibuffer)
-               (lambda (_prompt _initial _keymap _read hist &optional default &rest _)
+               (lambda (_prompt _initial keymap _read hist &optional default &rest _)
                  ;; The history may exist only while the prompt asks.  A
                  ;; prompt without one of its own shares that of Emacs.
                  (setq offered (list :history (symbol-value (or hist 'minibuffer-history))
-                                     :default default))
+                                     :default (canvas-browser-test--set-up-prompt
+                                               keymap default #'canvas-browser-test--default)))
                  "")))
       (funcall ask))
     offered))
@@ -2075,6 +2105,135 @@ with nothing."
   ;;      when it saves the histories of the prompts
   (require 'savehist)
   (should (memq 'canvas-browser--url-history savehist-ignored-variables)))
+
+(defun canvas-browser-test--visit-milk-brown-sugar-coffee ()
+  "Have this page buffer visit Milk, then Brown sugar, then Coffee.
+The word brown is in a title only, and demerara in an address only."
+  (canvas-browser-test--visit "https://example.org/milk" "Milk")
+  (canvas-browser-test--visit "https://example.org/demerara" "Brown sugar")
+  (canvas-browser-test--visit "https://example.org/coffee" "Coffee"))
+
+(defun canvas-browser-test--in-url-prompt (answer look)
+  "Ask through the URL prompt, which the reader answers with ANSWER.
+Give what the prompt gave and what LOOK saw in the prompt once it was
+set up, as (GIVEN . SEEN)."
+  (let ((seen nil))
+    (cl-letf (((symbol-function 'read-from-minibuffer)
+               (lambda (_prompt _initial keymap _read _hist &optional default &rest _)
+                 (setq seen (canvas-browser-test--set-up-prompt keymap default look))
+                 answer)))
+      (cons (canvas-browser--read-url) seen))))
+
+(defun canvas-browser-test--lines ()
+  "The lines that this prompt offers to complete, in their order."
+  (all-completions "" minibuffer-completion-table minibuffer-completion-predicate))
+
+(defun canvas-browser-test--m-n-twice ()
+  "What this prompt holds after M-n, and after M-n once more: the text,
+or the message of the error when M-n brings nothing."
+  (let ((minibuffer-history-position 0)
+        (minibuffer-text-before-history nil))
+    (cl-loop repeat 2
+             collect (condition-case err
+                         (progn (next-history-element 1)
+                                (minibuffer-contents-no-properties))
+                       (user-error (error-message-string err))))))
+
+(defun canvas-browser-test--space-question-mark-tab ()
+  "The commands of a space, a question mark and TAB in this prompt."
+  (mapcar #'key-binding (list (kbd "SPC") (kbd "?") (kbd "TAB"))))
+
+(defun canvas-browser-test--vertico-selection ()
+  "Where vertico starts in this prompt: on the prompt or on the first line."
+  (and (boundp 'vertico-preselect) (symbol-value 'vertico-preselect)))
+
+(ert-deftest canvas-browser-the-url-prompt-offers-the-visited-pages ()
+  ;; GIVEN a page buffer of Coffee, after visits to Milk, then Brown sugar
+  ;;       at https://example.org/demerara, then Coffee
+  ;; WHEN the URL prompt asks
+  ;; THEN it offers each visited page as its title and its address, the
+  ;;      newest first, AND the page shown now is among them
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-brown-sugar-coffee)
+      (should (equal (cdr (canvas-browser-test--in-url-prompt "" #'canvas-browser-test--lines))
+                     '("Coffee  https://example.org/coffee"
+                       "Brown sugar  https://example.org/demerara"
+                       "Milk  https://example.org/milk"))))))
+
+(ert-deftest canvas-browser-a-line-chosen-in-the-url-prompt-gives-its-address ()
+  ;; GIVEN a page buffer of Coffee, after visits to Milk, then Brown sugar
+  ;;       at https://example.org/demerara, then Coffee
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-brown-sugar-coffee)
+      ;; WHEN the line of Brown sugar is chosen in the URL prompt
+      ;; THEN the prompt gives https://example.org/demerara
+      (should (equal (car (canvas-browser-test--in-url-prompt
+                           "Brown sugar  https://example.org/demerara" #'ignore))
+                     "https://example.org/demerara"))
+      ;; WHEN Brown sugar is typed, the title alone, which names no line
+      ;; THEN the prompt gives Brown sugar, as it was typed
+      (should (equal (car (canvas-browser-test--in-url-prompt "Brown sugar" #'ignore))
+                     "Brown sugar")))))
+
+(ert-deftest canvas-browser-an-empty-answer-to-the-url-prompt-is-empty ()
+  ;; GIVEN a page buffer of Coffee, after visits to Milk, then Brown sugar
+  ;;       at https://example.org/demerara, then Coffee
+  ;; WHEN the URL prompt is answered with nothing
+  ;; THEN the prompt gives the empty string, not the address of the page
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-brown-sugar-coffee)
+      (should (equal (car (canvas-browser-test--in-url-prompt "" #'ignore)) "")))))
+
+(ert-deftest canvas-browser-m-n-in-the-url-prompt-brings-the-address-and-nothing-more ()
+  ;; GIVEN a page buffer of Coffee, after visits to Milk, then Brown sugar
+  ;;       at https://example.org/demerara, then Coffee
+  ;; WHEN M-n is pressed in the URL prompt, and then once more
+  ;; THEN the first M-n brings the address of the page, AND the second
+  ;;      brings no line of the list after it
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-brown-sugar-coffee)
+      (should (equal (cdr (canvas-browser-test--in-url-prompt
+                           "" #'canvas-browser-test--m-n-twice))
+                     '("https://example.org/coffee" "End of defaults; no next item"))))))
+
+(ert-deftest canvas-browser-m-n-in-the-url-prompt-of-no-page-brings-nothing ()
+  ;; GIVEN visits to Milk, then Brown sugar at https://example.org/demerara,
+  ;;       then Coffee, AND a buffer that is no page
+  ;; WHEN M-n is pressed in the URL prompt there, and then once more
+  ;; THEN neither brings anything, no line of the list either
+  (canvas-browser-test--with-history
+    (canvas-browser-test--in-page
+      (canvas-browser-test--visit-milk-brown-sugar-coffee))
+    (with-temp-buffer
+      (should (equal (cdr (canvas-browser-test--in-url-prompt
+                           "" #'canvas-browser-test--m-n-twice))
+                     (make-list 2 "End of history; no default available"))))))
+
+(ert-deftest canvas-browser-a-space-and-a-question-mark-type-themselves-in-the-url-prompt ()
+  ;; GIVEN a page buffer, in an Emacs without a completion view such as
+  ;;       vertico
+  ;; WHEN the URL prompt asks
+  ;; THEN a space and a question mark type themselves there, since words
+  ;;      are searched for and an address can hold a question mark
+  ;; AND TAB completes
+  (canvas-browser-test--in-page
+    (should (equal (cdr (canvas-browser-test--in-url-prompt
+                         "" #'canvas-browser-test--space-question-mark-tab))
+                   '(self-insert-command self-insert-command minibuffer-complete)))))
+
+(ert-deftest canvas-browser-vertico-starts-on-what-is-typed-in-the-url-prompt ()
+  ;; GIVEN a page buffer
+  ;; WHEN the URL prompt asks
+  ;; THEN vertico, where it is installed, starts on the prompt and not on
+  ;;      the first line, so that RET takes what was typed
+  (canvas-browser-test--in-page
+    (should (eq (cdr (canvas-browser-test--in-url-prompt
+                      "" #'canvas-browser-test--vertico-selection))
+                'prompt))))
 
 ;;;; The pointer over a link
 

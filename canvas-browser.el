@@ -1841,23 +1841,61 @@ so what is typed there is not kept: the page it opens becomes a visit.")
 (with-eval-after-load 'savehist
   (add-to-list 'savehist-ignored-variables 'canvas-browser--url-history))
 
+(defvar-keymap canvas-browser-url-prompt-map
+  :doc "The keys of the URL prompt, on top of those of a prompt with completion.
+A space and a question mark type themselves: words with a space are
+searched for, and an address can hold a question mark.  TAB completes."
+  :parent minibuffer-local-completion-map
+  "SPC" #'self-insert-command
+  "?" #'self-insert-command)
+
+(defvar vertico-preselect)
+
+(defun canvas-browser--offer-only (address)
+  "Offer ADDRESS to `M-n\\=' in this minibuffer, and nothing after it.
+A prompt with completion offers each of its lines after the default
+unless it is told not to.  With nil, `M-n\\=' brings nothing."
+  (setq minibuffer-default address)
+  (setq-local minibuffer-default-add-function nil))
+
+(defun canvas-browser--address-of-line (answer candidates)
+  "The address of the line ANSWER of CANDIDATES, each (NAME . URL).
+An ANSWER that names no line is its own address."
+  (or (cdr (assoc answer candidates)) answer))
+
 (defun canvas-browser--read-url (&optional initial)
   "Ask for a URL, with INITIAL as the text to start with.
+The pages that were visited are offered to complete, each as its title
+and its address, the newest first and this page among them.  With a
+completion view such as vertico, those that match what is typed show in
+a list below the prompt.  RET gives what was typed, unless the reader
+moved to a line of the list: then it gives the address of that page.
 `M-p\\=' steps back through the pages that were visited, the newest first
 and this page left out, and `M-n\\=' steps forward again.  In a fresh
 prompt `M-n\\=' brings the address of this page.  An empty answer is the
 empty string, not that address."
-  (let ((canvas-browser--url-history (canvas-browser--visited-addresses)))
-    (read-from-minibuffer "URL: " initial nil nil 'canvas-browser--url-history
-                          canvas-browser--url)))
+  (let ((candidates (canvas-browser--history-candidates))
+        (address canvas-browser--url)
+        (canvas-browser--url-history (canvas-browser--visited-addresses))
+        (minibuffer-local-completion-map canvas-browser-url-prompt-map)
+        ;; Vertico would select the first line, and RET would open it in
+        ;; the place of what was typed.
+        (vertico-preselect 'prompt))
+    (canvas-browser--address-of-line
+     (minibuffer-with-setup-hook (lambda () (canvas-browser--offer-only address))
+       (completing-read "URL: " (canvas-browser--link-table candidates)
+                        nil nil initial 'canvas-browser--url-history))
+     candidates)))
 
 (defun canvas-browser-open-url (url)
   "Go to URL in this buffer.
 A URL without a scheme gets one, and words become a search, as
 `canvas-browser--url-of\\=' says.  One word with no dot, no slash and no
-colon is a search as well.  In the prompt, `M-p\\=' steps back through
-the pages that were visited and `M-n\\=' forward again, and a first
-`M-n\\=' brings the address of this page."
+colon is a search as well.  The prompt offers the pages that were
+visited, as `canvas-browser--read-url\\=' says: RET opens what was typed,
+or the page of the line that you moved to.  In the prompt, `M-p\\=' steps
+back through the pages that were visited and `M-n\\=' forward again, and
+a first `M-n\\=' brings the address of this page."
   (interactive (list (canvas-browser--read-url)))
   (setq canvas-browser--url (canvas-browser--reachable-url url))
   (canvas-browser--tell "Page.navigate" (list :url canvas-browser--url)))
@@ -5440,8 +5478,10 @@ nothing the window does not.  Take the mode out of
 ;;;###autoload
 (defun canvas-browser (url)
   "Open URL in a page buffer of its own.
-In the prompt, `M-p\\=' steps back through the pages that were visited and
-`M-n\\=' forward again, as in the prompt of `canvas-browser-open-url\\='."
+The prompt is that of `canvas-browser-open-url\\=': it offers the pages
+that were visited, RET opens what was typed or the page of the line
+that you moved to, and `M-p\\=' steps back through the pages that were
+visited and `M-n\\=' forward again."
   (interactive (list (canvas-browser--read-url)))
   (let* ((url (canvas-browser--reachable-url url))
          (buffer (canvas-browser--page-buffer url)))
