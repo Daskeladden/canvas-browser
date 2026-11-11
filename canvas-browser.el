@@ -1830,10 +1830,19 @@ file is copied, so a page that loads files beside it finds none."
   "TEXT as a URL the chromium in use can reach; see `canvas-browser--url-of'."
   (canvas-browser--readable-url (canvas-browser--url-of text)))
 
+(defun canvas-browser--read-url (&optional initial)
+  "Ask for a URL, with INITIAL as the text to start with.
+`M-n\\=' brings the address of this page.  An empty answer is the empty
+string, not that address."
+  (read-from-minibuffer "URL: " initial nil nil nil canvas-browser--url))
+
 (defun canvas-browser-open-url (url)
   "Go to URL in this buffer.
-A URL without a scheme gets one, and words become a search."
-  (interactive "sURL: ")
+A URL without a scheme gets one, and words become a search, as
+`canvas-browser--url-of\\=' says.  One word with no dot, no slash and no
+colon is a search as well.  In the prompt, `M-n\\=' brings the address
+of this page."
+  (interactive (list (canvas-browser--read-url)))
   (setq canvas-browser--url (canvas-browser--reachable-url url))
   (canvas-browser--tell "Page.navigate" (list :url canvas-browser--url)))
 
@@ -5182,11 +5191,39 @@ An embedded page whose host no longer holds its picture goes instead."
     (canvas-browser--window-resized (window-body-width window t)
                                     (window-body-height window t))))
 
+(defun canvas-browser-edit-url (event)
+  "Edit the address of the page whose header line EVENT clicked, and go there.
+The window of the page is selected, and the prompt starts with the
+address, the cursor at its end.  An EVENT on anything but a page is an
+error."
+  (interactive "e")
+  (select-window (canvas-browser--page-window event))
+  (canvas-browser-open-url (canvas-browser--read-url canvas-browser--url)))
+
+(defvar canvas-browser-address-map (make-sparse-keymap)
+  "Keymap of the address in the header line of a page buffer.
+A click on the address edits it.")
+
+;; The key is bound here and not where the map is made, so that a load
+;; of the file again reaches a running Emacs.
+(define-keymap :keymap canvas-browser-address-map
+  "<header-line> <mouse-1>" #'canvas-browser-edit-url)
+
+(defun canvas-browser--header-address ()
+  "The address of this page as the header line shows it, or nil without one.
+It lights up under the pointer, and a click on it edits it."
+  (when canvas-browser--url
+    (propertize canvas-browser--url
+                'keymap canvas-browser-address-map
+                'mouse-face 'header-line-highlight
+                'help-echo "mouse-1: edit the address")))
+
 (defun canvas-browser--header ()
   "The header line: the title, the URL, the state of the keyboard, and
-whether a part of the page is picked."
+whether a part of the page is picked.  A click on the URL edits it; see
+`canvas-browser--header-address\\='."
   (string-join (delq nil (list (or canvas-browser--title "…")
-                               canvas-browser--url
+                               (canvas-browser--header-address)
                                (when canvas-browser--insert "insert")
                                (when canvas-browser--caret "caret")
                                (when canvas-browser--part "part")))

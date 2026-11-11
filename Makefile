@@ -23,7 +23,7 @@ SUITES  = tests/canvas-browser-cdp-tests.el tests/canvas-browser-translate-tests
 GUI_LOAD = $(foreach d,. $(DIAGRAM) $(KEYS),-L $(abspath $(d))) \
            -L $(ELPACA)/websocket -L $(ELPACA)/transient -L $(ELPACA)/cond-let
 
-.PHONY: test live gui clean
+.PHONY: test live gui address-acceptance clean
 
 test:
 	ERT_MATCH='$(MATCH)' $(EMACS) -Q --batch --eval "(setq load-prefer-newer t)" $(LOAD) \
@@ -44,6 +44,15 @@ live:
 gui:
 	EMACS='$(EMACS)' GUI_LOAD='$(GUI_LOAD)' \
 	  xvfb-run -a -s "-screen 0 1400x900x24 -noreset" tests/gui/run.sh
+
+# A click on the address in the header line, and the address in the
+# prompt of o, with real events in a frame on a virtual display.  No
+# chromium runs.  It is not part of test.  -noreset as for gui.
+address-acceptance:
+	timeout 300 xvfb-run -a -s "-screen 0 1400x900x24 -noreset" $(EMACS) -Q \
+	  --eval '(setq load-prefer-newer t)' $(GUI_LOAD) \
+	  -l tests/canvas-browser-address-acceptance.el \
+	  --eval '(canvas-browser-address-acceptance-run)'
 
 clean:
 	rm -f *.elc tests/*.elc

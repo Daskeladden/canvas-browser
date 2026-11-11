@@ -1809,6 +1809,61 @@ of their texts are killed afterwards."
     (setq canvas-browser--insert t)
     (should (string-search "insert" (canvas-browser--header)))))
 
+(defun canvas-browser-test--header-looks (header from to)
+  "The keymap, the mouse face and the hint of the characters of HEADER
+from FROM to TO, each different one once."
+  (seq-uniq (cl-loop for at from from below to
+                     collect (list (get-text-property at 'keymap header)
+                                   (get-text-property at 'mouse-face header)
+                                   (get-text-property at 'help-echo header)))))
+
+(ert-deftest canvas-browser-only-the-address-in-the-header-line-can-be-clicked ()
+  ;; GIVEN a page buffer with a title and an address, first in normal
+  ;;       state and then with the words of each state in the header line
+  ;; WHEN the header line is made
+  ;; THEN each character of the address carries the keymap of the
+  ;;      address, the mouse face and the hint, AND the title, the
+  ;;      separators and the words of a state carry none of them, so a
+  ;;      click there opens nothing
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "Coffee"
+          canvas-browser--url "https://example.org/coffee")
+    (dolist (state '(nil t))
+      (setq canvas-browser--insert state
+            canvas-browser--caret state
+            canvas-browser--part state)
+      (let* ((header (canvas-browser--header))
+             (start (string-search "https://example.org/coffee" header))
+             (end (+ start (length "https://example.org/coffee"))))
+        (should (equal (canvas-browser-test--header-looks header start end)
+                       (list (list canvas-browser-address-map 'header-line-highlight
+                                   "mouse-1: edit the address"))))
+        (should (equal (seq-uniq
+                        (append (canvas-browser-test--header-looks header 0 start)
+                                (canvas-browser-test--header-looks header end (length header))))
+                       '((nil nil nil))))))))
+
+(ert-deftest canvas-browser-a-page-without-an-address-shows-its-title-alone ()
+  ;; GIVEN a page buffer with a title and no address
+  ;; WHEN the header line is made
+  ;; THEN it is the title, and nothing in it can be clicked
+  (canvas-browser-test--in-page
+    (setq canvas-browser--title "Coffee"
+          canvas-browser--url nil)
+    (let ((header (canvas-browser--header)))
+      (should (equal header "Coffee"))
+      (should (equal (canvas-browser-test--header-looks header 0 (length header))
+                     '((nil nil nil)))))))
+
+(ert-deftest canvas-browser-a-click-on-the-address-edits-it ()
+  ;; GIVEN the keymap of the address in the header line
+  ;; WHEN the left button is looked up there
+  ;; THEN its click edits the address, AND its press keeps what Emacs does
+  ;;      with a press on a header line
+  (should (eq (lookup-key canvas-browser-address-map [header-line mouse-1])
+              #'canvas-browser-edit-url))
+  (should-not (lookup-key canvas-browser-address-map [header-line down-mouse-1])))
+
 (ert-deftest canvas-browser-a-command-after-chromium-died-starts-it-again ()
   ;; GIVEN a page buffer whose chromium is gone
   ;; WHEN a command is sent
@@ -1875,6 +1930,44 @@ of their texts are killed afterwards."
                    '("https://duckduckgo.com/?q=espresso" "https://espresso/"
                      "http://espresso" "https://espresso:8080"
                      "https://example.org" "http://localhost" "https://")))))
+
+(defun canvas-browser-test--asked (arguments)
+  "The prompt, the text to start with and the default of a call of
+`read-from-minibuffer\\=' with ARGUMENTS."
+  (list (nth 0 arguments) (nth 1 arguments) (nth 5 arguments)))
+
+(ert-deftest canvas-browser-the-url-prompt-offers-the-address-of-the-page ()
+  ;; GIVEN a page buffer at https://example.org/coffee
+  ;; WHEN the URL prompt asks, once with text to start with and once
+  ;;      without
+  ;; THEN it asks URL:, starts with that text or with nothing, AND offers
+  ;;      the address of the page as the default that M-n brings
+  (canvas-browser-test--in-page
+    (setq canvas-browser--url "https://example.org/coffee")
+    (let ((asked nil))
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest arguments) (push arguments asked) "")))
+        (canvas-browser--read-url "https://example.org/tea")
+        (canvas-browser--read-url))
+      (should (equal (mapcar #'canvas-browser-test--asked (reverse asked))
+                     '(("URL: " "https://example.org/tea" "https://example.org/coffee")
+                       ("URL: " nil "https://example.org/coffee")))))))
+
+(ert-deftest canvas-browser-o-offers-the-address-of-the-page ()
+  ;; GIVEN a page buffer at https://example.org/coffee
+  ;; WHEN o asks for a URL, and the answer is https://example.org/tea
+  ;; THEN the prompt starts empty, with the address of the page as its
+  ;;      default, AND the page goes to the answer
+  (canvas-browser-test--in-page
+    (setq canvas-browser--url "https://example.org/coffee")
+    (let ((asked nil))
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest arguments) (setq asked arguments) "https://example.org/tea")))
+        (call-interactively #'canvas-browser-open-url))
+      (should (equal (canvas-browser-test--asked asked)
+                     '("URL: " nil "https://example.org/coffee")))
+      (should (equal (plist-get (canvas-browser-test--params "Page.navigate") :url)
+                     "https://example.org/tea")))))
 
 (ert-deftest canvas-browser-open-url-navigates-to-the-url-it-made ()
   ;; GIVEN a page buffer
@@ -6077,6 +6170,49 @@ from which each message went to chromium."
                             (should-error (canvas-browser-click
                                            (list 'mouse-1 (canvas-browser-test--at 40 90 t)))))))
     (should-not canvas-browser-test--commands)))
+
+(defun canvas-browser-test--on-header-line (window)
+  "A click of the left button on the header line of WINDOW."
+  (list 'mouse-1 (list window 'header-line '(40 . 5) 0)))
+
+(ert-deftest canvas-browser-a-click-on-the-address-edits-it-in-its-window ()
+  ;; GIVEN a page at https://example.org/coffee in the window beside the
+  ;;       selected window, which shows a buffer of text
+  (canvas-browser-test--beside-a-page
+    (with-current-buffer page
+      (setq canvas-browser--url "https://example.org/coffee"))
+    (let ((asked nil))
+      ;; WHEN the address in the header line of the page is clicked, and
+      ;;      the answer to the prompt is https://example.org/tea
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest arguments) (setq asked arguments) "https://example.org/tea")))
+        (canvas-browser-edit-url (canvas-browser-test--on-header-line page-window)))
+      ;; THEN the window of the page is the selected one, the prompt starts
+      ;;      with the address of that page, AND the page goes to the answer
+      (should (eq (selected-window) page-window))
+      (should (equal (seq-take (canvas-browser-test--asked asked) 2)
+                     '("URL: " "https://example.org/coffee")))
+      (should (equal (plist-get (canvas-browser-test--params "Page.navigate") :url)
+                     "https://example.org/tea"))
+      (should (equal (delete-dups senders) (list page))))))
+
+(ert-deftest canvas-browser-editing-the-address-of-no-page-is-an-error ()
+  ;; GIVEN a page in the window beside the selected window, which shows
+  ;;       a buffer of text
+  (canvas-browser-test--beside-a-page
+    (let ((asked nil))
+      ;; WHEN a click on the header line of the text asks to edit its address
+      ;; THEN that is an error that names the buffer, AND nothing is asked
+      ;;      and no page hears of it
+      (cl-letf (((symbol-function 'read-from-minibuffer)
+                 (lambda (&rest arguments) (setq asked arguments) "")))
+        (should (string-search "is no page"
+                               (error-message-string
+                                (should-error (canvas-browser-edit-url
+                                               (canvas-browser-test--on-header-line
+                                                (selected-window))))))))
+      (should-not asked)
+      (should-not canvas-browser-test--commands))))
 
 (ert-deftest canvas-browser-a-drag-is-bound-in-both-states ()
   ;; GIVEN a page buffer

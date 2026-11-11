@@ -518,7 +518,7 @@ Normal state keeps the keys of Emacs:
 
 | key | what it does |
 |---|---|
-| `o` | opens a URL in this buffer, or searches for the words you type. One word with no dot, slash or colon is searched for too. `espresso/` or a scheme such as `http://espresso` reaches a host of that name |
+| `o` | opens a URL in this buffer, or searches for the words you type. One word with no dot, slash or colon is searched for too. `espresso/` or a scheme such as `http://espresso` reaches a host of that name. `M-n` brings the address of the page |
 | `B`, `J` | keep this page as a bookmark, and open a page you kept |
 | `H` | offers the pages that you visited, the newest first, and opens the one you choose |
 | `C-SPC`, `C-u C-SPC`, `C-x C-x` | set a mark where the page stands, go back to the newest mark, and swap the two |
@@ -553,6 +553,7 @@ Normal state keeps the keys of Emacs:
 | `M-.` in that text | shows the page at the line: the page scrolls to it and paints it for a moment, and `M-,` comes back to the text |
 | `e` | opens the same URL in eww |
 | a click | clicks the page at that pixel, and types there if it is a field |
+| a click on the address in the header line | opens the prompt of `o` with the address in it, ready to edit. The address lights up under the pointer |
 | a drag | marks what lies between its two ends, once the button is let go |
 | the wheel | scrolls what lies under the pointer, over a link as well |
 | the wheel with shift | scrolls it sideways |
