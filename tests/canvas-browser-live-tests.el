@@ -1010,10 +1010,10 @@ is cleared away."
   (seq-find (lambda (buffer) (buffer-local-value 'canvas-browser-attach-mode buffer))
             (buffer-list)))
 
-(defun canvas-browser-live-test--page-says (script)
-  "The value of SCRIPT in this page."
+(defun canvas-browser-live-test--page-says (script &optional session)
+  "The value of SCRIPT in this page, or in the frame of SESSION."
   (let ((answer 'waiting))
-    (canvas-browser--evaluate script (lambda (value) (setq answer value)))
+    (canvas-browser--evaluate script (lambda (value) (setq answer value)) session)
     (canvas-browser-live-test--wait 10 (lambda () (not (eq answer 'waiting))))
     answer))
 
@@ -2664,3 +2664,74 @@ It is nil when chromium did not answer in ten seconds."
       (canvas-browser-cdp-stop)
       (delete-directory canvas-browser-profile-directory t)
       (delete-directory canvas-browser-download-directory t))))
+
+(defconst canvas-browser-live-test--pdf-place-js
+  "(() => { const v = document.querySelector('pdf-viewer');
+     if (!v || v.loadState_ !== 'success') return null;
+     return {y: Math.round(v.viewport_.position.y),
+             page: v.viewport_.getMostVisiblePage() + 1, pages: v.docLength_}; })()"
+  "Where the PDF viewer of chromium stands, as {y, page, pages}, or null.
+Y is how far the document is scrolled down, in pixels, PAGE the page that
+shows most, and PAGES how many the document has.  It is null until the
+viewer has loaded the document: it knows the pages before that, but then
+it can lose a turn of the wheel.  The viewer keeps all this in fields of
+its own, as no page can read them.")
+
+(defun canvas-browser-live-test--viewer ()
+  "The session of the PDF viewer of this page, or nil while it has none."
+  (let ((session 'waiting))
+    (canvas-browser--with-viewer (lambda (viewer) (setq session viewer)))
+    (canvas-browser-live-test--wait 10 (lambda () (not (eq session 'waiting))))
+    (and (stringp session) session)))
+
+(defmacro canvas-browser-live-test--in-pdf (name &rest body)
+  "Run BODY in a page buffer, 1280 by 800, that shows the PDF fixture NAME.
+BODY runs once the viewer has loaded the document, with `place' as a
+function that gives where the viewer stands, as a plist, or nil before
+then.  See `canvas-browser-live-test--pdf-place-js'."
+  (declare (indent 1))
+  `(let ((buffer nil)
+         (canvas-browser-profile-directory
+          (let ((temporary-file-directory (expand-file-name "~/snap/chromium/common/")))
+            (make-temp-file "canvas-browser-live-" t))))
+     (unwind-protect
+         (progn
+           (setq buffer (canvas-browser (concat "file://" (expand-file-name ,name "tests/fixtures/"))))
+           (with-current-buffer buffer
+             (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
+             (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
+             (canvas-browser--resize 1280 800)
+             (let* ((viewer nil)
+                    (place (lambda ()
+                             (setq viewer (or viewer (canvas-browser-live-test--viewer)))
+                             ;; The null of JSON comes back as :null.
+                             (let ((answer (and viewer (canvas-browser-live-test--page-says
+                                                        canvas-browser-live-test--pdf-place-js
+                                                        viewer))))
+                               (and (consp answer) answer)))))
+               (should (canvas-browser-live-test--wait 30 place))
+               ,@body)))
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (canvas-browser-cdp-stop)
+       (delete-directory canvas-browser-profile-directory t))))
+
+(ert-deftest canvas-browser-live-the-scroll-keys-scroll-a-pdf ()
+  ;; GIVEN a page, 1280 by 800, that shows a PDF of six pages at its top
+  ;; WHEN a screen is scrolled down
+  ;; THEN the document moves up the height of the window less 60 pixels
+  ;; WHEN the page goes to its end
+  ;; THEN the last page shows
+  ;; WHEN the page goes to its top
+  ;; THEN the document stands at its top again
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--in-pdf "pages.pdf"
+    (should (equal (plist-get (funcall place) :y) 0))
+    (canvas-browser-scroll-up)
+    (should (canvas-browser-live-test--wait
+             10 (lambda () (equal (plist-get (funcall place) :y) 740))))
+    (canvas-browser-end-of-page)
+    (should (canvas-browser-live-test--wait
+             10 (lambda () (equal (plist-get (funcall place) :page) 6))))
+    (canvas-browser-beginning-of-page)
+    (should (canvas-browser-live-test--wait
+             10 (lambda () (equal (plist-get (funcall place) :y) 0))))))

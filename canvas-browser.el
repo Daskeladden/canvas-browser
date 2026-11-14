@@ -1469,16 +1469,49 @@ the page moves the other way than what it shows."
   (canvas-browser--count-gesture)
   (canvas-browser--wheel x y (- dx) (- dy)))
 
+(defconst canvas-browser--shows-pdf-js "document.contentType === 'application/pdf'"
+  "The JavaScript that tells whether the page shows a PDF.")
+
+(defconst canvas-browser--pdf-wheel-to-an-end 10000000
+  "The pixels the wheel turns to reach the first or the last page of a PDF.
+They are more than any PDF has, and the viewer stops at its ends.")
+
 (defun canvas-browser--scroll (mode value expression)
   "Scroll the picked part of the page, or all of it.
 MODE and VALUE say how the part moves, and EXPRESSION is the JavaScript
 that moves the whole page instead, when no part is picked.  The page
 scrolls itself: chromium animates a wheel event and swallows a small one,
 and a key that does nothing for a second reads as a key that does nothing
-at all."
+at all.  A page that shows a PDF cannot scroll it, so there the wheel
+turns, see `canvas-browser--scroll-pdf\\='."
   (if (plist-get canvas-browser--part :scrolls)
       (canvas-browser--scroll-part mode value)
-    (canvas-browser--tell "Runtime.evaluate" (list :expression expression))))
+    (canvas-browser--ask-page
+     (format "%s || (%s, false)" canvas-browser--shows-pdf-js expression)
+     (lambda (pdf) (when (eq pdf t) (canvas-browser--scroll-pdf mode value))))))
+
+(defun canvas-browser--scroll-pdf (mode value)
+  "Scroll the PDF that this page shows: MODE and VALUE are as for a part.
+Chromium shows a PDF in a viewer, a frame of its own that scrolls itself.
+The page cannot scroll that frame, and a key sent to the page does not
+reach it.  So the wheel turns over the middle of the page, which the
+viewer fills.  The viewer moves at once by the pixels of the wheel, a
+small turn too."
+  (canvas-browser--wheel (/ (car canvas-browser--size) 2) (/ (cdr canvas-browser--size) 2)
+                         0 (canvas-browser--pdf-wheel-pixels mode value)))
+
+(defun canvas-browser--pdf-wheel-pixels (mode value)
+  "The pixels the wheel turns down in a PDF for MODE and VALUE.
+MODE is `by\\=' VALUE pixels, `end\\=', or `to\\=' with a VALUE of 0, the top.
+The wheel cannot go to any other place, as Emacs does not know where
+the viewer stands."
+  (pcase mode
+    ("by" value)
+    ("end" canvas-browser--pdf-wheel-to-an-end)
+    ("to" (unless (zerop value)
+            (error "canvas-browser: a PDF scrolls to its top only, not to %S" value))
+          (- canvas-browser--pdf-wheel-to-an-end))
+    (_ (error "canvas-browser: no way to scroll named %S" mode))))
 
 (defun canvas-browser--scroll-by (delta)
   "Scroll DELTA pixels, further down for a positive DELTA."

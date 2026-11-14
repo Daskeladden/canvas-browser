@@ -353,6 +353,7 @@ a thing in the viewer gives \"Download\"."
      (let ((script (plist-get params :expression)))
        (list :result
              (list :value (cond ((equal script "document.contentType") "application/pdf")
+                                ((string-prefix-p canvas-browser--shows-pdf-js script) t)
                                 ((not (equal script canvas-browser--boxes-script)) "Download")
                                 ((equal session "S-W1") boxes))))))))
 
@@ -455,6 +456,45 @@ sent goes to `canvas-browser-test--sent\\='."
               ((symbol-function 'message) #'ignore))
       (canvas-browser-hints)
       (should-not (canvas-browser-test--params "Target.getTargets")))))
+
+(defun canvas-browser-test--wheel-sent ()
+  "The last turn of the wheel that was sent while a PDF is shown, or nil."
+  (let ((event (cadr (canvas-browser-test--sent-of "Input.dispatchMouseEvent"))))
+    (and (equal (plist-get event :type) "mouseWheel") event)))
+
+(ert-deftest canvas-browser-the-scroll-keys-turn-the-wheel-over-a-pdf ()
+  ;; GIVEN a page of 800 by 600 that shows a PDF, whose viewer scrolls
+  ;;       and not the page
+  ;; WHEN a screen and a line are scrolled down, and then back up
+  ;; THEN each key turns the wheel over the middle of the page, by as
+  ;;      many pixels as the key scrolls a page of HTML
+  (canvas-browser-test--showing-pdf-viewer nil
+    (pcase-dolist (`(,command ,pixels)
+                   `((canvas-browser-scroll-up 540)
+                     (canvas-browser-scroll-line-up ,canvas-browser-line-height)
+                     (canvas-browser-scroll-down -540)
+                     (canvas-browser-scroll-line-down ,(- canvas-browser-line-height))))
+      (setq canvas-browser-test--sent nil)
+      (funcall command)
+      (let ((wheel (canvas-browser-test--wheel-sent)))
+        (should wheel)
+        (should (equal (list (plist-get wheel :x) (plist-get wheel :y)) '(400 300)))
+        (should (equal (list (plist-get wheel :deltaX) (plist-get wheel :deltaY))
+                       (list 0 pixels)))))))
+
+(ert-deftest canvas-browser-the-ends-of-a-pdf-are-reached-with-the-wheel ()
+  ;; GIVEN a page that shows a PDF
+  ;; WHEN it goes to its end
+  ;; THEN the wheel turns down over the page further than any PDF reaches
+  ;; WHEN it goes to its top
+  ;; THEN the wheel turns up as far
+  (canvas-browser-test--showing-pdf-viewer nil
+    (canvas-browser-end-of-page)
+    (should (equal (plist-get (canvas-browser-test--wheel-sent) :deltaY)
+                   canvas-browser--pdf-wheel-to-an-end))
+    (canvas-browser-beginning-of-page)
+    (should (equal (plist-get (canvas-browser-test--wheel-sent) :deltaY)
+                   (- canvas-browser--pdf-wheel-to-an-end)))))
 
 ;;;; Find in page, and the text of a page
 
@@ -3509,15 +3549,17 @@ Each flash goes to `drawn\=' as (flash BOX), and each flight as
   ;; THEN the page is scrolled from the page itself, not by a wheel event:
   ;;      chromium animates a wheel and can swallow a small one, and a key
   ;;      that does nothing for a second reads as a key that does nothing
+  ;;      AND no wheel turns, as the page shows no PDF
   (canvas-browser-test--in-page
     (call-interactively #'canvas-browser-scroll-line-up)
     (should (string-search (format "window.scrollBy(0, %d)" canvas-browser-line-height)
                            (plist-get (canvas-browser-test--params "Runtime.evaluate")
                                       :expression)))
     (call-interactively #'canvas-browser-scroll-down)
-    (should (string-search "window.scrollBy(0, -" 
+    (should (string-search "window.scrollBy(0, -"
                            (plist-get (canvas-browser-test--params "Runtime.evaluate")
-                                      :expression)))))
+                                      :expression)))
+    (should-not (canvas-browser-test--params "Input.dispatchMouseEvent"))))
 
 (ert-deftest canvas-browser-a-window-that-changed-size-is-filled-again ()
   ;; GIVEN a page whose window has changed size, as it does when the map

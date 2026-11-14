@@ -158,6 +158,12 @@ zoom, the page number, the sidebar and its pages. The viewer draws the
 links of the PDF itself, so they are no part of a page, and `f` does
 not label them.
 
+The keys that scroll a page scroll a PDF too, and `M-<` and `M->` go to
+its first and its last page. The page cannot scroll the viewer, and a
+key that Emacs sends to the page does not reach it. So each of these
+keys turns the wheel over the middle of the page. The wheel turns as
+many pixels as the key scrolls a page of HTML.
+
 `P` opens the PDF in a buffer of Emacs.
 If you installed pdf-tools, it shows the PDF there, and its `F` labels
 the links. The PDF is saved in `~/Downloads`, as a download is, and comes
