@@ -23,7 +23,7 @@ SUITES  = tests/canvas-browser-cdp-tests.el tests/canvas-browser-translate-tests
 GUI_LOAD = $(foreach d,. $(DIAGRAM) $(KEYS),-L $(abspath $(d))) \
            -L $(ELPACA)/websocket -L $(ELPACA)/transient -L $(ELPACA)/cond-let
 
-.PHONY: test live gui address-acceptance draw-acceptance clean
+.PHONY: test live gui address-acceptance draw-acceptance fit-acceptance clean
 
 test:
 	ERT_MATCH='$(MATCH)' $(EMACS) -Q --batch --eval "(setq load-prefer-newer t)" $(LOAD) \
@@ -67,6 +67,15 @@ draw-acceptance:
 	  --eval '(setq load-prefer-newer t)' $(GUI_LOAD) -L $(abspath tests) \
 	  -l tests/canvas-browser-draw-acceptance.el \
 	  --eval '(canvas-browser-draw-acceptance-run)'
+
+# Keys that fit a whole page of a PDF in the window, and go a page at a
+# time, in a frame on a virtual display.  A real chromium runs, on its
+# own display.  It is not part of test.  -noreset as for gui.
+fit-acceptance:
+	timeout 450 xvfb-run -a -s "-screen 0 1400x900x24 -noreset" $(EMACS) -Q \
+	  --eval '(setq load-prefer-newer t)' $(GUI_LOAD) -L $(abspath tests) \
+	  -l tests/canvas-browser-fit-acceptance.el \
+	  --eval '(canvas-browser-fit-acceptance-run)'
 
 clean:
 	rm -f *.elc tests/*.elc

@@ -342,10 +342,15 @@ W1 is its viewer, and W2 the viewer of another page.")
 (defvar canvas-browser-test--sent nil
   "The commands sent while a PDF is shown, as (METHOD PARAMS SESSION), newest first.")
 
+(defvar canvas-browser-test--viewer-says "scroll"
+  "What the viewer answers to a script that fits its document or goes a page.
+\"scroll\" is the answer of a viewer that has no whole page fitted.")
+
 (defun canvas-browser-test--pdf-answer (method params session boxes)
   "What chromium answers to METHOD with PARAMS in SESSION while it shows a PDF.
-The page has nothing to click, and the viewer W1 has BOXES.  A script on
-a thing in the viewer gives \"Download\"."
+The page has nothing to click, and the viewer W1 has BOXES.  A script that
+fits the document or goes a page gives `canvas-browser-test--viewer-says\\=',
+and a script on a thing in the viewer gives \"Download\"."
   (pcase method
     ("Target.getTargets" (list :targetInfos canvas-browser-test--targets))
     ("Target.attachToTarget" (list :sessionId (concat "S-" (plist-get params :targetId))))
@@ -354,6 +359,7 @@ a thing in the viewer gives \"Download\"."
        (list :result
              (list :value (cond ((equal script "document.contentType") "application/pdf")
                                 ((string-prefix-p canvas-browser--shows-pdf-js script) t)
+                                ((string-search "viewport_" script) canvas-browser-test--viewer-says)
                                 ((not (equal script canvas-browser--boxes-script)) "Download")
                                 ((equal session "S-W1") boxes))))))))
 
@@ -506,6 +512,62 @@ sent goes to `canvas-browser-test--sent\\='."
     (canvas-browser-beginning-of-page)
     (should (equal (plist-get (canvas-browser-test--wheel-sent) :deltaY)
                    (- canvas-browser--pdf-wheel-to-an-end)))))
+
+;;;; A whole page of a PDF in the window
+
+(defun canvas-browser-test--viewer-scripts ()
+  "The scripts that were run in the viewer W1 of this page, oldest first."
+  (nreverse (cl-loop for (method params session) in canvas-browser-test--sent
+                     when (and (equal method "Runtime.evaluate") (equal session "S-W1"))
+                     collect (plist-get params :expression))))
+
+(ert-deftest canvas-browser-z-on-a-pdf-presses-the-fit-of-its-viewer ()
+  ;; GIVEN a page that shows a PDF, at the zoom of the page buffer it
+  ;;       opened with
+  ;; WHEN the reader fits it, as z does
+  ;; THEN the viewer of this page fits it as its fit button does, which
+  ;;      fits a whole page and then the width in turn, AND the page
+  ;;      buffer keeps its zoom
+  (let ((canvas-browser-test--viewer-says "fitted"))
+    (canvas-browser-test--showing-pdf-viewer nil
+      (canvas-browser--zoom-by-key 'fit)
+      (should (string-search "fitToggle()" (car (last (canvas-browser-test--viewer-scripts)))))
+      (should (= canvas-browser--zoom 1.0))
+      (should-not (canvas-browser-test--sent-of "Emulation.setDeviceMetricsOverride")))))
+
+(ert-deftest canvas-browser-a-viewer-without-the-fields-it-had-is-an-error ()
+  ;; GIVEN a page that shows a PDF, in a viewer of a later chromium that
+  ;;       lacks the fields canvas-browser fits and pages with
+  ;; WHEN the reader fits it, as z does
+  ;; THEN an error names the fields that are gone
+  (let ((canvas-browser-test--viewer-says "unknown viewer"))
+    (canvas-browser-test--showing-pdf-viewer nil
+      (should (string-search "viewport_"
+                             (cadr (should-error (canvas-browser--zoom-by-key 'fit))))))))
+
+(ert-deftest canvas-browser-the-screen-keys-go-a-page-in-a-pdf-with-a-whole-page ()
+  ;; GIVEN a page that shows a PDF, with a whole page fitted in the window
+  ;; WHEN a screen is scrolled down, and then back up
+  ;; THEN the viewer goes to the next page, and then to the one before,
+  ;;      AND no wheel turns
+  (let ((canvas-browser-test--viewer-says "page"))
+    (canvas-browser-test--showing-pdf-viewer nil
+      (canvas-browser-scroll-up)
+      (should (string-search "goToNextPage()" (car (last (canvas-browser-test--viewer-scripts)))))
+      (canvas-browser-scroll-down)
+      (should (string-search "goToPreviousPage()" (car (last (canvas-browser-test--viewer-scripts)))))
+      (should-not (canvas-browser-test--wheel-sent)))))
+
+(ert-deftest canvas-browser-the-line-keys-scroll-a-line-in-a-pdf-with-a-whole-page ()
+  ;; GIVEN a page that shows a PDF, with a whole page fitted in the window
+  ;; WHEN a line is scrolled down
+  ;; THEN the wheel turns a line, AND the viewer goes to no other page
+  (let ((canvas-browser-test--viewer-says "page"))
+    (canvas-browser-test--showing-pdf-viewer nil
+      (canvas-browser-scroll-line-up)
+      (should (equal (plist-get (canvas-browser-test--wheel-sent) :deltaY)
+                     canvas-browser-line-height))
+      (should-not (canvas-browser-test--viewer-scripts)))))
 
 ;;;; Find in page, and the text of a page
 
@@ -2861,14 +2923,18 @@ that makes the gesture in the page buffer at hand.")
         (should (string-match-p "\\`\\*? *[^ ]+\\( +[^ ]+\\)?\\'" text))))))
 
 (ert-deftest canvas-browser-has-no-whole-drawing-to-fit ()
-  ;; GIVEN a page buffer, where z asks to fit the whole drawing
+  ;; GIVEN a page buffer of a page that shows no PDF, where z asks to fit
+  ;;       the whole drawing
   ;; WHEN the fit is asked for
   ;; THEN z reaches the zoom of canvas-keys, AND the page says that it has
   ;;      nothing whole to fit, since a page has no end
   (canvas-browser-test--in-page
     (should (eq (key-binding (kbd "z")) #'canvas-keys-zoom-fit))
-    (should (string-search "fit" (error-message-string
-                                  (should-error (canvas-keys-zoom-fit) :type 'user-error))))))
+    (let ((said nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (setq said (apply #'format format args)))))
+        (canvas-keys-zoom-fit))
+      (should (equal said "canvas-browser: a page has nothing whole to fit")))))
 
 ;;;; Dark mode
 

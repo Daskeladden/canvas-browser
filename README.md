@@ -165,6 +165,14 @@ key that Emacs sends to the page does not reach it. So each of these
 keys turns the wheel over the middle of the page. The wheel turns as
 many pixels as the key scrolls a page of HTML.
 
+`z` fits a whole page of the PDF in the window, as the fit button of
+the viewer does. The next `z` fits the width of the page, and the one
+after it a whole page again. While a whole page fits, `C-v` and `M-v`
+go to the next page and to the page before. On a page that is no PDF,
+`z` says that a page has nothing whole to fit. The viewer keeps these
+functions in fields of its own, and a later chromium can rename them.
+Then `z` and the page keys stop with an error that names the fields.
+
 `P` opens the PDF in a buffer of Emacs.
 If you installed pdf-tools, it shows the PDF there, and its `F` labels
 the links. The PDF is saved in `~/Downloads`, as a download is, and comes
@@ -556,7 +564,7 @@ Normal state keeps the keys of Emacs:
 | `g` | reads the page again |
 | `M-p`, `M-n` | go back and forward in the history |
 | `n`, `p` | scroll a line further down and back |
-| `C-v`, `M-v`, the arrows | scroll a screen and a line |
+| `C-v`, `M-v`, the arrows | scroll a screen and a line. On a PDF with a whole page in the window, `C-v` and `M-v` go a page |
 | `<prior>`, `<next>` | scroll a screen back and further down |
 | `<home>`, `<end>`, `C-<home>`, `C-<end>`, `M-<`, `M->` | go to the top and the foot of the page |
 | `f` | labels what a click can reach, fields inside web components included, and clicks the one you name; the labels stay until you name one or press `ESC`. On a PDF it labels the buttons of the viewer |
@@ -580,6 +588,7 @@ Normal state keeps the keys of Emacs:
 | `M-.` in that text | shows the page at the line: the page scrolls to it and paints it for a moment, and `M-,` comes back to the text |
 | `e` | opens the same URL in eww |
 | `P` | opens the PDF that the page shows in Emacs, see [A PDF](#a-pdf) |
+| `z` | fits a whole page of a PDF in the window, and its width at the next press, see [A PDF](#a-pdf) |
 | a click | clicks the page at that pixel, and types there if it is a field |
 | a click on the address in the header line | opens the prompt of `o` with the address in it, ready to edit. The address lights up under the pointer |
 | a drag | gives the page each move while the button is held. The marked text grows as you drag, and a stroke in the Draw mode of a PDF follows the mouse. If the mouse leaves the page, the button comes up where it left |

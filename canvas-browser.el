@@ -1476,19 +1476,22 @@ the page moves the other way than what it shows."
   "The pixels the wheel turns to reach the first or the last page of a PDF.
 They are more than any PDF has, and the viewer stops at its ends.")
 
-(defun canvas-browser--scroll (mode value expression)
+(defun canvas-browser--scroll (mode value expression &optional in-pdf)
   "Scroll the picked part of the page, or all of it.
 MODE and VALUE say how the part moves, and EXPRESSION is the JavaScript
 that moves the whole page instead, when no part is picked.  The page
 scrolls itself: chromium animates a wheel event and swallows a small one,
 and a key that does nothing for a second reads as a key that does nothing
-at all.  A page that shows a PDF cannot scroll it, so there the wheel
-turns, see `canvas-browser--scroll-pdf\\='."
+at all.  A page that shows a PDF cannot scroll it, so there IN-PDF is
+called with MODE and VALUE, or `canvas-browser--scroll-pdf\\=', which turns
+the wheel, when IN-PDF is nil."
   (if (plist-get canvas-browser--part :scrolls)
       (canvas-browser--scroll-part mode value)
     (canvas-browser--ask-page
      (format "%s || (%s, false)" canvas-browser--shows-pdf-js expression)
-     (lambda (pdf) (when (eq pdf t) (canvas-browser--scroll-pdf mode value))))))
+     (lambda (pdf)
+       (when (eq pdf t)
+         (funcall (or in-pdf #'canvas-browser--scroll-pdf) mode value))))))
 
 (defun canvas-browser--scroll-pdf (mode value)
   "Scroll the PDF that this page shows: MODE and VALUE are as for a part.
@@ -1514,19 +1517,24 @@ the viewer stands."
           (- canvas-browser--pdf-wheel-to-an-end))
     (_ (error "canvas-browser: no way to scroll named %S" mode))))
 
-(defun canvas-browser--scroll-by (delta)
-  "Scroll DELTA pixels, further down for a positive DELTA."
-  (canvas-browser--scroll "by" delta (format "window.scrollBy(0, %d)" delta)))
+(defun canvas-browser--scroll-by (delta &optional in-pdf)
+  "Scroll DELTA pixels, further down for a positive DELTA.
+IN-PDF scrolls a page that shows a PDF, as for `canvas-browser--scroll\\='."
+  (canvas-browser--scroll "by" delta (format "window.scrollBy(0, %d)" delta) in-pdf))
 
 (defun canvas-browser-scroll-up ()
-  "Scroll the page one screen further down."
+  "Scroll the page one screen further down.
+In a PDF with a whole page in the window, go to the next page."
   (interactive)
-  (canvas-browser--scroll-by (- (cdr canvas-browser--size) 60)))
+  (canvas-browser--scroll-by (- (cdr canvas-browser--size) 60)
+                             #'canvas-browser--screen-in-pdf))
 
 (defun canvas-browser-scroll-down ()
-  "Scroll the page one screen back."
+  "Scroll the page one screen back.
+In a PDF with a whole page in the window, go to the page before."
   (interactive)
-  (canvas-browser--scroll-by (- 60 (cdr canvas-browser--size))))
+  (canvas-browser--scroll-by (- 60 (cdr canvas-browser--size))
+                             #'canvas-browser--screen-in-pdf))
 
 (defun canvas-browser-beginning-of-page ()
   "Go to the top of the page, or of the part picked."
@@ -2589,6 +2597,72 @@ A viewer this buffer attached to before is used again."
               ((equal target (car canvas-browser--viewer))
                (funcall then (cdr canvas-browser--viewer)))
               (t (canvas-browser--attach-viewer target then))))))))
+
+(defconst canvas-browser--pdf-viewer-js
+  "(() => { const viewer = document.querySelector('pdf-viewer');
+     const viewport = viewer?.viewport_;
+     const toolbar = viewer?.shadowRoot?.querySelector('viewer-toolbar');
+     if (!viewport?.goToNextPage || !toolbar?.fitToggle) return 'unknown viewer';
+     %s })()"
+  "The JavaScript that runs a script in the PDF viewer, which takes its place.
+The script sees `viewport\\=', the object that zooms and scrolls the
+document, and `toolbar\\=', the bar of buttons.  Both are fields of the
+viewer of its own, so a later chromium can rename them, and then the
+answer is \"unknown viewer\".")
+
+(defconst canvas-browser--pdf-fit-js "toolbar.fitToggle(); return 'fitted';"
+  "The JavaScript that fits the PDF as the fit button of its viewer does.
+From any zoom it fits a whole page in the window, and from there the
+width and a whole page in turn, and the button shows what it does next.")
+
+(defun canvas-browser--pdf-page-js (forward)
+  "The JavaScript that goes a page, to the next one when FORWARD is non-nil.
+It does so only while a whole page fits in the window, and it answers
+\"page\" then, or \"scroll\" for a document that scrolls as it is."
+  (format "if (viewport.fittingType !== 'fit-to-page') return 'scroll';
+           viewport.%s(); return 'page';"
+          (if forward "goToNextPage" "goToPreviousPage")))
+
+(defun canvas-browser--in-pdf-viewer (script answers then)
+  "Run SCRIPT in the PDF viewer of this page, and call THEN in this buffer
+with the word it gives, one of ANSWERS.  THEN gets nil when the page has
+no viewer.  See `canvas-browser--pdf-viewer-js\\='."
+  (canvas-browser--with-viewer
+   (lambda (viewer)
+     (if viewer
+         (canvas-browser--evaluate
+          (format canvas-browser--pdf-viewer-js script)
+          (canvas-browser--here
+           (lambda (word) (funcall then (canvas-browser--viewer-answer word answers))))
+          viewer)
+       (funcall then nil)))))
+
+(defun canvas-browser--viewer-answer (word answers)
+  "WORD, which the PDF viewer gave, when it is one of ANSWERS; an error else."
+  (unless (member word answers)
+    (error "canvas-browser: the PDF viewer answered %S, not one of %S.  \
+canvas-browser fits and pages with its fields viewport_ and the fitToggle \
+of its toolbar, which this chromium does not have as they were" word answers))
+  word)
+
+(defun canvas-browser--fit-pdf ()
+  "Fit the PDF that this page shows, as the fit button of its viewer does.
+A page that shows no PDF has nothing whole to fit, and says so."
+  (canvas-browser--in-pdf-viewer
+   canvas-browser--pdf-fit-js '("fitted")
+   (lambda (word)
+     (unless word
+       (message "canvas-browser: a page has nothing whole to fit")))))
+
+(defun canvas-browser--screen-in-pdf (mode value)
+  "Go a page in the PDF of this page, while a whole page fits in the window:
+the next one for a positive VALUE.  Otherwise scroll it by MODE and VALUE
+as `canvas-browser--scroll-pdf\\=' does."
+  (canvas-browser--in-pdf-viewer
+   (canvas-browser--pdf-page-js (> value 0)) '("page" "scroll")
+   (lambda (word)
+     (unless (equal word "page")
+       (canvas-browser--scroll-pdf mode value)))))
 
 (defun canvas-browser--viewer-boxes (answer)
   "Call ANSWER with the boxes of the PDF viewer of this page, and its session.
@@ -4680,16 +4754,18 @@ picture asked for before that is of the layout the page had."
      canvas-browser--session)))
 
 (defun canvas-browser--zoom-by-key (direction)
-  "Zoom the page: DIRECTION is `in\\=', `out\\=' or `reset\\='.
-It is this buffer's `canvas-keys-zoom-function\\='."
-  (setq canvas-browser--zoom
-        (pcase direction
-          ('in (min 5.0 (* canvas-browser--zoom canvas-browser-zoom-step)))
-          ('out (max 0.25 (/ canvas-browser--zoom canvas-browser-zoom-step)))
-          ('reset 1.0)
-          ('fit (user-error "canvas-browser: a page has nothing whole to fit"))
-          (other (error "canvas-browser: %S is no zoom" other))))
-  (canvas-browser--apply-zoom))
+  "Zoom the page: DIRECTION is `in\\=', `out\\=', `reset\\=' or `fit\\='.
+It is this buffer's `canvas-keys-zoom-function\\='.  Only a PDF has a
+whole to fit, see `canvas-browser--fit-pdf\\='."
+  (if (eq direction 'fit)
+      (canvas-browser--fit-pdf)
+    (setq canvas-browser--zoom
+          (pcase direction
+            ('in (min 5.0 (* canvas-browser--zoom canvas-browser-zoom-step)))
+            ('out (max 0.25 (/ canvas-browser--zoom canvas-browser-zoom-step)))
+            ('reset 1.0)
+            (other (error "canvas-browser: %S is no zoom" other))))
+    (canvas-browser--apply-zoom)))
 
 (defun canvas-browser--zoom-at (factor _x _y)
   "Zoom the page one step: in for a FACTOR above 1, out for one below.
