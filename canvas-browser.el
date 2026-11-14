@@ -1601,33 +1601,44 @@ or of the frame\'s document, so the script follows it down, and a frame
 moves the box by where the frame stands.  A frame of another site cannot
 be looked into, and `i\\=' sends the keys there.")
 
-(defun canvas-browser--click (x y)
-  "Click the page at the pixel X Y, and type there if it takes typing.
+(defun canvas-browser--button (type x y &optional answer)
+  "Tell the page that the left button did TYPE at the pixel X Y.
+TYPE is mousePressed, mouseMoved, which is a move with the button held,
+or mouseReleased.  ANSWER is called once chromium has handled it."
+  (unless (member type '("mousePressed" "mouseMoved" "mouseReleased"))
+    (error "canvas-browser: the left button does no %S" type))
+  (canvas-browser--tell "Input.dispatchMouseEvent"
+                        (append (list :type type :x x :y y :button "left")
+                                (if (equal type "mouseMoved")
+                                    (list :buttons 1)
+                                  (list :clickCount 1)))
+                        answer))
+
+(defun canvas-browser--release-button (x y moved)
+  "Let the left button go at the pixel X Y, and follow what it did.
 The page is asked what has the focus once chromium has handled the
-click: asked sooner, it names what had the focus before it."
-  (canvas-browser--tell "Input.dispatchMouseEvent"
-                        (list :type "mousePressed" :x x :y y
-                              :button "left" :clickCount 1))
-  (canvas-browser--tell "Input.dispatchMouseEvent"
-                        (list :type "mouseReleased" :x x :y y
-                              :button "left" :clickCount 1)
-                        (canvas-browser--follow-focus-later))
-  (canvas-browser--look-at-clipboard-later))
+release: asked sooner, it names what had the focus before it.  After a
+button that MOVED, text marked outside a field goes to the caret of the
+page.  After a click, Emacs looks at the clipboard of chromium, which a
+button of the page may fill."
+  (if moved
+      (canvas-browser--button "mouseReleased" x y (canvas-browser--here #'canvas-browser--after-drag))
+    (canvas-browser--button "mouseReleased" x y (canvas-browser--follow-focus-later))
+    (canvas-browser--look-at-clipboard-later)))
+
+(defun canvas-browser--click (x y)
+  "Click the page at the pixel X Y, and type there if it takes typing."
+  (canvas-browser--button "mousePressed" x y)
+  (canvas-browser--release-button x y nil))
 
 (defun canvas-browser--drag (x1 y1 x2 y2)
   "Drag the mouse over the page from the pixel X1 Y1 to X2 Y2.
 The page gets a press, a move with the left button held, and a release,
-so it marks what lies between as it does in any browser.  The focus is
-followed as after a click: a drag in a field types there.  Text marked
-outside a field goes to the caret of the page."
-  (let ((left (list :button "left" :clickCount 1)))
-    (canvas-browser--tell "Input.dispatchMouseEvent"
-                          (append (list :type "mousePressed" :x x1 :y y1) left))
-    (canvas-browser--tell "Input.dispatchMouseEvent"
-                          (list :type "mouseMoved" :x x2 :y y2 :button "left" :buttons 1))
-    (canvas-browser--tell "Input.dispatchMouseEvent"
-                          (append (list :type "mouseReleased" :x x2 :y y2) left)
-                          (canvas-browser--here #'canvas-browser--after-drag))))
+so it marks what lies between as it does in any browser.  A drag in a
+field types there."
+  (canvas-browser--button "mousePressed" x1 y1)
+  (canvas-browser--button "mouseMoved" x2 y2)
+  (canvas-browser--release-button x2 y2 t))
 
 (defun canvas-browser--after-drag (&rest _)
   "Follow the focus as after a click, and give marked text to the caret.
@@ -1774,6 +1785,70 @@ The page is the one under the pointer, and its window is selected."
   (interactive "e")
   (canvas-browser--take-button event)
   (canvas-browser--click-at event))
+
+(defun canvas-browser-press (event)
+  "Press the left button on the page where EVENT, a press on the canvas,
+points, and give the page each move of the mouse until the button comes
+up.  So a drag marks text as it goes, and a stroke of a drawing follows
+the hand.  A press without a move is a click.  The page is the one under
+the pointer, and its window is selected."
+  (interactive "e")
+  (canvas-browser--take-button event)
+  (let ((at (or (canvas-browser--page-pixel (event-start event))
+                (user-error "canvas-browser: the press was off the page"))))
+    (canvas-browser--hold-button (posn-window (event-start event)) at)))
+
+(defun canvas-browser--hold-button (window at)
+  "Press the left button at AT, (X . Y) of the page in WINDOW, and follow
+the mouse until the button comes up.  The button comes up on the page
+whatever happens, also after a quit, so that the page holds none."
+  (let ((held (list :at at :moved nil :down t)))
+    (canvas-browser--button "mousePressed" (car at) (cdr at))
+    (unwind-protect
+        (canvas-browser--follow-mouse window held)
+      (canvas-browser--let-go held))))
+
+(defun canvas-browser--follow-mouse (window held)
+  "Give each move of the mouse over the page of WINDOW to the page, until
+the left button comes up.  HELD says where the button is held, see
+`canvas-browser--hold-button\\='.  An event that is no move waits to be
+read after the button came up."
+  (let ((others nil)
+        (event nil))
+    ;; `dragging' keeps the shape of the pointer while it moves.
+    (track-mouse
+      (setq track-mouse 'dragging)
+      (while (not (canvas-browser--release-p (setq event (read-event))))
+        (if (mouse-movement-p event)
+            (canvas-browser--held-move window event held)
+          (push event others))))
+    (setq unread-command-events (append (nreverse others) unread-command-events))))
+
+(defun canvas-browser--release-p (event)
+  "Whether EVENT is the left button coming up, after a click or a drag."
+  (and (eq (event-basic-type event) 'mouse-1)
+       (not (memq 'down (event-modifiers event)))))
+
+(defun canvas-browser--held-move (window event held)
+  "Give the move EVENT to the page of WINDOW, while HELD is down there.
+A move off the page lets the button go where the mouse last was on it:
+the page cannot hear of a pointer that is outside it."
+  (when (plist-get held :down)
+    (let ((position (event-start event)))
+      (if-let* ((at (and (eq (posn-window position) window)
+                         (canvas-browser--page-pixel position))))
+          (progn
+            (canvas-browser--button "mouseMoved" (car at) (cdr at))
+            (plist-put held :at at)
+            (plist-put held :moved t))
+        (canvas-browser--let-go held)))))
+
+(defun canvas-browser--let-go (held)
+  "Let the left button go where HELD says, unless it is up already."
+  (when (plist-get held :down)
+    (plist-put held :down nil)
+    (let ((at (plist-get held :at)))
+      (canvas-browser--release-button (car at) (cdr at) (plist-get held :moved)))))
 
 (defun canvas-browser--page-pixel (position)
   "The pixel of the page that POSITION, a mouse position, is on, as (X . Y).
@@ -5548,14 +5623,18 @@ looks in GESTURES first, a keymap, when one is given."
 
 (defun canvas-browser--bind-mouse (map)
   "Bind the mouse in MAP.
-A click reaches the page, and a drag marks in it.  The wheel is a
-gesture of canvas-keys, which binds it beside a link.  Over a link the
-keys of canvas-keys do not reach, so the map of the link holds the two
-gestures that a page answers: the wheel, and the wheel with control."
+A click reaches the page, and a drag marks in it.  A press of the left
+button follows the mouse until the button comes up, so the page hears
+each move.  The wheel is a gesture of canvas-keys, which binds it beside
+a link.  Over a link the keys of canvas-keys do not reach, so the map of
+the link holds the two gestures that a page answers: the wheel, and the
+wheel with control."
   (define-key map [drag-mouse-1] #'canvas-browser-drag)
   (canvas-browser--bind-clicks map #'canvas-browser-click
                                (canvas-keys-gesture-map 'canvas-keys-wheel-function
-                                                        'canvas-keys-zoom-at-function)))
+                                                        'canvas-keys-zoom-at-function))
+  (dolist (press '([down-mouse-1] [double-down-mouse-1] [triple-down-mouse-1]))
+    (define-key map press #'canvas-browser-press)))
 
 (canvas-browser--bind-mouse canvas-browser-mode-map)
 ;; The mouse works while you type in the page as well: the state is about

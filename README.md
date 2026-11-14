@@ -582,7 +582,7 @@ Normal state keeps the keys of Emacs:
 | `P` | opens the PDF that the page shows in Emacs, see [A PDF](#a-pdf) |
 | a click | clicks the page at that pixel, and types there if it is a field |
 | a click on the address in the header line | opens the prompt of `o` with the address in it, ready to edit. The address lights up under the pointer |
-| a drag | marks what lies between its two ends, once the button is let go |
+| a drag | gives the page each move while the button is held. The marked text grows as you drag, and a stroke in the Draw mode of a PDF follows the mouse. If the mouse leaves the page, the button comes up where it left |
 | the wheel | scrolls what lies under the pointer, over a link as well |
 | the wheel with shift | scrolls it sideways |
 | the wheel with control | zooms the page a step, as `+` and `-` do |

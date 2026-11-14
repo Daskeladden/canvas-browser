@@ -23,7 +23,7 @@ SUITES  = tests/canvas-browser-cdp-tests.el tests/canvas-browser-translate-tests
 GUI_LOAD = $(foreach d,. $(DIAGRAM) $(KEYS),-L $(abspath $(d))) \
            -L $(ELPACA)/websocket -L $(ELPACA)/transient -L $(ELPACA)/cond-let
 
-.PHONY: test live gui address-acceptance clean
+.PHONY: test live gui address-acceptance draw-acceptance clean
 
 test:
 	ERT_MATCH='$(MATCH)' $(EMACS) -Q --batch --eval "(setq load-prefer-newer t)" $(LOAD) \
@@ -57,6 +57,16 @@ address-acceptance:
 	  -L $(ELPACA)/vertico -L $(ELPACA)/orderless \
 	  -l tests/canvas-browser-address-acceptance.el \
 	  --eval '(canvas-browser-address-acceptance-run)'
+
+# Real moves of the mouse with a button held, on a PDF in the Draw mode
+# of chromium and on a page of text, in a frame on a virtual display.
+# A real chromium runs, on its own display.  It is not part of test.
+# -noreset as for gui.
+draw-acceptance:
+	timeout 450 xvfb-run -a -s "-screen 0 1400x900x24 -noreset" $(EMACS) -Q \
+	  --eval '(setq load-prefer-newer t)' $(GUI_LOAD) -L $(abspath tests) \
+	  -l tests/canvas-browser-draw-acceptance.el \
+	  --eval '(canvas-browser-draw-acceptance-run)'
 
 clean:
 	rm -f *.elc tests/*.elc

@@ -2716,7 +2716,7 @@ that makes the gesture in the page buffer at hand.")
   ;;      event that nothing binds is ignored instead of saying it is undefined
   (canvas-browser-test--in-page
     (should (eq (key-binding [canvas-browser-link mouse-1]) #'canvas-browser-click))
-    (should (eq (key-binding [canvas-browser-link down-mouse-1]) #'ignore))
+    (should (eq (key-binding [canvas-browser-link down-mouse-1]) #'canvas-browser-press))
     (should (eq (key-binding [canvas-browser-link wheel-down]) #'canvas-keys-wheel-scroll))
     (should (eq (key-binding [canvas-browser-link triple-wheel-up]) #'canvas-keys-wheel-scroll))
     (should (eq (key-binding [canvas-browser-link S-wheel-down]) #'canvas-keys-wheel-scroll))
@@ -3785,7 +3785,7 @@ Each flash goes to `drawn\=' as (flash BOX), and each flight as
     (should (eq (key-binding (kbd "<canvas-browser-link> <mouse-1>"))
                 'canvas-browser-click))
     (should (eq (key-binding (kbd "<canvas-browser-link> <down-mouse-1>"))
-                'ignore))))
+                'canvas-browser-press))))
 
 (ert-deftest canvas-browser-a-page-that-was-let-go-is-noticed ()
   ;; GIVEN a page whose target chromium has let go of, which it says with
@@ -6635,6 +6635,126 @@ from which each message went to chromium."
       (should (equal (delete-dups senders) (list page)))
       (should (= (buffer-local-value 'canvas-browser--commands page) (1+ counted)))
       (should (eq (selected-window) page-window)))))
+
+(defmacro canvas-browser-test--holding (events &rest body)
+  "Run BODY while the mouse gives EVENTS, oldest first, one at each read.
+A read after the last of them is a quit, as C-g is."
+  (declare (indent 1))
+  (let ((left (make-symbol "left")))
+    `(let ((,left ,events))
+       (cl-letf (((symbol-function 'read-event)
+                  (lambda (&rest _) (if ,left (pop ,left) (signal 'quit nil)))))
+         ,@body))))
+
+(defun canvas-browser-test--moves (window &rest pixels)
+  "Moves of the mouse over the page in WINDOW, to each of PIXELS, (X . Y)."
+  (mapcar (lambda (pixel)
+            (list 'mouse-movement (canvas-browser-test--at (car pixel) (cdr pixel) nil window)))
+          pixels))
+
+(ert-deftest canvas-browser-a-held-button-follows-the-mouse-over-the-page ()
+  ;; GIVEN a page in the window beside the selected window, which shows
+  ;;       a buffer of text
+  (canvas-browser-test--beside-a-page
+    ;; WHEN the left button goes down on the page at 40 by 90, the mouse
+    ;;      moves to 60 by 100 and to 80 by 120, and the button comes up
+    (canvas-browser-test--holding
+        (append (canvas-browser-test--moves page-window '(60 . 100) '(80 . 120))
+                (list (list 'drag-mouse-1 (canvas-browser-test--at 40 90 nil page-window)
+                            (canvas-browser-test--at 80 120 nil page-window))))
+      (canvas-browser-press (list 'down-mouse-1 (canvas-browser-test--at 40 90 nil page-window))))
+    ;; THEN the page gets the press, each move as it comes with the button
+    ;;      held, and the release where the mouse last was, AND the window
+    ;;      of the page is the selected one
+    (should (equal (canvas-browser-test--mouse-events)
+                   '(("mousePressed" 40 90) ("mouseMoved" 60 100) ("mouseMoved" 80 120)
+                     ("mouseReleased" 80 120))))
+    (should (cl-every (lambda (command) (equal (plist-get (cdr command) :buttons) 1))
+                      (cl-remove "mouseMoved" canvas-browser-test--commands
+                                 :key (lambda (command) (plist-get (cdr command) :type))
+                                 :test-not #'equal)))
+    (should (equal (delete-dups senders) (list page)))
+    (should (eq (selected-window) page-window))))
+
+(ert-deftest canvas-browser-a-press-without-a-move-is-a-click ()
+  ;; GIVEN a page shown in the selected window
+  ;; WHEN the left button goes down at 40 by 90 and comes up without a move
+  ;; THEN the page gets the press and the release there, and no move
+  (canvas-browser-test--in-shown-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--holding (list (list 'mouse-1 (canvas-browser-test--at 40 90)))
+      (canvas-browser-press (list 'down-mouse-1 (canvas-browser-test--at 40 90))))
+    (should (equal (canvas-browser-test--mouse-events)
+                   '(("mousePressed" 40 90) ("mouseReleased" 40 90))))))
+
+(ert-deftest canvas-browser-a-held-button-comes-up-where-the-mouse-leaves-the-page ()
+  ;; GIVEN a page shown in the selected window
+  ;; WHEN the left button goes down at 40 by 90, the mouse moves to 60 by
+  ;;      100, off the page, back onto it at 70 by 110, and the button
+  ;;      comes up
+  ;; THEN the page gets the press, the move to 60 by 100 and the release
+  ;;      there, AND nothing after: the page holds no button any more
+  (canvas-browser-test--in-shown-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--holding
+        (append (canvas-browser-test--moves (selected-window) '(60 . 100))
+                (list (list 'mouse-movement (canvas-browser-test--at 0 0 t)))
+                (canvas-browser-test--moves (selected-window) '(70 . 110))
+                (list (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
+                            (canvas-browser-test--at 0 0 t))))
+      (canvas-browser-press (list 'down-mouse-1 (canvas-browser-test--at 40 90))))
+    (should (equal (canvas-browser-test--mouse-events)
+                   '(("mousePressed" 40 90) ("mouseMoved" 60 100) ("mouseReleased" 60 100))))))
+
+(ert-deftest canvas-browser-a-key-pressed-while-the-button-is-held-comes-after ()
+  ;; GIVEN a page shown in the selected window
+  ;; WHEN the left button goes down, the mouse moves, a key is pressed,
+  ;;      and the button comes up
+  ;; THEN the move reaches the page, AND the key waits to be read after
+  ;;      the button came up
+  (canvas-browser-test--in-shown-page
+    (setq canvas-browser-test--commands nil)
+    (let ((unread-command-events nil))
+      (canvas-browser-test--holding
+          (append (canvas-browser-test--moves (selected-window) '(60 . 100))
+                  (list ?a (list 'drag-mouse-1 (canvas-browser-test--at 40 90)
+                                 (canvas-browser-test--at 60 100))))
+        (canvas-browser-press (list 'down-mouse-1 (canvas-browser-test--at 40 90))))
+      (should (equal (canvas-browser-test--mouse-events)
+                     '(("mousePressed" 40 90) ("mouseMoved" 60 100) ("mouseReleased" 60 100))))
+      (should (equal unread-command-events '(?a))))))
+
+(ert-deftest canvas-browser-a-quit-while-the-button-is-held-lets-it-go ()
+  ;; GIVEN a page shown in the selected window
+  ;; WHEN the left button goes down, the mouse moves to 60 by 100, and
+  ;;      C-g is pressed before the button comes up
+  ;; THEN the quit goes on, AND the page gets the release at 60 by 100,
+  ;;      so that it holds no button
+  (canvas-browser-test--in-shown-page
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-test--holding (canvas-browser-test--moves (selected-window) '(60 . 100))
+      ;; A quit is no error, so `should-error' would let it through.
+      (should (eq (condition-case nil
+                      (progn (canvas-browser-press
+                              (list 'down-mouse-1 (canvas-browser-test--at 40 90)))
+                             'no-quit)
+                    (quit 'quit))
+                  'quit)))
+    (should (equal (canvas-browser-test--mouse-events)
+                   '(("mousePressed" 40 90) ("mouseMoved" 60 100) ("mouseReleased" 60 100))))))
+
+(ert-deftest canvas-browser-the-press-of-the-left-button-is-bound-in-both-states ()
+  ;; GIVEN a page buffer
+  ;; WHEN the press of the left button is looked up, a single, a double
+  ;;      and a triple one, also over a link, in normal state and while
+  ;;      typing into the page
+  ;; THEN each runs the command that follows the held button
+  (canvas-browser-test--in-page
+    (dolist (state '(normal insert))
+      (when (eq state 'insert) (canvas-browser-insert-mode))
+      (dolist (press '(down-mouse-1 double-down-mouse-1 triple-down-mouse-1))
+        (should (eq (key-binding (vector press)) #'canvas-browser-press))
+        (should (eq (key-binding (vector 'canvas-browser-link press)) #'canvas-browser-press))))))
 
 (ert-deftest canvas-browser-the-middle-button-types-into-the-page-under-the-pointer ()
   ;; GIVEN a page in the window beside the selected window, which shows
