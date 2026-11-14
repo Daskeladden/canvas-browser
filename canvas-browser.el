@@ -5846,11 +5846,13 @@ opens the file as a PDF."
           (t (concat name ".pdf")))))
 
 (defun canvas-browser--pdf-bytes ()
-  "The bytes of the PDF that this page shows, as chromium loaded them.
-Nothing is fetched again, so a PDF behind a sign-in comes all the same."
+  "The bytes of the PDF that this page shows, see `canvas-browser--page-bytes\\='.
+A site behind a sign-in often tells chromium to keep no copy of a PDF.
+The page then fetches it again with its own sign-in, so such a PDF
+comes all the same."
   (unless (equal (canvas-browser--value-now "document.contentType") "application/pdf")
     (user-error "canvas-browser: this page shows no PDF"))
-  (or (canvas-browser--loaded-bytes canvas-browser--url)
+  (or (canvas-browser--page-bytes canvas-browser--url)
       (error "canvas-browser: chromium gave no bytes of %s" canvas-browser--url)))
 
 (defun canvas-browser--save-pdf (bytes name)
@@ -6659,11 +6661,18 @@ picture that needs a sign-in comes all the same."
               ((string-match "\\`data:[^,]*;base64,\\(.*\\)\\'" data)))
     (base64-decode-string (match-string 1 data))))
 
+(defun canvas-browser--page-bytes (url)
+  "The bytes of URL as this page has them, or nil when it has none.
+They are what the page loaded, or else what the page fetches now, with
+its own sign-in.  Chromium keeps no copy of what its site tells it not
+to store, and an address that a page makes for a picture of its own
+works only there."
+  (or (canvas-browser--loaded-bytes url) (canvas-browser--fetched-bytes url)))
+
 (defun canvas-browser-picture-bytes (url)
   "The bytes of the picture at URL in this page, or nil when it has none.
-It is what the page loaded, or else what the page fetches now: an
-address that a page makes for a picture of its own works only there."
-  (or (canvas-browser--loaded-bytes url) (canvas-browser--fetched-bytes url)))
+See `canvas-browser--page-bytes\\='."
+  (canvas-browser--page-bytes url))
 
 (defun canvas-browser--page-text ()
   "The text of this page."

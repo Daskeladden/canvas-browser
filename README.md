@@ -161,8 +161,10 @@ not label them.
 `P` opens the PDF in a buffer of Emacs.
 If you installed pdf-tools, it shows the PDF there, and its `F` labels
 the links. The PDF is saved in `~/Downloads`, as a download is, and comes
-from what chromium loaded. So a PDF behind a sign-in opens too. If the
-same PDF is there already, `P` opens that file and saves no copy.
+from what chromium loaded. A site behind a sign-in often tells chromium
+to keep no copy of a PDF. The page then fetches the PDF again, with its
+own sign-in. So a PDF behind a sign-in opens too. If the same PDF is
+there already, `P` opens that file and saves no copy.
 
 ### What a page copies
 

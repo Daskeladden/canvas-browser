@@ -1433,31 +1433,42 @@ Chromium has a profile of its own."
       (should (string-prefix-p "\x89PNG" (canvas-browser-picture-bytes made))))))
 
 
-(defun canvas-browser-live-test--answer (file)
-  "What a server answers to a request for FILE, as the text of http."
+(defun canvas-browser-live-test--type (file)
+  "The type of the content of FILE, as a server names it."
+  (cond ((string-suffix-p ".js" file) "text/javascript")
+        ((string-suffix-p ".pdf" file) "application/pdf")
+        (t "text/html")))
+
+(defun canvas-browser-live-test--answer (file &optional uncached)
+  "What a server answers to a request for FILE, as the text of http.
+With UNCACHED, the answer tells chromium to keep no copy of FILE."
   (if (file-regular-p file)
       (let ((body (with-temp-buffer
                     (set-buffer-multibyte nil)
                     (insert-file-contents-literally file)
                     (buffer-string))))
-        (format "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n%s"
-                (if (string-suffix-p ".js" file) "text/javascript" "text/html")
+        (format "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n%sContent-Length: %d\r\n\r\n%s"
+                (canvas-browser-live-test--type file)
+                (if uncached "Cache-Control: no-store\r\n" "")
                 (length body) body))
     "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"))
 
 (defun canvas-browser-live-test--serve (directory)
   "Serve the files of DIRECTORY over http on a port of this machine; the server.
 A page from a file has no site that chromium can be told about, so a
-test of what goes by site needs a page that a server gave."
+test of what goes by site needs a page that a server gave.  A file asked
+for below uncached/ comes with the header that tells chromium to keep no
+copy of it."
   (make-network-process
    :name "canvas-browser-live-test" :server t :host "127.0.0.1" :service t :family 'ipv4
    :coding 'binary :noquery t
    :filter (lambda (connection request)
-             (when (string-match "\\`GET /\\([^ ?]*\\)" request)
+             (when (string-match "\\`GET /\\(uncached/\\)?\\([^ ?]*\\)" request)
                (process-send-string
                 connection
                 (canvas-browser-live-test--answer
-                 (expand-file-name (match-string 1 request) directory)))
+                 (expand-file-name (match-string 2 request) directory)
+                 (match-beginning 1)))
                (delete-process connection)))))
 
 (defmacro canvas-browser-live-test--serving (origin &rest body)
@@ -2543,13 +2554,11 @@ Give the buffer once the page has answered, or nil when none opens."
     (insert-file-contents-literally file)
     (buffer-string)))
 
-(ert-deftest canvas-browser-live-P-opens-the-pdf-of-the-page-in-emacs ()
-  ;; GIVEN a page that shows the PDF fixture, and an empty download
-  ;;       directory
-  ;; WHEN P is pressed
-  ;; THEN order.pdf is in the download directory, byte for byte the
-  ;;      fixture, AND Emacs opens it
-  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+(defun canvas-browser-live-test--press-P (url)
+  "Open URL, a page that shows a PDF, and press P there.
+Give what Emacs opened, as (NAME . BYTES): the name of the file in the
+download directory, and the bytes in it.  The download directory and
+the profile of chromium are new ones, and go again after."
   (let ((buffer nil)
         (opened nil)
         (canvas-browser-profile-directory
@@ -2557,21 +2566,43 @@ Give the buffer once the page has answered, or nil when none opens."
            (make-temp-file "canvas-browser-live-" t)))
         (canvas-browser-download-directory (make-temp-file "canvas-browser-saved-" t)))
     (unwind-protect
-        (let ((file (expand-file-name "tests/fixtures/order.pdf"))
-              (saved (expand-file-name "order.pdf" canvas-browser-download-directory)))
-          (setq buffer (canvas-browser (concat "file://" file)))
+        (progn
+          (setq buffer (canvas-browser url))
           (with-current-buffer buffer
             (should (canvas-browser-live-test--wait 30 (lambda () canvas-browser--session)))
             (should (canvas-browser-live-test--wait 30 (lambda () (> canvas-browser--frames 0))))
             (cl-letf (((symbol-function 'find-file) (lambda (file &rest _) (setq opened file))))
               (canvas-browser-open-pdf))
-            (should (equal opened saved))
-            (should (equal (canvas-browser-live-test--file-bytes saved)
-                           (canvas-browser-live-test--file-bytes file)))))
+            (should opened)
+            (cons (file-relative-name opened canvas-browser-download-directory)
+                  (canvas-browser-live-test--file-bytes opened))))
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (canvas-browser-cdp-stop)
       (delete-directory canvas-browser-profile-directory t)
       (delete-directory canvas-browser-download-directory t))))
+
+(ert-deftest canvas-browser-live-P-opens-the-pdf-of-the-page-in-emacs ()
+  ;; GIVEN a page that shows the PDF fixture, and an empty download
+  ;;       directory
+  ;; WHEN P is pressed
+  ;; THEN Emacs opens order.pdf in the download directory, byte for byte
+  ;;      the fixture
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (let ((file (expand-file-name "tests/fixtures/order.pdf")))
+    (should (equal (canvas-browser-live-test--press-P (concat "file://" file))
+                   (cons "order.pdf" (canvas-browser-live-test--file-bytes file))))))
+
+(ert-deftest canvas-browser-live-P-fetches-a-pdf-that-its-site-forbids-to-keep ()
+  ;; GIVEN a site that serves the PDF fixture and tells chromium to keep
+  ;;       no copy of it, as a site behind a sign-in often does
+  ;; WHEN the PDF is shown, and P is pressed
+  ;; THEN Emacs opens pages.pdf in the download directory, byte for byte
+  ;;      the fixture
+  (skip-unless (cl-some #'executable-find canvas-browser-chromium))
+  (canvas-browser-live-test--serving origin
+    (should (equal (canvas-browser-live-test--press-P (concat origin "/uncached/pages.pdf"))
+                   (cons "pages.pdf" (canvas-browser-live-test--file-bytes
+                                      (expand-file-name "tests/fixtures/pages.pdf")))))))
 
 (defun canvas-browser-live-test--hint-boxes ()
   "The boxes the hints go on in this page, and their session, as (BOXES . SESSION).

@@ -9688,9 +9688,9 @@ The file is written where chromium writes a download, named by its GUID."
 
 (defmacro canvas-browser-test--showing (url type bytes saved opened &rest body)
   "Run BODY in a page buffer at URL that shows a document of TYPE.
-Chromium loaded it as BYTES.  SAVED is bound to the download directory,
-which does not exist yet, and OPENED to the list of the files that
-Emacs opened, newest first."
+Chromium loaded it as BYTES.  A fetch in the page finds nothing.  SAVED
+is bound to the download directory, which does not exist yet, and
+OPENED to the list of the files that Emacs opened, newest first."
   (declare (indent 5))
   (let ((said (make-symbol "said")))
     `(canvas-browser-test--downloading ,saved ,said
@@ -9705,6 +9705,10 @@ Emacs opened, newest first."
                     (lambda (address)
                       (should (equal address ,url))
                       ,bytes))
+                   ((symbol-function 'canvas-browser--fetched-bytes)
+                    (lambda (address)
+                      (should (equal address ,url))
+                      nil))
                    ((symbol-function 'find-file)
                     (lambda (file &rest _) (push file ,opened))))
            ,@body)))))
@@ -9772,8 +9776,26 @@ Emacs opened, newest first."
     (should-not (file-exists-p saved))
     (should-not opened)))
 
+(ert-deftest canvas-browser-P-fetches-a-pdf-that-chromium-did-not-keep ()
+  ;; GIVEN a page that shows a PDF whose site told chromium to keep no
+  ;;       copy, so chromium gives no bytes of what it loaded
+  ;; WHEN P is pressed
+  ;; THEN the page fetches the PDF again, with its own sign-in, AND those
+  ;;      bytes are saved and opened
+  (let ((url "https://example.org/papers/w123.pdf"))
+    (canvas-browser-test--showing url "application/pdf" nil saved opened
+      (cl-letf (((symbol-function 'canvas-browser--fetched-bytes)
+                 (lambda (address)
+                   (should (equal address url))
+                   canvas-browser-test--pdf-bytes)))
+        (canvas-browser-open-pdf))
+      (let ((file (expand-file-name "w123.pdf" saved)))
+        (should (equal (canvas-browser-test--file-bytes file) canvas-browser-test--pdf-bytes))
+        (should (equal opened (list file)))))))
+
 (ert-deftest canvas-browser-a-pdf-that-chromium-gives-no-bytes-of-is-an-error ()
-  ;; GIVEN a page that shows a PDF, but chromium gives no bytes of it
+  ;; GIVEN a page that shows a PDF, but chromium gives no bytes of it,
+  ;;       AND a fetch in the page finds none either
   ;; WHEN P is pressed
   ;; THEN an error names the address, AND nothing is saved or opened
   (canvas-browser-test--showing "https://example.org/papers/w123.pdf"
