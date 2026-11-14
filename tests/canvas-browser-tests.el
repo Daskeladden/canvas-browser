@@ -482,6 +482,17 @@ sent goes to `canvas-browser-test--sent\\='."
         (should (equal (list (plist-get wheel :deltaX) (plist-get wheel :deltaY))
                        (list 0 pixels)))))))
 
+(ert-deftest canvas-browser-the-wheel-of-a-zoomed-pdf-turns-over-the-middle-of-the-page ()
+  ;; GIVEN a page of 800 by 600 that shows a PDF, zoomed to twice its
+  ;;       size, so that chromium lays the page out at 400 by 300
+  ;; WHEN a line is scrolled down
+  ;; THEN the wheel turns over the middle of that layout, 200 by 150
+  (canvas-browser-test--showing-pdf-viewer nil
+    (setq canvas-browser--zoom 2.0)
+    (canvas-browser-scroll-line-up)
+    (let ((wheel (canvas-browser-test--wheel-sent)))
+      (should (equal (list (plist-get wheel :x) (plist-get wheel :y)) '(200 150))))))
+
 (ert-deftest canvas-browser-the-ends-of-a-pdf-are-reached-with-the-wheel ()
   ;; GIVEN a page that shows a PDF
   ;; WHEN it goes to its end
@@ -2421,6 +2432,29 @@ or the message of the error when M-n brings nothing."
     (should (equal (length spots) 2))
     (should (equal (car (nth 0 spots)) '(rect . ((0 . 10) . (30 . 22)))))
     (should (eq (plist-get (nth 2 (nth 1 spots)) 'pointer) 'hand))))
+
+(ert-deftest canvas-browser-the-hot-spots-of-a-zoomed-page-lie-over-its-boxes ()
+  ;; GIVEN a page buffer zoomed to twice its size, and a box of the page
+  ;; WHEN the hot spots are made
+  ;; THEN the rectangle lies over the box as the picture shows it: twice
+  ;;      as far from the corner, and twice as large
+  (canvas-browser-test--in-page
+    (setq canvas-browser--zoom 2.0)
+    (should (equal (car (car (canvas-browser--hot-spots '((:x 10 :y 20 :w 30 :h 40)))))
+                   '(rect . ((20 . 40) . (80 . 120)))))))
+
+(ert-deftest canvas-browser-the-buttons-of-a-pdf-viewer-take-the-hand-pointer ()
+  ;; GIVEN a page that shows a PDF, whose viewer has two buttons, while
+  ;;       the page itself has nothing to click
+  ;; WHEN the pointer areas of the page are read
+  ;; THEN the canvas has a hot spot over each button of the viewer
+  (canvas-browser-test--showing-pdf-viewer
+      '((:x 16 :y 12 :w 32 :h 32) (:x 1160 :y 12 :w 32 :h 32))
+    (cl-letf (((symbol-function 'canvas-browser--flush-image) #'ignore))
+      (canvas-browser--sync-spots (current-buffer))
+      (should (equal (mapcar #'car (plist-get (cdr canvas-browser--canvas) :map))
+                     '((rect . ((16 . 12) . (48 . 44)))
+                       (rect . ((1160 . 12) . (1192 . 44)))))))))
 
 (ert-deftest canvas-browser-the-map-of-the-canvas-changes-only-when-it-must ()
   ;; GIVEN a page buffer whose canvas carries the hot spots of two boxes
@@ -5685,8 +5719,8 @@ which BODY may insert.  A frame that can show a canvas is assumed."
       (set-window-buffer (selected-window) host)
       (unwind-protect
           (with-current-buffer host
-            (let ((event `(mouse-1 (,(selected-window) 1 (0 . 0) 0 nil 1 (0 . 0) nil
-                                    (40 . 30) (400 . 225)))))
+            (let ((event `(mouse-1 (,(selected-window) 1 (0 . 0) 0 nil 1 (0 . 0)
+                                    (image :type canvas) (40 . 30) (400 . 225)))))
               (canvas-browser-embed-click event)
               (should (equal (seq-take (canvas-browser-test--params "Input.dispatchMouseEvent") 6)
                              '(:type "mouseReleased" :x 40 :y 30)))
@@ -6517,6 +6551,31 @@ window and not on the page."
                                 (canvas-browser-test--at 0 0 t)))
      :type 'user-error)
     (should-not (canvas-browser-test--mouse-events))))
+
+(ert-deftest canvas-browser-the-mouse-on-a-zoomed-page-reaches-the-pixel-under-it ()
+  ;; GIVEN a page buffer zoomed to twice its size, so that a pixel of the
+  ;;       page is two pixels of the picture
+  (canvas-browser-test--in-shown-page
+    (setq canvas-browser--zoom 2.0)
+    (setq canvas-browser-test--commands nil)
+    ;; WHEN the picture is clicked at its pixel 80 by 180
+    (canvas-browser-click (list 'mouse-1 (canvas-browser-test--at 80 180)))
+    ;; THEN the page gets the press and the release at its pixel 40 by 90
+    (should (equal (canvas-browser-test--mouse-events)
+                   '(("mousePressed" 40 90) ("mouseReleased" 40 90))))
+    ;; WHEN the mouse is dragged over the picture from 80 by 180 to 400 by 190
+    (setq canvas-browser-test--commands nil)
+    (canvas-browser-drag (list 'drag-mouse-1 (canvas-browser-test--at 80 180)
+                               (canvas-browser-test--at 400 190)))
+    ;; THEN the drag goes over the page from 40 by 90 to 200 by 95
+    (should (equal (canvas-browser-test--mouse-events)
+                   '(("mousePressed" 40 90) ("mouseMoved" 200 95) ("mouseReleased" 200 95))))
+    ;; WHEN the wheel turns over the picture at its pixel 80 by 180
+    (canvas-keys-wheel-scroll (canvas-browser-test--wheel-event 'wheel-down 80 180))
+    ;; THEN the page hears the wheel at its pixel 40 by 90
+    (let ((event (canvas-browser-test--params "Input.dispatchMouseEvent")))
+      (should (equal (plist-get event :type) "mouseWheel"))
+      (should (equal (list (plist-get event :x) (plist-get event :y)) '(40 90))))))
 
 ;;;; The buttons on a page whose window is not selected
 

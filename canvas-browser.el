@@ -1497,8 +1497,9 @@ The page cannot scroll that frame, and a key sent to the page does not
 reach it.  So the wheel turns over the middle of the page, which the
 viewer fills.  The viewer moves at once by the pixels of the wheel, a
 small turn too."
-  (canvas-browser--wheel (/ (car canvas-browser--size) 2) (/ (cdr canvas-browser--size) 2)
-                         0 (canvas-browser--pdf-wheel-pixels mode value)))
+  (let ((layout (canvas-browser--layout-size)))
+    (canvas-browser--wheel (/ (car layout) 2) (/ (cdr layout) 2)
+                           0 (canvas-browser--pdf-wheel-pixels mode value))))
 
 (defun canvas-browser--pdf-wheel-pixels (mode value)
   "The pixels the wheel turns down in a PDF for MODE and VALUE.
@@ -1763,7 +1764,8 @@ the page that took the press."
 
 (defun canvas-browser--click-at (event)
   "Click this page where EVENT, a click on its picture, points."
-  (let ((at (posn-object-x-y (event-start event))))
+  (let ((at (or (canvas-browser--page-pixel (event-start event))
+                (user-error "canvas-browser: the click was off the page"))))
     (canvas-browser--click (car at) (cdr at))))
 
 (defun canvas-browser-click (event)
@@ -1775,8 +1777,10 @@ The page is the one under the pointer, and its window is selected."
 
 (defun canvas-browser--page-pixel (position)
   "The pixel of the page that POSITION, a mouse position, is on, as (X . Y).
-Nil when the position is on something else in the window."
-  (and (posn-image position) (posn-object-x-y position)))
+Nil when the position is on something else in the window.  It is this
+buffer's `canvas-keys-place-function\\=', so that the wheel turns over the
+pixel of the page under the pointer as well."
+  (and (posn-image position) (canvas-browser--in-page (posn-object-x-y position))))
 
 (defun canvas-browser-drag (event)
   "Drag the mouse over the page as EVENT, a drag on the canvas, did.
@@ -4567,15 +4571,31 @@ the scale of the page."
 (defvar-local canvas-browser--zoom 1.0
   "The scale of this page: 1.0 is its natural size.")
 
+(defun canvas-browser--layout-size ()
+  "The size of the page as chromium lays it out, (W . H) in its pixels.
+The canvas shows the page at its zoom, so a page zoomed in has fewer
+pixels than the canvas."
+  (cons (round (/ (car canvas-browser--size) canvas-browser--zoom))
+        (round (/ (cdr canvas-browser--size) canvas-browser--zoom))))
+
+(defun canvas-browser--in-page (at)
+  "AT, (X . Y) in the pixels of the picture, as (X . Y) in those of the page.
+The canvas shows the page at its zoom.  Chromium takes the mouse in the
+pixels of the page, and a pixel of the picture is a smaller part of one
+when the page is zoomed in."
+  (cons (round (/ (car at) canvas-browser--zoom))
+        (round (/ (cdr at) canvas-browser--zoom))))
+
 (defun canvas-browser--apply-zoom (&optional then)
   "Lay the page out for the zoom of this buffer, and scale it to the canvas.
 THEN is called in this buffer once chromium has laid the page out: a
 picture asked for before that is of the layout the page had."
-  (let ((buffer (current-buffer)))
+  (let ((buffer (current-buffer))
+        (layout (canvas-browser--layout-size)))
     (canvas-browser-cdp-send
      "Emulation.setDeviceMetricsOverride"
-     (list :width (round (/ (car canvas-browser--size) canvas-browser--zoom))
-           :height (round (/ (cdr canvas-browser--size) canvas-browser--zoom))
+     (list :width (car layout)
+           :height (cdr layout)
            :deviceScaleFactor canvas-browser--zoom
            :mobile :json-false)
      (when then
@@ -4655,12 +4675,12 @@ page that is standing still."
   "The timer that reads the pointer areas of this page.")
 
 (defun canvas-browser--hot-spots (boxes)
-  "The image map of BOXES: a rectangle each, under a hand pointer."
+  "The image map of BOXES of the page: a rectangle each, under a hand pointer.
+The rectangles lie over the boxes as the picture shows them, at the zoom
+of the page."
   (mapcar (lambda (box)
-            (let ((x (plist-get box :x))
-                  (y (plist-get box :y)))
-              `((rect . ((,x . ,y) . (,(+ x (plist-get box :w))
-                                      . ,(+ y (plist-get box :h)))))
+            (pcase-let ((`[,x ,y ,w ,h] (canvas-browser--in-picture box)))
+              `((rect . ((,(round x) . ,(round y)) . (,(round (+ x w)) . ,(round (+ y h)))))
                 canvas-browser-link
                 (pointer hand))))
           boxes))
@@ -4690,13 +4710,15 @@ flush redraws the frame."
 
 
 (defun canvas-browser--sync-spots (buffer)
-  "Read the boxes of BUFFER's page, and put their hot spots on its canvas."
+  "Read the boxes of BUFFER's page, and put their hot spots on its canvas.
+They are the boxes that the hints go on, so on a PDF they are the
+buttons of its viewer."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq canvas-browser--spots-timer nil)
       (when canvas-browser--session
-        (canvas-browser--boxes
-         (lambda (boxes)
+        (canvas-browser--hint-boxes
+         (lambda (boxes _session)
            (when (buffer-live-p buffer)
              (with-current-buffer buffer (canvas-browser--put-spots boxes)))))))))
 
@@ -5572,6 +5594,7 @@ nothing the window does not.  Take the mode out of
         ;; The page keeps the buttons, so it takes the wheel alone, and
         ;; neither a pan nor a region of canvas-keys.
         canvas-keys-wheel-function #'canvas-browser--wheel-by
+        canvas-keys-place-function #'canvas-browser--page-pixel
         canvas-keys-zoom-at-function #'canvas-browser--zoom-at
         canvas-keys-redraw-function #'canvas-browser-refresh)
   (add-hook 'kill-buffer-hook #'canvas-browser--release nil t)

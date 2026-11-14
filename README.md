@@ -154,7 +154,8 @@ there.
 
 Chromium shows a PDF in its own viewer, a frame of its own above the
 page. On a PDF, `f` labels the buttons of that viewer: download, print,
-zoom, the page number, the sidebar and its pages. The viewer draws the
+zoom, the page number, the sidebar and its pages. The pointer becomes a
+hand over these buttons, as it does over a link. The viewer draws the
 links of the PDF itself, so they are no part of a page, and `f` does
 not label them.
 
