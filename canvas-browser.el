@@ -4807,7 +4807,9 @@ buttons of its viewer."
 
 ;;;; The menu
 
-(declare-function org-store-link "ol" (arg &optional interactive?))
+;; The menu does not open while the command of an entry is unknown, and
+;; Emacs 32 does not autoload this one.
+(autoload 'org-store-link "ol" nil t)
 
 (canvas-keys-define-menu canvas-browser-menu
     "The menu of a page buffer.

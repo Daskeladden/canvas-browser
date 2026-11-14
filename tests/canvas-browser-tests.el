@@ -1688,6 +1688,28 @@ Each is the end of the script that asked: (\"NAME\", X, Y)."
 
 ;;;; A link to a page, for org
 
+(defun canvas-browser-test--in-fresh-emacs (form)
+  "The value of FORM, printed, in a new Emacs -Q that loaded canvas-browser
+from the `load-path' of this one, from the newer of its source and its
+compiled file."
+  (with-temp-buffer
+    (let ((status (call-process (expand-file-name invocation-name invocation-directory)
+                                nil t nil "-Q" "--batch"
+                                "--eval" (format "(setq load-path '%S load-prefer-newer t)" load-path)
+                                "-l" "canvas-browser"
+                                "--eval" (format "(prin1 %S)" form))))
+      (unless (eql status 0)
+        (error "canvas-browser: the new Emacs ended with %S: %s" status (buffer-string)))
+      (car (last (split-string (buffer-string) "\n" t))))))
+
+(ert-deftest canvas-browser-the-menu-opens-before-org-is-loaded ()
+  ;; GIVEN an Emacs that loaded canvas-browser, and not org
+  ;; THEN the command of the entry "org link" of the menu is known, so
+  ;;      the menu opens, AND org is still not loaded
+  (should (equal (canvas-browser-test--in-fresh-emacs
+                  '(list (commandp 'org-store-link) (featurep 'ol)))
+                 "(t nil)")))
+
 (require 'ol)
 
 (defmacro canvas-browser-test--storing (&rest body)
